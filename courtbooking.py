@@ -175,42 +175,66 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-st.title("🎾 Grab that court... ")
 
+st.title("🎾 Community Tennis Courts Booking System")
 
-
-# Session state
+# Session state initialization
 if 'sub_community' not in st.session_state:
     st.session_state.sub_community = None
 if 'villa' not in st.session_state:
     st.session_state.villa = ""
+if 'authenticated' not in st.session_state:
+    st.session_state.authenticated = False
 if 'just_booked' not in st.session_state:
     st.session_state.just_booked = False
 
-# User inputs
-col1, col2 = st.columns(2)
-with col1:
-    sub_community = st.selectbox(
-        "Select Your Sub-Community",
-        options=sub_community_list,
-        index=None,
-        placeholder="Choose sub-community",
-        key="sub_community_input"
-    )
-with col2:
-    villa_input = st.text_input("Enter Villa Number", placeholder="e.g. 123", value=st.session_state.villa)
+# === USER AUTHENTICATION PHASE ===
+if not st.session_state.authenticated:
+    st.subheader("🔐 Please identify yourself")
 
-if sub_community:
-    st.session_state.sub_community = sub_community
-if villa_input:
-    st.session_state.villa = villa_input.strip().upper()
+    col1, col2 = st.columns(2)
+    with col1:
+        sub_community_input = st.selectbox(
+            "Select Your Sub-Community",
+            options=sub_community_list,
+            index=None,
+            placeholder="Choose sub-community",
+            key="sub_community_input_temp"
+        )
+    with col2:
+        villa_input = st.text_input(
+            "Enter Villa Number",
+            placeholder="e.g. 123",
+            key="villa_input_temp"
+        ).strip().upper()
 
+    if st.button("Confirm Identity", type="primary"):
+        if sub_community_input and villa_input:
+            st.session_state.sub_community = sub_community_input
+            st.session_state.villa = villa_input
+            st.session_state.authenticated = True
+            st.rerun()
+        else:
+            st.error("Please select your sub-community and enter your villa number.")
+
+    st.info("ℹ️ Your identity will be locked for this session. Refresh the page to change it.")
+    st.stop()
+
+# === AFTER AUTHENTICATION: SHOW LOCKED INFO ===
+st.success(f"✅ Logged in as: **{st.session_state.sub_community} - Villa {st.session_state.villa}**")
+st.caption("🔒 Your details are locked. Refresh the page to log in with different details.")
+
+# Extract values for use in the rest of the app
 sub_community = st.session_state.sub_community
 villa = st.session_state.villa
 
-if not sub_community or not villa:
-    st.warning("⚠️ Please select your sub-community and enter your villa number to continue.")
-    st.stop()
+# Optional: Add a manual "Log out" button if you want (resets on refresh anyway)
+if st.button("🔓 Change Sub-Community / Villa (Refresh Required)"):
+    st.warning("To change your details, please refresh the page.")
+
+
+
+
 
 # Tabs
 tab1, tab2, tab3, tab4 = st.tabs(["📅 View Availability", "➕ Book a Slot", "📋 My Bookings", "❌ Cancel Booking"])
