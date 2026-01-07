@@ -3,16 +3,26 @@ import sqlite3
 from datetime import datetime, timedelta, date
 import pandas as pd
 
-# Database setup
+# Database setup with schema migration
 conn = sqlite3.connect('bookings.db', check_same_thread=False)
 c = conn.cursor()
+
+# Create table if not exists (old version)
 c.execute('''CREATE TABLE IF NOT EXISTS bookings
              (id INTEGER PRIMARY KEY AUTOINCREMENT,
               villa TEXT,
-              sub_community TEXT,
               court TEXT,
               date TEXT,
               start_hour INTEGER)''')
+
+# Check if sub_community column exists, add it if not
+c.execute("PRAGMA table_info(bookings)")
+columns = [col[1] for col in c.fetchall()]
+if 'sub_community' not in columns:
+    c.execute("ALTER TABLE bookings ADD COLUMN sub_community TEXT")
+    conn.commit()
+    st.success("Database updated successfully! You can now use sub-communities.")
+
 conn.commit()
 
 # Sub-communities and their courts
@@ -27,8 +37,6 @@ sub_communities = {
     "Mira Oasis 3": ["Mira Oasis 3A", "Mira Oasis 3B", "Mira Oasis 3C"]
 }
 
-# All possible courts (for reference)
-all_courts = ["Mira 2", "Mira 4", "Mira 5A", "Mira 5B", "Mira Oasis 1", "Mira Oasis 2", "Mira Oasis 3A", "Mira Oasis 3B", "Mira Oasis 3C"]
 start_hours = list(range(7, 22))  # 7 AM to 9 PM
 
 # Helper functions
@@ -90,7 +98,7 @@ st.title("🎾 Community Tennis Courts Booking System")
 
 # Session state
 if 'sub_community' not in st.session_state:
-    st.session_state.sub_community = ""
+    st.session_state.sub_community = None
 if 'villa' not in st.session_state:
     st.session_state.villa = ""
 
@@ -101,7 +109,8 @@ with col1:
         "Select Your Sub-Community",
         options=list(sub_communities.keys()),
         index=None,
-        placeholder="Choose sub-community"
+        placeholder="Choose sub-community",
+        key="sub_community_input"
     )
 with col2:
     villa_input = st.text_input("Enter Villa Number", placeholder="e.g. 123", value=st.session_state.villa)
@@ -118,9 +127,8 @@ if not sub_community or not villa:
     st.warning("⚠️ Please select your sub-community and enter your villa number to continue.")
     st.stop()
 
-# Get available courts for this sub-community
+# Get available courts
 available_courts = sub_communities.get(sub_community, [])
-
 if not available_courts:
     st.info(f"No courts available in {sub_community}.")
     st.stop()
@@ -132,17 +140,13 @@ tab1, tab2, tab3, tab4 = st.tabs(["📅 View Availability", "➕ Book a Slot", "
 with tab1:
     st.subheader(f"{sub_community} Court Availability")
     dates = get_next_14_days()
-    selected_date = st.selectbox("Select Date:", 
-                                 [d.strftime('%Y-%m-%d') for d in dates], 
-                                 key="view_date_select")
+    selected_date = st.selectbox("Select Date:", [d.strftime('%Y-%m-%d') for d in dates], key="view_date_select")
 
     booked_slots = get_bookings_for_day(selected_date)
     time_labels = [f"{h:02d}:00 - {h+1:02d}:00" for h in start_hours]
 
-    data = {}
-    for h, label in zip(start_hours, time_labels):
-        data[label] = ["Available" if (court, h) not in booked_slots else "Booked" 
-                       for court in available_courts]
+    data = {label: ["Available" if (court, h) not in booked_slots else "Booked" for court in available_courts]
+            for h, label in zip(start_hours, time_labels)}
     df = pd.DataFrame(data, index=available_courts)
 
     def color_cell(val):
@@ -162,9 +166,7 @@ with tab2:
 
     selected_date = st.selectbox("Date:", date_options, key="book_date")
     selected_court = st.selectbox("Court:", available_courts, key="book_court")
-    selected_time_label = st.selectbox("Time Slot:", 
-                                       [f"{h:02d}:00 - {h+1:02d}:00" for h in start_hours], 
-                                       key="book_time")
+    selected_time_label = st.selectbox("Time Slot:", [f"{h:02d}:00 - {h+1:02d}:00" for h in start_hours], key="book_time")
     start_hour = int(selected_time_label.split(":")[0])
 
     active_count = get_active_bookings_count(villa, sub_community)
@@ -192,13 +194,8 @@ with tab3:
         today_str = get_today().strftime('%Y-%m-%d')
         now_hour = datetime.now().hour
         
-        active = []
-        past = []
-        for b in bookings:
-            if b[2] > today_str or (b[2] == today_str and b[3] >= now_hour):
-                active.append(b)
-            else:
-                past.append(b)
+        active = [b for b in bookings if b[2] > today_str or (b[2] == today_str and b[3] >= now_hour)]
+        past = [b for b in bookings if b not in active]
         
         if active:
             st.write("**Active Bookings** (count toward limit):")
