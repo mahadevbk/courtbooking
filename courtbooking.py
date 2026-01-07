@@ -7,7 +7,7 @@ import pandas as pd
 conn = sqlite3.connect('bookings.db', check_same_thread=False)
 c = conn.cursor()
 
-# Create table if not exists (old version)
+# Create table if not exists
 c.execute('''CREATE TABLE IF NOT EXISTS bookings
              (id INTEGER PRIMARY KEY AUTOINCREMENT,
               villa TEXT,
@@ -30,9 +30,9 @@ sub_community_list = [
     "Mira Oasis 1", "Mira Oasis 2", "Mira Oasis 3"
 ]
 
-# All courts available to everyone
+# All courts
 courts = ["Mira 2", "Mira 4", "Mira 5A", "Mira 5B", "Mira Oasis 1", "Mira Oasis 2", "Mira Oasis 3A", "Mira Oasis 3B", "Mira Oasis 3C"]
-start_hours = list(range(7, 22))  # 7 AM to 9 PM
+start_hours = list(range(7, 22))
 
 # Helper functions
 def get_today():
@@ -83,6 +83,38 @@ def get_user_bookings(villa, sub_community):
 def delete_booking(booking_id, villa, sub_community):
     c.execute("DELETE FROM bookings WHERE id=? AND villa=? AND sub_community=?", (booking_id, villa, sub_community))
     conn.commit()
+
+# New: Get all villas with active bookings
+def get_villas_with_active_bookings():
+    today = get_today()
+    today_str = today.strftime('%Y-%m-%d')
+    now_hour = datetime.now().hour
+    c.execute("""
+        SELECT DISTINCT villa, sub_community FROM bookings 
+        WHERE date > ? OR (date = ? AND start_hour >= ?)
+        ORDER BY villa
+    """, (today_str, today_str, now_hour))
+    return [f"{row[1]} - {row[0]}" for row in c.fetchall()]
+
+# New: Get active bookings for a selected villa identifier
+def get_active_bookings_for_villa_display(villa_identifier):
+    sub_comm, villa_num = villa_identifier.split(" - ")
+    today = get_today()
+    today_str = today.strftime('%Y-%m-%d')
+    now_hour = datetime.now().hour
+    c.execute("""
+        SELECT court, date, start_hour FROM bookings 
+        WHERE villa=? AND sub_community=? AND (date > ? OR (date = ? AND start_hour >= ?))
+        ORDER BY date, start_hour
+    """, (villa_num, sub_comm, today_str, today_str, now_hour))
+    bookings = c.fetchall()
+    options = []
+    for court, bdate, hour in bookings:
+        dt = datetime.strptime(bdate, '%Y-%m-%d')
+        day_name = dt.strftime('%A')
+        time_str = f"{hour:02d}:00 - {hour+1:02d}:00"
+        options.append(f"{bdate} ({day_name}) | {time_str} | {court}")
+    return options
 
 # Styling
 st.markdown("""
@@ -140,7 +172,15 @@ tab1, tab2, tab3, tab4 = st.tabs(["📅 View Availability", "➕ Book a Slot", "
 with tab1:
     st.subheader("Court Availability")
     dates = get_next_14_days()
-    selected_date = st.selectbox("Select Date:", [d.strftime('%Y-%m-%d') for d in dates], key="view_date_select")
+    
+    # Enhanced date options with day name
+    date_options = []
+    for d in dates:
+        day_name = d.strftime('%A')
+        date_options.append(f"{d.strftime('%Y-%m-%d')} ({day_name})")
+    
+    selected_date_str = st.selectbox("Select Date:", date_options, key="view_date_select")
+    selected_date = selected_date_str.split(" (")[0]  # Extract YYYY-MM-DD
 
     bookings_with_details = get_bookings_for_day_with_details(selected_date)
     time_labels = [f"{h:02d}:00 - {h+1:02d}:00" for h in start_hours]
@@ -168,6 +208,30 @@ with tab1:
 
     styled_df = df.style.map(color_cell)
     st.dataframe(styled_df, width="stretch")
+
+    # === NEW SECTION: View Active Bookings by Villa ===
+    st.markdown("---")
+    st.subheader("🔍 View Active Bookings by Villa")
+
+    villas_with_active = get_villas_with_active_bookings()
+    if villas_with_active:
+        selected_villa = st.selectbox(
+            "Select a villa to view their active bookings:",
+            options=["-- Select a villa --"] + villas_with_active,
+            key="villa_lookup"
+        )
+        if selected_villa != "-- Select a villa --":
+            booking_list = get_active_bookings_for_villa_display(selected_villa)
+            if booking_list:
+                selected_booking = st.selectbox(
+                    "Active bookings for this villa:",
+                    options=booking_list,
+                    key="villa_booking_list"
+                )
+            else:
+                st.info("No active bookings found.")
+    else:
+        st.info("No active bookings in the community right now.")
 
 # === TAB 2: Book a Slot ===
 with tab2:
@@ -198,7 +262,7 @@ with tab2:
         st.balloons()
         st.session_state.just_booked = False
 
-# === TAB 3: My Bookings ===
+# === TAB 3 & 4 unchanged (My Bookings & Cancel) ===
 with tab3:
     st.subheader("My Bookings")
     bookings = get_user_bookings(villa, sub_community)
@@ -222,7 +286,6 @@ with tab3:
             for b in past:
                 st.write(f"• {b[1]} – {b[2]} at {b[3]:02d}:00 - {b[3]+1:02d}:00")
 
-# === TAB 4: Cancel Booking ===
 with tab4:
     st.subheader("Cancel a Booking")
     bookings = get_user_bookings(villa, sub_community)
@@ -241,7 +304,6 @@ with tab4:
             delete_booking(booking_id, villa, sub_community)
             st.success("Booking cancelled!")
             st.rerun()
-
 st.markdown("""
 <div style='background-color: #0d5384; padding: 1rem; border-left: 5px solid #fff500; border-radius: 0.5rem; color: white;'>
 Built with ❤️ using <a href='https://streamlit.io/' style='color: #ccff00;'>Streamlit</a> — free and open source.
