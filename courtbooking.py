@@ -24,7 +24,7 @@ if 'sub_community' not in columns:
 
 conn.commit()
 
-# Sub-communities (no court filtering - all have access to all courts)
+# Sub-communities list
 sub_community_list = [
     "Mira 1", "Mira 2", "Mira 3", "Mira 4", "Mira 5",
     "Mira Oasis 1", "Mira Oasis 2", "Mira Oasis 3"
@@ -91,11 +91,13 @@ st.markdown("""
 
 st.title("🎾 Community Tennis Courts Booking System")
 
-# Session state
+# Session state initialization
 if 'sub_community' not in st.session_state:
     st.session_state.sub_community = None
 if 'villa' not in st.session_state:
     st.session_state.villa = ""
+if 'just_booked' not in st.session_state:
+    st.session_state.just_booked = False
 
 # User inputs
 col1, col2 = st.columns(2)
@@ -169,8 +171,13 @@ with tab2:
         else:
             book_slot(villa, sub_community, selected_court, selected_date, start_hour)
             st.success(f"✅ Booked **{selected_court}** on **{selected_date}** at **{selected_time_label}**!")
-            st.balloons()
+            st.session_state.just_booked = True
             st.rerun()
+
+    # Show balloons if we just booked (appears after rerun)
+    if st.session_state.just_booked:
+        st.balloons()
+        st.session_state.just_booked = False
 
 # === TAB 3: My Bookings ===
 with tab3:
