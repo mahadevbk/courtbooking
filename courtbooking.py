@@ -199,6 +199,7 @@ if not st.session_state.authenticated:
 sub_community = st.session_state.sub_community
 villa = st.session_state.villa
 st.success(f"✅ Logged in as: **{sub_community} - Villa {villa}**")
+ st.info("Unofficial and Community driven attempt to bring order to the Tennis court bookings in Mira and Mira Oasis.")
 
 tab1, tab2, tab3, tab4 = st.tabs(["📅 View Availability", "➕ Book a Slot", "📋 My Bookings", "❌ Cancel Booking"])
 
