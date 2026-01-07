@@ -176,7 +176,7 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 
-st.title("🎾 Community Tennis Courts Booking System")
+st.title("🎾 Book that Court ...")
 
 # Session state initialization
 if 'sub_community' not in st.session_state:
