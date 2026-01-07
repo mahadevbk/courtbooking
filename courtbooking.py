@@ -190,7 +190,7 @@ if 'just_booked' not in st.session_state:
 
 # === USER AUTHENTICATION PHASE ===
 if not st.session_state.authenticated:
-    st.subheader("🔐 Please identify yourself")
+    st.subheader("Please log in ")
 
     col1, col2 = st.columns(2)
     with col1:
