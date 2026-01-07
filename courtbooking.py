@@ -227,7 +227,7 @@ with tab1:
     st.dataframe(styled_df, width="stretch")
 
     st.markdown("---")
-    st.subheader("🔍 View Active Bookings by Villa")
+    st.subheader("🔍 View Active Bookings :")
 
     villas_with_active = get_villas_with_active_bookings()
     if villas_with_active:
