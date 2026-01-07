@@ -164,7 +164,7 @@ st.markdown("""
     /* Make table headers and important text stand out */
     .stDataFrame th {
         font-family: 'Audiowide', cursive;
-        font-size: 14px;
+        font-size: 12px;
         background-color: #2c3e50 !important;
         color: white !important;
     }
