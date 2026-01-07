@@ -70,6 +70,25 @@ def is_slot_booked(court, date_str, start_hour):
               (court, date_str, start_hour))
     return c.fetchone() is not None
 
+def is_slot_in_past(date_str, start_hour):
+    """Check if the selected slot is in the past or currently active (started but not finished)"""
+    today_str = get_today().strftime('%Y-%m-%d')
+    now = datetime.now()
+    current_hour = now.hour
+    current_minute = now.minute
+    
+    if date_str < today_str:
+        return True  # Future dates only allowed
+    if date_str > today_str:
+        return False  # Future dates are fine
+    
+    # Same day: check if slot has started
+    if start_hour < current_hour:
+        return True  # Already fully passed
+    if start_hour == current_hour and current_minute > 0:
+        return True  # Slot has already started (e.g., 18:15 trying to book 18:00)
+    return False
+
 def book_slot(villa, sub_community, court, date_str, start_hour):
     c.execute("INSERT INTO bookings (villa, sub_community, court, date, start_hour) VALUES (?, ?, ?, ?, ?)",
               (villa, sub_community, court, date_str, start_hour))
@@ -84,7 +103,7 @@ def delete_booking(booking_id, villa, sub_community):
     c.execute("DELETE FROM bookings WHERE id=? AND villa=? AND sub_community=?", (booking_id, villa, sub_community))
     conn.commit()
 
-# New: Get all villas with active bookings
+# New: Get villas with active bookings
 def get_villas_with_active_bookings():
     today = get_today()
     today_str = today.strftime('%Y-%m-%d')
@@ -96,7 +115,6 @@ def get_villas_with_active_bookings():
     """, (today_str, today_str, now_hour))
     return [f"{row[1]} - {row[0]}" for row in c.fetchall()]
 
-# New: Get active bookings for a selected villa identifier
 def get_active_bookings_for_villa_display(villa_identifier):
     sub_comm, villa_num = villa_identifier.split(" - ")
     today = get_today()
@@ -173,14 +191,13 @@ with tab1:
     st.subheader("Court Availability")
     dates = get_next_14_days()
     
-    # Enhanced date options with day name
     date_options = []
     for d in dates:
         day_name = d.strftime('%A')
         date_options.append(f"{d.strftime('%Y-%m-%d')} ({day_name})")
     
     selected_date_str = st.selectbox("Select Date:", date_options, key="view_date_select")
-    selected_date = selected_date_str.split(" (")[0]  # Extract YYYY-MM-DD
+    selected_date = selected_date_str.split(" (")[0]
 
     bookings_with_details = get_bookings_for_day_with_details(selected_date)
     time_labels = [f"{h:02d}:00 - {h+1:02d}:00" for h in start_hours]
@@ -209,7 +226,6 @@ with tab1:
     styled_df = df.style.map(color_cell)
     st.dataframe(styled_df, width="stretch")
 
-    # === NEW SECTION: View Active Bookings by Villa ===
     st.markdown("---")
     st.subheader("🔍 View Active Bookings by Villa")
 
@@ -223,11 +239,7 @@ with tab1:
         if selected_villa != "-- Select a villa --":
             booking_list = get_active_bookings_for_villa_display(selected_villa)
             if booking_list:
-                selected_booking = st.selectbox(
-                    "Active bookings for this villa:",
-                    options=booking_list,
-                    key="villa_booking_list"
-                )
+                st.selectbox("Active bookings:", options=booking_list, key="villa_booking_list")
             else:
                 st.info("No active bookings found.")
     else:
@@ -248,8 +260,11 @@ with tab2:
     st.info(f"You have **{active_count} / 6** active bookings.")
 
     if st.button("Book This Slot", type="primary"):
-        if is_slot_booked(selected_court, selected_date, start_hour):
-            st.error("❌ This slot was just taken.")
+        # NEW: Prevent booking past or active slots
+        if is_slot_in_past(selected_date, start_hour):
+            st.error("⛔ This slot has already started or passed. You cannot book it.")
+        elif is_slot_booked(selected_court, selected_date, start_hour):
+            st.error("❌ This slot was just taken by someone else.")
         elif active_count >= 6:
             st.error("🚫 You already have 6 active bookings. Cancel one first.")
         else:
@@ -262,7 +277,7 @@ with tab2:
         st.balloons()
         st.session_state.just_booked = False
 
-# === TAB 3 & 4 unchanged (My Bookings & Cancel) ===
+# === TAB 3 & 4 unchanged ===
 with tab3:
     st.subheader("My Bookings")
     bookings = get_user_bookings(villa, sub_community)
@@ -304,6 +319,9 @@ with tab4:
             delete_booking(booking_id, villa, sub_community)
             st.success("Booking cancelled!")
             st.rerun()
+
+
+
 st.markdown("""
 <div style='background-color: #0d5384; padding: 1rem; border-left: 5px solid #fff500; border-radius: 0.5rem; color: white;'>
 Built with ❤️ using <a href='https://streamlit.io/' style='color: #ccff00;'>Streamlit</a> — free and open source.
