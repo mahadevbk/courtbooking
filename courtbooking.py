@@ -1,6 +1,6 @@
 import streamlit as st
 import sqlite3
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, date
 import pandas as pd
 
 # Database setup
@@ -21,7 +21,7 @@ start_hours = list(range(7, 22))  # 7 AM to 9 PM (start times)
 
 # Helper functions
 def get_today():
-    return datetime.today().date()
+    return date.today()
 
 def get_next_14_days():
     today = get_today()
@@ -35,9 +35,10 @@ def get_active_bookings_count(villa):
     today = get_today()
     today_str = today.strftime('%Y-%m-%d')
     now_hour = datetime.now().hour
+    # Count future dates fully + today's slots that haven't started yet (start_hour >= now_hour)
     c.execute("""
         SELECT COUNT(*) FROM bookings 
-        WHERE villa=? AND (date > ? OR (date=? AND start_hour > ?))
+        WHERE villa=? AND (date > ? OR (date = ? AND start_hour >= ?))
     """, (villa, today_str, today_str, now_hour))
     return c.fetchone()[0]
 
@@ -118,7 +119,7 @@ with tab1:
             return "background-color: #f8d7da; color: #721c24; font-weight: bold;"
 
     styled_df = df.style.map(color_cell)
-    st.dataframe(styled_df, width="stretch")  # Updated: replaced use_container_width=True
+    st.dataframe(styled_df, width="stretch")
 
 # === TAB 2: Book a Slot ===
 with tab2:
@@ -161,7 +162,7 @@ with tab3:
         active = []
         past = []
         for b in bookings:
-            if b[2] > today_str or (b[2] == today_str and b[3] > now_hour):
+            if b[2] > today_str or (b[2] == today_str and b[3] >= now_hour):
                 active.append(b)
             else:
                 past.append(b)
