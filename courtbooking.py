@@ -294,7 +294,6 @@ with tab5:
     else:
         st.write("No activity recorded.")
 
-st.markdown("<div style='background-color: #0d5384; padding: 1rem; border-left: 5px solid #fff500; border-radius: 0.5rem; color: white;'>Built with ❤️ using <a href='https://streamlit.io/' style='color: #ccff00;'>Streamlit</a></div>", unsafe_allow_html=True)
 
 # Footer
 st.markdown("""
