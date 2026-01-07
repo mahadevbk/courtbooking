@@ -192,7 +192,7 @@ if st.query_params.get("view") == "full":
 
 # --- MAIN APP ---
 st.title("🎾 Book that Court ...")
-st.markdown("###### An Un-Official & Community Driven Booking Solution.")
+st.markdown("####### An Un-Official & Community Driven Booking Solution.")
 
 if 'authenticated' not in st.session_state:
     st.session_state.authenticated = False
