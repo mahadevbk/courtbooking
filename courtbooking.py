@@ -145,6 +145,7 @@ with tab2:
             book_slot(villa, selected_court, selected_date, start_hour)
             st.success(f"✅ Successfully booked **{selected_court}** on **{selected_date}** at **{selected_time_label}**!")
             st.balloons()
+            st.rerun()  # Auto-refresh the app to show updated availability
 
 # === TAB 3: My Bookings ===
 with tab3:
@@ -193,4 +194,4 @@ with tab4:
         if confirm and st.button("Cancel Booking", type="primary"):
             delete_booking(booking_id, villa)
             st.success("Booking cancelled successfully!")
-            st.rerun()
+            st.rerun()  # Auto-refresh after cancellation
