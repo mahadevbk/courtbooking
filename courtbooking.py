@@ -7,15 +7,22 @@ import pandas as pd
 conn = sqlite3.connect('bookings.db', check_same_thread=False)
 c = conn.cursor()
 
-# Create table if not exists
+# Create tables
 c.execute('''CREATE TABLE IF NOT EXISTS bookings
              (id INTEGER PRIMARY KEY AUTOINCREMENT,
               villa TEXT,
               court TEXT,
               date TEXT,
-              start_hour INTEGER)''')
+              start_hour INTEGER,
+              sub_community TEXT)''')
 
-# Add sub_community column if missing
+c.execute('''CREATE TABLE IF NOT EXISTS logs
+             (id INTEGER PRIMARY KEY AUTOINCREMENT,
+              timestamp DATETIME,
+              event_type TEXT,
+              details TEXT)''')
+
+# Migration: Ensure sub_community column exists in bookings table
 c.execute("PRAGMA table_info(bookings)")
 columns = [col[1] for col in c.fetchall()]
 if 'sub_community' not in columns:
@@ -24,23 +31,30 @@ if 'sub_community' not in columns:
 
 conn.commit()
 
-# Sub-communities list
+# --- CONSTANTS ---
 sub_community_list = [
     "Mira 1", "Mira 2", "Mira 3", "Mira 4", "Mira 5",
     "Mira Oasis 1", "Mira Oasis 2", "Mira Oasis 3"
 ]
 
-# All courts
 courts = ["Mira 2", "Mira 4", "Mira 5A", "Mira 5B", "Mira Oasis 1", "Mira Oasis 2", "Mira Oasis 3A", "Mira Oasis 3B", "Mira Oasis 3C"]
 start_hours = list(range(7, 22))
 
-# Helper functions
+# --- HELPER FUNCTIONS ---
+
 def get_today():
     return date.today()
 
 def get_next_14_days():
     today = get_today()
     return [today + timedelta(days=i) for i in range(15)]
+
+def add_log(event_type, details):
+    """Records activity in the log table"""
+    timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+    c.execute("INSERT INTO logs (timestamp, event_type, details) VALUES (?, ?, ?)",
+              (timestamp, event_type, details))
+    conn.commit()
 
 def get_bookings_for_day_with_details(date_str):
     c.execute("SELECT court, start_hour, sub_community, villa FROM bookings WHERE date=?", (date_str,))
@@ -62,8 +76,7 @@ def color_cell(val):
         return "background-color: #f8d7da; color: #721c24; font-weight: bold;"
 
 def get_active_bookings_count(villa, sub_community):
-    today = get_today()
-    today_str = today.strftime('%Y-%m-%d')
+    today_str = get_today().strftime('%Y-%m-%d')
     now_hour = datetime.now().hour
     c.execute("""
         SELECT COUNT(*) FROM bookings 
@@ -79,18 +92,19 @@ def is_slot_booked(court, date_str, start_hour):
 def is_slot_in_past(date_str, start_hour):
     today_str = get_today().strftime('%Y-%m-%d')
     now = datetime.now()
-    current_hour = now.hour
-    current_minute = now.minute
     if date_str < today_str: return True
     if date_str > today_str: return False
-    if start_hour < current_hour: return True
-    if start_hour == current_hour and current_minute > 0: return True
+    if start_hour < now.hour: return True
+    if start_hour == now.hour and now.minute > 0: return True
     return False
 
 def book_slot(villa, sub_community, court, date_str, start_hour):
     c.execute("INSERT INTO bookings (villa, sub_community, court, date, start_hour) VALUES (?, ?, ?, ?, ?)",
               (villa, sub_community, court, date_str, start_hour))
     conn.commit()
+    # Log the creation event
+    log_detail = f"{sub_community} Villa {villa} booked {court} for {date_str} at {start_hour:02d}:00"
+    add_log("Booking Created", log_detail)
 
 def get_user_bookings(villa, sub_community):
     c.execute("SELECT id, court, date, start_hour FROM bookings WHERE villa=? AND sub_community=? ORDER BY date, start_hour", 
@@ -98,12 +112,24 @@ def get_user_bookings(villa, sub_community):
     return c.fetchall()
 
 def delete_booking(booking_id, villa, sub_community):
+    # Fetch details for the log before deletion
+    c.execute("SELECT court, date, start_hour FROM bookings WHERE id=?", (booking_id,))
+    b = c.fetchone()
+    if b:
+        log_detail = f"{sub_community} Villa {villa} cancelled {b[0]} for {b[1]} at {b[2]:02d}:00"
+        add_log("Booking Deleted", log_detail)
+    
     c.execute("DELETE FROM bookings WHERE id=? AND villa=? AND sub_community=?", (booking_id, villa, sub_community))
     conn.commit()
 
+def get_logs_last_14_days():
+    """Fetches logs with latest entry at the top"""
+    cutoff = (datetime.now() - timedelta(days=14)).strftime('%Y-%m-%d %H:%M:%S')
+    c.execute("SELECT timestamp, event_type, details FROM logs WHERE timestamp >= ? ORDER BY timestamp DESC", (cutoff,))
+    return c.fetchall()
+
 def get_villas_with_active_bookings():
-    today = get_today()
-    today_str = today.strftime('%Y-%m-%d')
+    today_str = get_today().strftime('%Y-%m-%d')
     now_hour = datetime.now().hour
     c.execute("""
         SELECT DISTINCT villa, sub_community FROM bookings 
@@ -114,8 +140,7 @@ def get_villas_with_active_bookings():
 
 def get_active_bookings_for_villa_display(villa_identifier):
     sub_comm, villa_num = villa_identifier.split(" - ")
-    today = get_today()
-    today_str = today.strftime('%Y-%m-%d')
+    today_str = get_today().strftime('%Y-%m-%d')
     now_hour = datetime.now().hour
     c.execute("""
         SELECT court, date, start_hour FROM bookings 
@@ -123,15 +148,9 @@ def get_active_bookings_for_villa_display(villa_identifier):
         ORDER BY date, start_hour
     """, (villa_num, sub_comm, today_str, today_str, now_hour))
     bookings = c.fetchall()
-    options = []
-    for court, bdate, hour in bookings:
-        dt = datetime.strptime(bdate, '%Y-%m-%d')
-        day_name = dt.strftime('%A')
-        time_str = f"{hour:02d}:00 - {hour+1:02d}:00"
-        options.append(f"{bdate} ({day_name}) | {time_str} | {court}")
-    return options
+    return [f"{b[1]} | {b[2]:02d}:00 | {b[0]}" for b in bookings]
 
-# Styling
+# --- UI STYLING ---
 st.markdown("""
 <link href="https://fonts.googleapis.com/css2?family=Audiowide&display=swap" rel="stylesheet">
 <style>
@@ -141,42 +160,38 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# === LOGIC FOR FULL FRAME PAGE ===
+# --- LOGIC FOR FULL FRAME PAGE ---
 if st.query_params.get("view") == "full":
-    st.title("📅 14-Day Full Court Schedule")
+    st.title("📅 Full 14-Day Schedule")
     if st.button("⬅️ Back to Booking App"):
         st.query_params.clear()
         st.rerun()
 
-    dates = get_next_14_days()
-    for d in dates:
+    for d in get_next_14_days():
         d_str = d.strftime('%Y-%m-%d')
         st.subheader(f"{d_str} ({d.strftime('%A')})")
         
         bookings_with_details = get_bookings_for_day_with_details(d_str)
-        time_labels = [f"{h:02d}:00 - {h+1:02d}:00" for h in start_hours]
-        
         data = {}
-        for h, label in zip(start_hours, time_labels):
+        for h in start_hours:
+            label = f"{h:02d}:00 - {h+1:02d}:00"
             row = []
             for court in courts:
                 key = (court, h)
                 if key in bookings_with_details:
                     full_comm, villa_num = bookings_with_details[key].rsplit(" - ", 1)
-                    row.append(f"{abbreviate_community(full_comm)}-{villa_num}")
+                    abbr = abbreviate_community(full_comm)
+                    row.append(f"{abbr}-{villa_num}")
                 else:
                     row.append("Available")
             data[label] = row
         
-        day_df = pd.DataFrame(data, index=courts)
-        st.dataframe(day_df.style.map(color_cell), width="stretch")
+        st.dataframe(pd.DataFrame(data, index=courts).style.map(color_cell), width="stretch")
         st.divider()
-    
     st.stop()
 
-# === MAIN BOOKING APP LOGIC ===
+# --- MAIN APP UI ---
 st.title("🎾 Book that Court ...")
-st.info("Unofficial and Community driven attempt to help with Court Bookings.")
 
 if 'authenticated' not in st.session_state:
     st.session_state.authenticated = False
@@ -197,20 +212,21 @@ if not st.session_state.authenticated:
             st.rerun()
     st.stop()
 
+# Dashboard info
 sub_community = st.session_state.sub_community
 villa = st.session_state.villa
 st.success(f"✅ Logged in as: **{sub_community} - Villa {villa}**")
 
-
-tab1, tab2, tab3, tab4 = st.tabs(["📅 View Availability", "➕ Book a Slot", "📋 My Bookings", "❌ Cancel Booking"])
+# Define Tabs
+tab1, tab2, tab3, tab4, tab5 = st.tabs(["📅 Availability", "➕ Book", "📋 My Bookings", "❌ Cancel", "📜 Activity Log"])
 
 with tab1:
     st.subheader("Court Availability")
-    dates = get_next_14_days()
-    date_options = [f"{d.strftime('%Y-%m-%d')} ({d.strftime('%A')})" for d in dates]
-    selected_date_str = st.selectbox("Select Date:", date_options)
-    selected_date = selected_date_str.split(" (")[0]
+    date_options = [f"{d.strftime('%Y-%m-%d')} ({d.strftime('%A')})" for d in get_next_14_days()]
+    selected_date_full = st.selectbox("Select Date:", date_options)
+    selected_date = selected_date_full.split(" (")[0]
 
+    # Build availability dataframe
     bookings_with_details = get_bookings_for_day_with_details(selected_date)
     data = {}
     for h in start_hours:
@@ -225,66 +241,73 @@ with tab1:
                 row.append("Available")
         data[label] = row
 
-    df = pd.DataFrame(data, index=courts)
-    st.dataframe(df.style.map(color_cell), width="stretch")
+    st.dataframe(pd.DataFrame(data, index=courts).style.map(color_cell), width="stretch")
 
-    # Link to Full Frame Page
+    # Link to Full Frame View
     st.link_button("🌐 View Full 14-Day Schedule (Full Page)", url="/?view=full", width="stretch")
-
-    st.markdown("---")
-    st.subheader("🔍 View Active Bookings :")
-    villas_with_active = get_villas_with_active_bookings()
-    if villas_with_active:
-        selected_villa = st.selectbox("Select a villa:", options=["-- Select --"] + villas_with_active)
-        if selected_villa != "-- Select --":
-            st.selectbox("Active bookings:", options=get_active_bookings_for_villa_display(selected_villa))
+    
+    st.divider()
+    st.subheader("🔍 Villa Lookup")
+    villas_active = get_villas_with_active_bookings()
+    if villas_active:
+        look_villa = st.selectbox("Select a villa:", options=["-- Select --"] + villas_active)
+        if look_villa != "-- Select --":
+            st.selectbox("Active bookings:", options=get_active_bookings_for_villa_display(look_villa))
 
 with tab2:
     st.subheader("Book a New Slot")
-    dates = get_next_14_days()
-    date_options = [d.strftime('%Y-%m-%d') for d in dates]
-    selected_date = st.selectbox("Date:", date_options)
-    selected_court = st.selectbox("Court:", courts)
-    selected_time_label = st.selectbox("Time Slot:", [f"{h:02d}:00 - {h+1:02d}:00" for h in start_hours])
-    start_hour = int(selected_time_label.split(":")[0])
-
+    date_choice = st.selectbox("Date:", [d.strftime('%Y-%m-%d') for d in get_next_14_days()])
+    court_choice = st.selectbox("Court:", courts)
+    time_choice = st.selectbox("Time Slot:", [f"{h:02d}:00 - {h+1:02d}:00" for h in start_hours])
+    start_h = int(time_choice.split(":")[0])
+    
     active_count = get_active_bookings_count(villa, sub_community)
     st.info(f"You have **{active_count} / 6** active bookings.")
 
     if st.button("Book This Slot", type="primary"):
-        if is_slot_in_past(selected_date, start_hour):
+        if is_slot_in_past(date_choice, start_h):
             st.error("⛔ This slot has passed.")
-        elif is_slot_booked(selected_court, selected_date, start_hour):
-            st.error("❌ Slot taken.")
+        elif is_slot_booked(court_choice, date_choice, start_h):
+            st.error("❌ Slot already taken.")
         elif active_count >= 6:
-            st.error("🚫 Limit reached.")
+            st.error("🚫 Booking limit reached.")
         else:
-            book_slot(villa, sub_community, selected_court, selected_date, start_hour)
-            st.success("✅ Booked!")
-            st.balloons()
+            book_slot(villa, sub_community, court_choice, date_choice, start_h)
+            st.success("✅ Slot booked successfully!")
             st.rerun()
 
 with tab3:
     st.subheader("My Bookings")
-    bookings = get_user_bookings(villa, sub_community)
-    if not bookings:
-        st.info("No bookings yet.")
+    my_bookings = get_user_bookings(villa, sub_community)
+    if not my_bookings:
+        st.info("No bookings found.")
     else:
-        for b in bookings:
+        for b in my_bookings:
             st.write(f"• **{b[1]}** – {b[2]} at {b[3]:02d}:00")
 
 with tab4:
     st.subheader("Cancel a Booking")
-    bookings = get_user_bookings(villa, sub_community)
-    if bookings:
-        options = [f"{b[1]} on {b[2]} at {b[3]:02d}:00 (ID: {b[0]})" for b in bookings]
-        choice = st.selectbox("Select to cancel:", options)
-        booking_id = int(choice.split("ID: ")[-1].strip(")"))
-        if st.checkbox("Confirm cancel") and st.button("Cancel Booking", type="primary"):
-            delete_booking(booking_id, villa, sub_community)
-            st.success("Cancelled!")
+    my_bookings = get_user_bookings(villa, sub_community)
+    if my_bookings:
+        options = [f"{b[1]} on {b[2]} at {b[3]:02d}:00 (ID: {b[0]})" for b in my_bookings]
+        choice = st.selectbox("Select booking to cancel:", options)
+        b_id = int(choice.split("ID: ")[-1].strip(")"))
+        if st.checkbox("Confirm cancellation") and st.button("Cancel Booking", type="primary"):
+            delete_booking(b_id, villa, sub_community)
+            st.success("Booking cancelled.")
             st.rerun()
 
+with tab5:
+    st.subheader("Community Activity Log (Last 14 Days)")
+    st.info("Newest entries are at the top.")
+    logs = get_logs_last_14_days()
+    if logs:
+        log_df = pd.DataFrame(logs, columns=["Timestamp", "Action", "Details"])
+        st.table(log_df)
+    else:
+        st.write("No activity logs found.")
+
+# Footer
 st.markdown("""
 <div style='background-color: #0d5384; padding: 1rem; border-left: 5px solid #fff500; border-radius: 0.5rem; color: white;'>
 Built with ❤️ using <a href='https://streamlit.io/' style='color: #ccff00;'>Streamlit</a>
