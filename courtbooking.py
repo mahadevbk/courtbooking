@@ -21,22 +21,17 @@ columns = [col[1] for col in c.fetchall()]
 if 'sub_community' not in columns:
     c.execute("ALTER TABLE bookings ADD COLUMN sub_community TEXT")
     conn.commit()
-    st.success("Database updated successfully! You can now use sub-communities.")
 
 conn.commit()
 
-# Sub-communities and their courts
-sub_communities = {
-    "Mira 1": [],
-    "Mira 2": ["Mira 2"],
-    "Mira 3": ["Mira Oasis 3A", "Mira Oasis 3B", "Mira Oasis 3C"],
-    "Mira 4": ["Mira 4"],
-    "Mira 5": ["Mira 5A", "Mira 5B"],
-    "Mira Oasis 1": ["Mira Oasis 1"],
-    "Mira Oasis 2": ["Mira Oasis 2"],
-    "Mira Oasis 3": ["Mira Oasis 3A", "Mira Oasis 3B", "Mira Oasis 3C"]
-}
+# Sub-communities (no court filtering - all have access to all courts)
+sub_community_list = [
+    "Mira 1", "Mira 2", "Mira 3", "Mira 4", "Mira 5",
+    "Mira Oasis 1", "Mira Oasis 2", "Mira Oasis 3"
+]
 
+# All courts available to everyone
+courts = ["Mira 2", "Mira 4", "Mira 5A", "Mira 5B", "Mira Oasis 1", "Mira Oasis 2", "Mira Oasis 3A", "Mira Oasis 3B", "Mira Oasis 3C"]
 start_hours = list(range(7, 22))  # 7 AM to 9 PM
 
 # Helper functions
@@ -107,7 +102,7 @@ col1, col2 = st.columns(2)
 with col1:
     sub_community = st.selectbox(
         "Select Your Sub-Community",
-        options=list(sub_communities.keys()),
+        options=sub_community_list,
         index=None,
         placeholder="Choose sub-community",
         key="sub_community_input"
@@ -127,27 +122,21 @@ if not sub_community or not villa:
     st.warning("⚠️ Please select your sub-community and enter your villa number to continue.")
     st.stop()
 
-# Get available courts
-available_courts = sub_communities.get(sub_community, [])
-if not available_courts:
-    st.info(f"No courts available in {sub_community}.")
-    st.stop()
-
 # Tabs
 tab1, tab2, tab3, tab4 = st.tabs(["📅 View Availability", "➕ Book a Slot", "📋 My Bookings", "❌ Cancel Booking"])
 
 # === TAB 1: View Availability ===
 with tab1:
-    st.subheader(f"{sub_community} Court Availability")
+    st.subheader("Court Availability")
     dates = get_next_14_days()
     selected_date = st.selectbox("Select Date:", [d.strftime('%Y-%m-%d') for d in dates], key="view_date_select")
 
     booked_slots = get_bookings_for_day(selected_date)
     time_labels = [f"{h:02d}:00 - {h+1:02d}:00" for h in start_hours]
 
-    data = {label: ["Available" if (court, h) not in booked_slots else "Booked" for court in available_courts]
+    data = {label: ["Available" if (court, h) not in booked_slots else "Booked" for court in courts]
             for h, label in zip(start_hours, time_labels)}
-    df = pd.DataFrame(data, index=available_courts)
+    df = pd.DataFrame(data, index=courts)
 
     def color_cell(val):
         if val == "Available":
@@ -165,12 +154,12 @@ with tab2:
     date_options = [d.strftime('%Y-%m-%d') for d in dates]
 
     selected_date = st.selectbox("Date:", date_options, key="book_date")
-    selected_court = st.selectbox("Court:", available_courts, key="book_court")
+    selected_court = st.selectbox("Court:", courts, key="book_court")
     selected_time_label = st.selectbox("Time Slot:", [f"{h:02d}:00 - {h+1:02d}:00" for h in start_hours], key="book_time")
     start_hour = int(selected_time_label.split(":")[0])
 
     active_count = get_active_bookings_count(villa, sub_community)
-    st.info(f"You have **{active_count} / 6** active bookings in {sub_community}.")
+    st.info(f"You have **{active_count} / 6** active bookings.")
 
     if st.button("Book This Slot", type="primary"):
         if is_slot_booked(selected_court, selected_date, start_hour):
@@ -189,7 +178,7 @@ with tab3:
     bookings = get_user_bookings(villa, sub_community)
     
     if not bookings:
-        st.info("No bookings yet in this sub-community.")
+        st.info("No bookings yet.")
     else:
         today_str = get_today().strftime('%Y-%m-%d')
         now_hour = datetime.now().hour
