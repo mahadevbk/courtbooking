@@ -175,7 +175,7 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-st.title("🎾 Grab that court !")
+st.title("🎾 Grab that court... ")
 
 
 
