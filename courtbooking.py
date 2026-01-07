@@ -142,7 +142,6 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # === LOGIC FOR FULL FRAME PAGE ===
-# If the URL contains ?view=full, show only the 14-day schedule
 if st.query_params.get("view") == "full":
     st.title("📅 14-Day Full Court Schedule")
     if st.button("⬅️ Back to Booking App"):
@@ -170,10 +169,10 @@ if st.query_params.get("view") == "full":
             data[label] = row
         
         day_df = pd.DataFrame(data, index=courts)
-        st.dataframe(day_df.style.map(color_cell), use_container_width=True)
+        st.dataframe(day_df.style.map(color_cell), width="stretch")
         st.divider()
     
-    st.stop() # Prevents the rest of the app from loading
+    st.stop()
 
 # === MAIN BOOKING APP LOGIC ===
 st.title("🎾 Book that Court ...")
@@ -197,7 +196,6 @@ if not st.session_state.authenticated:
             st.rerun()
     st.stop()
 
-# Dashboard
 sub_community = st.session_state.sub_community
 villa = st.session_state.villa
 st.success(f"✅ Logged in as: **{sub_community} - Villa {villa}**")
@@ -226,11 +224,10 @@ with tab1:
         data[label] = row
 
     df = pd.DataFrame(data, index=courts)
-    st.dataframe(df.style.map(color_cell), use_container_width=True)
+    st.dataframe(df.style.map(color_cell), width="stretch")
 
-    # --- ADDED LINK TO FULL FRAME PAGE ---
-    st.link_button("🌐 View Full 14-Day Schedule (Full Page)", url="/?view=full", use_container_width=True)
-    # -------------------------------------
+    # Link to Full Frame Page
+    st.link_button("🌐 View Full 14-Day Schedule (Full Page)", url="/?view=full", width="stretch")
 
     st.markdown("---")
     st.subheader("🔍 View Active Bookings :")
