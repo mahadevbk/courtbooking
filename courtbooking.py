@@ -43,8 +43,9 @@ start_hours = list(range(7, 22))
 # --- HELPER FUNCTIONS ---
 
 def get_utc_plus_4():
-    """Returns the current time in UTC+4"""
-    return datetime.utcnow() + timedelta(hours=4)
+    """Returns the current time in UTC+4 without deprecation warnings"""
+    # Modern way: Get current UTC time, then add 4 hours
+    return datetime.now(timezone.utc).replace(tzinfo=None) + timedelta(hours=4)
 
 def get_today():
     return get_utc_plus_4().date()
