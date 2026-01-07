@@ -55,6 +55,12 @@ def abbreviate_community(full_name):
         return f"M{num}"
     return full_name
 
+def color_cell(val):
+    if val == "Available":
+        return "background-color: #d4edda; color: #155724; font-weight: bold;"
+    else:
+        return "background-color: #f8d7da; color: #721c24; font-weight: bold;"
+
 def get_active_bookings_count(villa, sub_community):
     today = get_today()
     today_str = today.strftime('%Y-%m-%d')
@@ -71,22 +77,14 @@ def is_slot_booked(court, date_str, start_hour):
     return c.fetchone() is not None
 
 def is_slot_in_past(date_str, start_hour):
-    """Check if the selected slot is in the past or currently active (started but not finished)"""
     today_str = get_today().strftime('%Y-%m-%d')
     now = datetime.now()
     current_hour = now.hour
     current_minute = now.minute
-    
-    if date_str < today_str:
-        return True  # Future dates only allowed
-    if date_str > today_str:
-        return False  # Future dates are fine
-    
-    # Same day: check if slot has started
-    if start_hour < current_hour:
-        return True  # Already fully passed
-    if start_hour == current_hour and current_minute > 0:
-        return True  # Slot has already started (e.g., 18:15 trying to book 18:00)
+    if date_str < today_str: return True
+    if date_str > today_str: return False
+    if start_hour < current_hour: return True
+    if start_hour == current_hour and current_minute > 0: return True
     return False
 
 def book_slot(villa, sub_community, court, date_str, start_hour):
@@ -103,7 +101,6 @@ def delete_booking(booking_id, villa, sub_community):
     c.execute("DELETE FROM bookings WHERE id=? AND villa=? AND sub_community=?", (booking_id, villa, sub_community))
     conn.commit()
 
-# New: Get villas with active bookings
 def get_villas_with_active_bookings():
     today = get_today()
     today_str = today.strftime('%Y-%m-%d')
@@ -134,79 +131,63 @@ def get_active_bookings_for_villa_display(villa_identifier):
         options.append(f"{bdate} ({day_name}) | {time_str} | {court}")
     return options
 
-
-# Styling - Now using Audiowide
+# Styling
 st.markdown("""
 <link href="https://fonts.googleapis.com/css2?family=Audiowide&display=swap" rel="stylesheet">
 <style>
-    body {
-        font-family: system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Arial, sans-serif;
-        background-color: #f5f7fa;
-    }
-    h1, h2, h3, .stTitle {
-        font-family: 'Audiowide', cursive !important;
-        color: #2c3e50;
-        letter-spacing: 1px;
-    }
-    .stButton>button {
-        background-color: #4CAF50;
-        color: white;
-        border: none;
-        padding: 12px 24px;
-        border-radius: 8px;
-        font-size: 16px;
-        font-family: 'Audiowide', cursive;
-        letter-spacing: 1px;
-    }
-    .stButton>button:hover {
-        background-color: #45a049;
-    }
-    /* Make table headers and important text stand out */
-    .stDataFrame th {
-        font-family: 'Audiowide', cursive;
-        font-size: 12px;
-        background-color: #2c3e50 !important;
-        color: white !important;
-    }
-    /* Optional: Make booked/available text bolder */
-    .stDataFrame td {
-        font-weight: bold;
-    }
+    h1, h2, h3, .stTitle { font-family: 'Audiowide', cursive !important; color: #2c3e50; }
+    .stButton>button { background-color: #4CAF50; color: white; font-family: 'Audiowide', cursive; }
+    .stDataFrame th { font-family: 'Audiowide', cursive; font-size: 12px; background-color: #2c3e50 !important; color: white !important; }
 </style>
 """, unsafe_allow_html=True)
 
+# === LOGIC FOR FULL FRAME PAGE ===
+# If the URL contains ?view=full, show only the 14-day schedule
+if st.query_params.get("view") == "full":
+    st.title("📅 14-Day Full Court Schedule")
+    if st.button("⬅️ Back to Booking App"):
+        st.query_params.clear()
+        st.rerun()
 
+    dates = get_next_14_days()
+    for d in dates:
+        d_str = d.strftime('%Y-%m-%d')
+        st.subheader(f"{d_str} ({d.strftime('%A')})")
+        
+        bookings_with_details = get_bookings_for_day_with_details(d_str)
+        time_labels = [f"{h:02d}:00 - {h+1:02d}:00" for h in start_hours]
+        
+        data = {}
+        for h, label in zip(start_hours, time_labels):
+            row = []
+            for court in courts:
+                key = (court, h)
+                if key in bookings_with_details:
+                    full_comm, villa_num = bookings_with_details[key].rsplit(" - ", 1)
+                    row.append(f"{abbreviate_community(full_comm)}-{villa_num}")
+                else:
+                    row.append("Available")
+            data[label] = row
+        
+        day_df = pd.DataFrame(data, index=courts)
+        st.dataframe(day_df.style.map(color_cell), use_container_width=True)
+        st.divider()
+    
+    st.stop() # Prevents the rest of the app from loading
+
+# === MAIN BOOKING APP LOGIC ===
 st.title("🎾 Book that Court ...")
 
-# Session state initialization
-if 'sub_community' not in st.session_state:
-    st.session_state.sub_community = None
-if 'villa' not in st.session_state:
-    st.session_state.villa = ""
 if 'authenticated' not in st.session_state:
     st.session_state.authenticated = False
-if 'just_booked' not in st.session_state:
-    st.session_state.just_booked = False
 
-# === USER AUTHENTICATION PHASE ===
 if not st.session_state.authenticated:
     st.subheader("Please log in ")
-
     col1, col2 = st.columns(2)
     with col1:
-        sub_community_input = st.selectbox(
-            "Select Your Sub-Community",
-            options=sub_community_list,
-            index=None,
-            placeholder="Choose sub-community",
-            key="sub_community_input_temp"
-        )
+        sub_community_input = st.selectbox("Select Your Sub-Community", options=sub_community_list, index=None)
     with col2:
-        villa_input = st.text_input(
-            "Enter Villa Number",
-            placeholder="e.g. 123",
-            key="villa_input_temp"
-        ).strip().upper()
+        villa_input = st.text_input("Enter Villa Number").strip().upper()
 
     if st.button("Confirm Identity", type="primary"):
         if sub_community_input and villa_input:
@@ -214,170 +195,99 @@ if not st.session_state.authenticated:
             st.session_state.villa = villa_input
             st.session_state.authenticated = True
             st.rerun()
-        else:
-            st.error("Please select your sub-community and enter your villa number.")
-
-    st.info("ℹ️ Your identity will be locked for this session. Refresh the page to change it.")
     st.stop()
 
-# === AFTER AUTHENTICATION: SHOW LOCKED INFO ===
-st.success(f"✅ Logged in as: **{st.session_state.sub_community} - Villa {st.session_state.villa}**")
-st.caption("🔒 Your details are locked. Refresh the page to log in with different details.")
-
-# Extract values for use in the rest of the app
+# Dashboard
 sub_community = st.session_state.sub_community
 villa = st.session_state.villa
+st.success(f"✅ Logged in as: **{sub_community} - Villa {villa}**")
 
-# Optional: Add a manual "Log out" button if you want (resets on refresh anyway)
-if st.button("🔓 Change Sub-Community / Villa (Refresh Required)"):
-    st.warning("To change your details, please refresh the page.")
-
-
-
-
-
-# Tabs
 tab1, tab2, tab3, tab4 = st.tabs(["📅 View Availability", "➕ Book a Slot", "📋 My Bookings", "❌ Cancel Booking"])
 
-# === TAB 1: View Availability ===
 with tab1:
     st.subheader("Court Availability")
     dates = get_next_14_days()
-    
-    date_options = []
-    for d in dates:
-        day_name = d.strftime('%A')
-        date_options.append(f"{d.strftime('%Y-%m-%d')} ({day_name})")
-    
-    selected_date_str = st.selectbox("Select Date:", date_options, key="view_date_select")
+    date_options = [f"{d.strftime('%Y-%m-%d')} ({d.strftime('%A')})" for d in dates]
+    selected_date_str = st.selectbox("Select Date:", date_options)
     selected_date = selected_date_str.split(" (")[0]
 
     bookings_with_details = get_bookings_for_day_with_details(selected_date)
-    time_labels = [f"{h:02d}:00 - {h+1:02d}:00" for h in start_hours]
-
     data = {}
-    for h, label in zip(start_hours, time_labels):
+    for h in start_hours:
+        label = f"{h:02d}:00 - {h+1:02d}:00"
         row = []
         for court in courts:
             key = (court, h)
             if key in bookings_with_details:
                 full_comm, villa_num = bookings_with_details[key].rsplit(" - ", 1)
-                abbr = abbreviate_community(full_comm)
-                row.append(f"{abbr}-{villa_num}")
+                row.append(f"{abbreviate_community(full_comm)}-{villa_num}")
             else:
                 row.append("Available")
         data[label] = row
 
     df = pd.DataFrame(data, index=courts)
+    st.dataframe(df.style.map(color_cell), use_container_width=True)
 
-    def color_cell(val):
-        if val == "Available":
-            return "background-color: #d4edda; color: #155724; font-weight: bold;"
-        else:
-            return "background-color: #f8d7da; color: #721c24; font-weight: bold;"
-
-    styled_df = df.style.map(color_cell)
-    st.dataframe(styled_df, width="stretch")
+    # --- ADDED LINK TO FULL FRAME PAGE ---
+    st.link_button("🌐 View Full 14-Day Schedule (Full Page)", url="/?view=full", use_container_width=True)
+    # -------------------------------------
 
     st.markdown("---")
     st.subheader("🔍 View Active Bookings :")
-
     villas_with_active = get_villas_with_active_bookings()
     if villas_with_active:
-        selected_villa = st.selectbox(
-            "Select a villa to view their active bookings:",
-            options=["-- Select a villa --"] + villas_with_active,
-            key="villa_lookup"
-        )
-        if selected_villa != "-- Select a villa --":
-            booking_list = get_active_bookings_for_villa_display(selected_villa)
-            if booking_list:
-                st.selectbox("Active bookings:", options=booking_list, key="villa_booking_list")
-            else:
-                st.info("No active bookings found.")
-    else:
-        st.info("No active bookings in the community right now.")
+        selected_villa = st.selectbox("Select a villa:", options=["-- Select --"] + villas_with_active)
+        if selected_villa != "-- Select --":
+            st.selectbox("Active bookings:", options=get_active_bookings_for_villa_display(selected_villa))
 
-# === TAB 2: Book a Slot ===
 with tab2:
     st.subheader("Book a New Slot")
     dates = get_next_14_days()
     date_options = [d.strftime('%Y-%m-%d') for d in dates]
-
-    selected_date = st.selectbox("Date:", date_options, key="book_date")
-    selected_court = st.selectbox("Court:", courts, key="book_court")
-    selected_time_label = st.selectbox("Time Slot:", [f"{h:02d}:00 - {h+1:02d}:00" for h in start_hours], key="book_time")
+    selected_date = st.selectbox("Date:", date_options)
+    selected_court = st.selectbox("Court:", courts)
+    selected_time_label = st.selectbox("Time Slot:", [f"{h:02d}:00 - {h+1:02d}:00" for h in start_hours])
     start_hour = int(selected_time_label.split(":")[0])
 
     active_count = get_active_bookings_count(villa, sub_community)
     st.info(f"You have **{active_count} / 6** active bookings.")
 
     if st.button("Book This Slot", type="primary"):
-        # NEW: Prevent booking past or active slots
         if is_slot_in_past(selected_date, start_hour):
-            st.error("⛔ This slot has already started or passed. You cannot book it.")
+            st.error("⛔ This slot has passed.")
         elif is_slot_booked(selected_court, selected_date, start_hour):
-            st.error("❌ This slot was just taken by someone else.")
+            st.error("❌ Slot taken.")
         elif active_count >= 6:
-            st.error("🚫 You already have 6 active bookings. Cancel one first.")
+            st.error("🚫 Limit reached.")
         else:
             book_slot(villa, sub_community, selected_court, selected_date, start_hour)
-            st.success(f"✅ Booked **{selected_court}** on **{selected_date}** at **{selected_time_label}**!")
-            st.session_state.just_booked = True
+            st.success("✅ Booked!")
+            st.balloons()
             st.rerun()
 
-    if st.session_state.just_booked:
-        st.balloons()
-        st.session_state.just_booked = False
-
-# === TAB 3 & 4 unchanged ===
 with tab3:
     st.subheader("My Bookings")
     bookings = get_user_bookings(villa, sub_community)
-    
     if not bookings:
         st.info("No bookings yet.")
     else:
-        today_str = get_today().strftime('%Y-%m-%d')
-        now_hour = datetime.now().hour
-        
-        active = [b for b in bookings if b[2] > today_str or (b[2] == today_str and b[3] >= now_hour)]
-        past = [b for b in bookings if b not in active]
-        
-        if active:
-            st.write("**Active Bookings** (count toward limit):")
-            for b in active:
-                st.write(f"• **{b[1]}** – {b[2]} at {b[3]:02d}:00 - {b[3]+1:02d}:00")
-        
-        if past:
-            st.write("**Past Bookings**:")
-            for b in past:
-                st.write(f"• {b[1]} – {b[2]} at {b[3]:02d}:00 - {b[3]+1:02d}:00")
+        for b in bookings:
+            st.write(f"• **{b[1]}** – {b[2]} at {b[3]:02d}:00")
 
 with tab4:
     st.subheader("Cancel a Booking")
     bookings = get_user_bookings(villa, sub_community)
-    
-    if not bookings:
-        st.info("No bookings to cancel.")
-    else:
-        options = [f"{b[1]} on {b[2]} at {b[3]:02d}:00 - {b[3]+1:02d}:00 (ID: {b[0]})" for b in bookings]
-        choice = st.selectbox("Select booking to cancel:", options, key="cancel_select")
+    if bookings:
+        options = [f"{b[1]} on {b[2]} at {b[3]:02d}:00 (ID: {b[0]})" for b in bookings]
+        choice = st.selectbox("Select to cancel:", options)
         booking_id = int(choice.split("ID: ")[-1].strip(")"))
-        
-        st.warning("This will free up one active slot.")
-        confirm = st.checkbox("Yes, cancel this booking")
-        
-        if confirm and st.button("Cancel Booking", type="primary"):
+        if st.checkbox("Confirm cancel") and st.button("Cancel Booking", type="primary"):
             delete_booking(booking_id, villa, sub_community)
-            st.success("Booking cancelled!")
+            st.success("Cancelled!")
             st.rerun()
-
-
 
 st.markdown("""
 <div style='background-color: #0d5384; padding: 1rem; border-left: 5px solid #fff500; border-radius: 0.5rem; color: white;'>
-Built with ❤️ using <a href='https://streamlit.io/' style='color: #ccff00;'>Streamlit</a> — free and open source.
-<a href='https://devs-scripts.streamlit.app/' style='color: #ccff00;'>Other Scripts by dev</a> on Streamlit.
+Built with ❤️ using <a href='https://streamlit.io/' style='color: #ccff00;'>Streamlit</a>
 </div>
 """, unsafe_allow_html=True)
