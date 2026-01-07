@@ -15,7 +15,7 @@ c.execute('''CREATE TABLE IF NOT EXISTS bookings
               date TEXT,
               start_hour INTEGER)''')
 
-# Check if sub_community column exists, add it if not
+# Add sub_community column if missing
 c.execute("PRAGMA table_info(bookings)")
 columns = [col[1] for col in c.fetchall()]
 if 'sub_community' not in columns:
@@ -42,9 +42,18 @@ def get_next_14_days():
     today = get_today()
     return [today + timedelta(days=i) for i in range(15)]
 
-def get_bookings_for_day(date_str):
-    c.execute("SELECT court, start_hour FROM bookings WHERE date=?", (date_str,))
-    return set((row[0], row[1]) for row in c.fetchall())
+def get_bookings_for_day_with_details(date_str):
+    c.execute("SELECT court, start_hour, sub_community, villa FROM bookings WHERE date=?", (date_str,))
+    return {(row[0], row[1]): f"{row[2]} - {row[3]}" for row in c.fetchall()}
+
+def abbreviate_community(full_name):
+    if full_name.startswith("Mira Oasis"):
+        num = full_name.split()[-1]
+        return f"MO{num}"
+    elif full_name.startswith("Mira"):
+        num = full_name.split()[-1]
+        return f"M{num}"
+    return full_name
 
 def get_active_bookings_count(villa, sub_community):
     today = get_today()
@@ -91,7 +100,7 @@ st.markdown("""
 
 st.title("🎾 Community Tennis Courts Booking System")
 
-# Session state initialization
+# Session state
 if 'sub_community' not in st.session_state:
     st.session_state.sub_community = None
 if 'villa' not in st.session_state:
@@ -133,11 +142,22 @@ with tab1:
     dates = get_next_14_days()
     selected_date = st.selectbox("Select Date:", [d.strftime('%Y-%m-%d') for d in dates], key="view_date_select")
 
-    booked_slots = get_bookings_for_day(selected_date)
+    bookings_with_details = get_bookings_for_day_with_details(selected_date)
     time_labels = [f"{h:02d}:00 - {h+1:02d}:00" for h in start_hours]
 
-    data = {label: ["Available" if (court, h) not in booked_slots else "Booked" for court in courts]
-            for h, label in zip(start_hours, time_labels)}
+    data = {}
+    for h, label in zip(start_hours, time_labels):
+        row = []
+        for court in courts:
+            key = (court, h)
+            if key in bookings_with_details:
+                full_comm, villa_num = bookings_with_details[key].rsplit(" - ", 1)
+                abbr = abbreviate_community(full_comm)
+                row.append(f"{abbr}-{villa_num}")
+            else:
+                row.append("Available")
+        data[label] = row
+
     df = pd.DataFrame(data, index=courts)
 
     def color_cell(val):
@@ -174,7 +194,6 @@ with tab2:
             st.session_state.just_booked = True
             st.rerun()
 
-    # Show balloons if we just booked (appears after rerun)
     if st.session_state.just_booked:
         st.balloons()
         st.session_state.just_booked = False
