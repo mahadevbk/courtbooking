@@ -192,6 +192,7 @@ if st.query_params.get("view") == "full":
 
 # --- MAIN APP UI ---
 st.title("🎾 Book that Court ...")
+st.info("An official and Community driven Booking solution.")
 
 if 'authenticated' not in st.session_state:
     st.session_state.authenticated = False
