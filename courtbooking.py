@@ -22,7 +22,7 @@ c.execute('''CREATE TABLE IF NOT EXISTS logs
               event_type TEXT,
               details TEXT)''')
 
-# Migration: Ensure sub_community column exists in bookings table
+# Migration: Ensure sub_community exists in bookings
 c.execute("PRAGMA table_info(bookings)")
 columns = [col[1] for col in c.fetchall()]
 if 'sub_community' not in columns:
@@ -31,7 +31,7 @@ if 'sub_community' not in columns:
 
 conn.commit()
 
-# --- CONSTANTS ---
+# Constants
 sub_community_list = [
     "Mira 1", "Mira 2", "Mira 3", "Mira 4", "Mira 5",
     "Mira Oasis 1", "Mira Oasis 2", "Mira Oasis 3"
@@ -42,16 +42,20 @@ start_hours = list(range(7, 22))
 
 # --- HELPER FUNCTIONS ---
 
+def get_utc_plus_4():
+    """Returns the current time in UTC+4"""
+    return datetime.utcnow() + timedelta(hours=4)
+
 def get_today():
-    return date.today()
+    return get_utc_plus_4().date()
 
 def get_next_14_days():
     today = get_today()
     return [today + timedelta(days=i) for i in range(15)]
 
 def add_log(event_type, details):
-    """Records activity in the log table"""
-    timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+    """Records activity in the log table with UTC+4 timestamp"""
+    timestamp = get_utc_plus_4().strftime('%Y-%m-%d %H:%M:%S')
     c.execute("INSERT INTO logs (timestamp, event_type, details) VALUES (?, ?, ?)",
               (timestamp, event_type, details))
     conn.commit()
@@ -77,7 +81,7 @@ def color_cell(val):
 
 def get_active_bookings_count(villa, sub_community):
     today_str = get_today().strftime('%Y-%m-%d')
-    now_hour = datetime.now().hour
+    now_hour = get_utc_plus_4().hour
     c.execute("""
         SELECT COUNT(*) FROM bookings 
         WHERE villa=? AND sub_community=? AND (date > ? OR (date = ? AND start_hour >= ?))
@@ -90,8 +94,8 @@ def is_slot_booked(court, date_str, start_hour):
     return c.fetchone() is not None
 
 def is_slot_in_past(date_str, start_hour):
-    today_str = get_today().strftime('%Y-%m-%d')
-    now = datetime.now()
+    now = get_utc_plus_4()
+    today_str = now.strftime('%Y-%m-%d')
     if date_str < today_str: return True
     if date_str > today_str: return False
     if start_hour < now.hour: return True
@@ -102,7 +106,6 @@ def book_slot(villa, sub_community, court, date_str, start_hour):
     c.execute("INSERT INTO bookings (villa, sub_community, court, date, start_hour) VALUES (?, ?, ?, ?, ?)",
               (villa, sub_community, court, date_str, start_hour))
     conn.commit()
-    # Log the creation event
     log_detail = f"{sub_community} Villa {villa} booked {court} for {date_str} at {start_hour:02d}:00"
     add_log("Booking Created", log_detail)
 
@@ -112,7 +115,6 @@ def get_user_bookings(villa, sub_community):
     return c.fetchall()
 
 def delete_booking(booking_id, villa, sub_community):
-    # Fetch details for the log before deletion
     c.execute("SELECT court, date, start_hour FROM bookings WHERE id=?", (booking_id,))
     b = c.fetchone()
     if b:
@@ -123,14 +125,14 @@ def delete_booking(booking_id, villa, sub_community):
     conn.commit()
 
 def get_logs_last_14_days():
-    """Fetches logs with latest entry at the top"""
-    cutoff = (datetime.now() - timedelta(days=14)).strftime('%Y-%m-%d %H:%M:%S')
+    """Fetches logs with latest entry at the top, using UTC+4 for cutoff calculation"""
+    cutoff = (get_utc_plus_4() - timedelta(days=14)).strftime('%Y-%m-%d %H:%M:%S')
     c.execute("SELECT timestamp, event_type, details FROM logs WHERE timestamp >= ? ORDER BY timestamp DESC", (cutoff,))
     return c.fetchall()
 
 def get_villas_with_active_bookings():
     today_str = get_today().strftime('%Y-%m-%d')
-    now_hour = datetime.now().hour
+    now_hour = get_utc_plus_4().hour
     c.execute("""
         SELECT DISTINCT villa, sub_community FROM bookings 
         WHERE date > ? OR (date = ? AND start_hour >= ?)
@@ -141,7 +143,7 @@ def get_villas_with_active_bookings():
 def get_active_bookings_for_villa_display(villa_identifier):
     sub_comm, villa_num = villa_identifier.split(" - ")
     today_str = get_today().strftime('%Y-%m-%d')
-    now_hour = datetime.now().hour
+    now_hour = get_utc_plus_4().hour
     c.execute("""
         SELECT court, date, start_hour FROM bookings 
         WHERE villa=? AND sub_community=? AND (date > ? OR (date = ? AND start_hour >= ?))
@@ -170,7 +172,6 @@ if st.query_params.get("view") == "full":
     for d in get_next_14_days():
         d_str = d.strftime('%Y-%m-%d')
         st.subheader(f"{d_str} ({d.strftime('%A')})")
-        
         bookings_with_details = get_bookings_for_day_with_details(d_str)
         data = {}
         for h in start_hours:
@@ -185,14 +186,12 @@ if st.query_params.get("view") == "full":
                 else:
                     row.append("Available")
             data[label] = row
-        
         st.dataframe(pd.DataFrame(data, index=courts).style.map(color_cell), width="stretch")
         st.divider()
     st.stop()
 
-# --- MAIN APP UI ---
+# --- MAIN APP ---
 st.title("🎾 Book that Court ...")
-st.caption("An Un-official and Community driven Booking solution.")
 
 if 'authenticated' not in st.session_state:
     st.session_state.authenticated = False
@@ -207,18 +206,14 @@ if not st.session_state.authenticated:
 
     if st.button("Confirm Identity", type="primary"):
         if sub_community_input and villa_input:
-            st.session_state.sub_community = sub_community_input
-            st.session_state.villa = villa_input
+            st.session_state.sub_community, st.session_state.villa = sub_community_input, villa_input
             st.session_state.authenticated = True
             st.rerun()
     st.stop()
 
-# Dashboard info
-sub_community = st.session_state.sub_community
-villa = st.session_state.villa
+sub_community, villa = st.session_state.sub_community, st.session_state.villa
 st.success(f"✅ Logged in as: **{sub_community} - Villa {villa}**")
 
-# Define Tabs
 tab1, tab2, tab3, tab4, tab5 = st.tabs(["📅 Availability", "➕ Book", "📋 My Bookings", "❌ Cancel", "📜 Activity Log"])
 
 with tab1:
@@ -227,7 +222,6 @@ with tab1:
     selected_date_full = st.selectbox("Select Date:", date_options)
     selected_date = selected_date_full.split(" (")[0]
 
-    # Build availability dataframe
     bookings_with_details = get_bookings_for_day_with_details(selected_date)
     data = {}
     for h in start_hours:
@@ -243,70 +237,64 @@ with tab1:
         data[label] = row
 
     st.dataframe(pd.DataFrame(data, index=courts).style.map(color_cell), width="stretch")
-
-    # Link to Full Frame View
     st.link_button("🌐 View Full 14-Day Schedule (Full Page)", url="/?view=full", width="stretch")
     
     st.divider()
-    st.subheader("🔍 Booking Lookup")
+    st.subheader("🔍 Villa Lookup")
     villas_active = get_villas_with_active_bookings()
     if villas_active:
-        look_villa = st.selectbox("Select a villa:", options=["-- Select --"] + villas_active)
+        look_villa = st.selectbox("Select Villa:", options=["-- Select --"] + villas_active)
         if look_villa != "-- Select --":
             st.selectbox("Active bookings:", options=get_active_bookings_for_villa_display(look_villa))
 
 with tab2:
-    st.subheader("Book a New Slot")
+    st.subheader("Book a Slot")
     date_choice = st.selectbox("Date:", [d.strftime('%Y-%m-%d') for d in get_next_14_days()])
     court_choice = st.selectbox("Court:", courts)
     time_choice = st.selectbox("Time Slot:", [f"{h:02d}:00 - {h+1:02d}:00" for h in start_hours])
     start_h = int(time_choice.split(":")[0])
     
     active_count = get_active_bookings_count(villa, sub_community)
-    st.info(f"You have **{active_count} / 6** active bookings.")
+    st.info(f"Active bookings: {active_count} / 6")
 
     if st.button("Book This Slot", type="primary"):
-        if is_slot_in_past(date_choice, start_h):
-            st.error("⛔ This slot has passed.")
-        elif is_slot_booked(court_choice, date_choice, start_h):
-            st.error("❌ Slot already taken.")
-        elif active_count >= 6:
-            st.error("🚫 Booking limit reached.")
+        if is_slot_in_past(date_choice, start_h): st.error("⛔ Slot passed.")
+        elif is_slot_booked(court_choice, date_choice, start_h): st.error("❌ Slot taken.")
+        elif active_count >= 6: st.error("🚫 Limit reached.")
         else:
             book_slot(villa, sub_community, court_choice, date_choice, start_h)
-            st.success("✅ Slot booked successfully!")
+            st.success("✅ Booked!")
             st.rerun()
 
 with tab3:
     st.subheader("My Bookings")
-    my_bookings = get_user_bookings(villa, sub_community)
-    if not my_bookings:
-        st.info("No bookings found.")
+    my_b = get_user_bookings(villa, sub_community)
+    if not my_b: st.info("No bookings.")
     else:
-        for b in my_bookings:
-            st.write(f"• **{b[1]}** – {b[2]} at {b[3]:02d}:00")
+        for b in my_b: st.write(f"• **{b[1]}** – {b[2]} at {b[3]:02d}:00")
 
 with tab4:
-    st.subheader("Cancel a Booking")
-    my_bookings = get_user_bookings(villa, sub_community)
-    if my_bookings:
-        options = [f"{b[1]} on {b[2]} at {b[3]:02d}:00 (ID: {b[0]})" for b in my_bookings]
-        choice = st.selectbox("Select booking to cancel:", options)
+    st.subheader("Cancel Booking")
+    my_b = get_user_bookings(villa, sub_community)
+    if my_b:
+        choice = st.selectbox("Select:", [f"{b[1]} on {b[2]} at {b[3]:02d}:00 (ID: {b[0]})" for b in my_b])
         b_id = int(choice.split("ID: ")[-1].strip(")"))
-        if st.checkbox("Confirm cancellation") and st.button("Cancel Booking", type="primary"):
+        if st.checkbox("Confirm cancel") and st.button("Cancel Booking", type="primary"):
             delete_booking(b_id, villa, sub_community)
-            st.success("Booking cancelled.")
+            st.success("Cancelled!")
             st.rerun()
 
 with tab5:
     st.subheader("Community Activity Log (Last 14 Days)")
-    st.info("Newest entries are at the top.")
+    st.caption("Timezone: UTC+4")
     logs = get_logs_last_14_days()
     if logs:
         log_df = pd.DataFrame(logs, columns=["Timestamp", "Action", "Details"])
         st.table(log_df)
     else:
-        st.write("No activity logs found.")
+        st.write("No activity recorded.")
+
+st.markdown("<div style='background-color: #0d5384; padding: 1rem; border-left: 5px solid #fff500; border-radius: 0.5rem; color: white;'>Built with ❤️ using <a href='https://streamlit.io/' style='color: #ccff00;'>Streamlit</a></div>", unsafe_allow_html=True)
 
 # Footer
 st.markdown("""
