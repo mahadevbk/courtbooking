@@ -134,21 +134,50 @@ def get_active_bookings_for_villa_display(villa_identifier):
         options.append(f"{bdate} ({day_name}) | {time_str} | {court}")
     return options
 
-# Styling
+
+# Styling - Now using Audiowide
 st.markdown("""
-<link href="https://fonts.googleapis.com/css2?family=Roboto:wght@300;400;700&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Audiowide&display=swap" rel="stylesheet">
 <style>
-    body {font-family: 'Roboto', sans-serif; background-color: #f5f7fa;}
-    .stButton>button {
-        background-color: #4CAF50; color: white; border: none; 
-        padding: 12px 24px; border-radius: 8px; font-size: 16px;
+    body {
+        font-family: system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Arial, sans-serif;
+        background-color: #f5f7fa;
     }
-    .stButton>button:hover {background-color: #45a049;}
-    h1, h2, h3 {color: #2c3e50;}
+    h1, h2, h3, .stTitle {
+        font-family: 'Audiowide', cursive !important;
+        color: #2c3e50;
+        letter-spacing: 1px;
+    }
+    .stButton>button {
+        background-color: #4CAF50;
+        color: white;
+        border: none;
+        padding: 12px 24px;
+        border-radius: 8px;
+        font-size: 16px;
+        font-family: 'Audiowide', cursive;
+        letter-spacing: 1px;
+    }
+    .stButton>button:hover {
+        background-color: #45a049;
+    }
+    /* Make table headers and important text stand out */
+    .stDataFrame th {
+        font-family: 'Audiowide', cursive;
+        font-size: 14px;
+        background-color: #2c3e50 !important;
+        color: white !important;
+    }
+    /* Optional: Make booked/available text bolder */
+    .stDataFrame td {
+        font-weight: bold;
+    }
 </style>
 """, unsafe_allow_html=True)
 
-st.title("🎾 Community Tennis Courts Booking System")
+st.title("🎾 Grab that court !")
+
+
 
 # Session state
 if 'sub_community' not in st.session_state:
