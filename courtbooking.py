@@ -110,7 +110,7 @@ with tab1:
                        for court in courts]
     df = pd.DataFrame(data, index=courts)
 
-    # Proper styling function (returns string per cell)
+    # Proper styling function
     def color_cell(val):
         if val == "Available":
             return "background-color: #d4edda; color: #155724; font-weight: bold;"
@@ -118,7 +118,7 @@ with tab1:
             return "background-color: #f8d7da; color: #721c24; font-weight: bold;"
 
     styled_df = df.style.map(color_cell)
-    st.dataframe(styled_df, use_container_width=True)
+    st.dataframe(styled_df, width="stretch")  # Updated: replaced use_container_width=True
 
 # === TAB 2: Book a Slot ===
 with tab2:
@@ -145,7 +145,7 @@ with tab2:
             book_slot(villa, selected_court, selected_date, start_hour)
             st.success(f"✅ Successfully booked **{selected_court}** on **{selected_date}** at **{selected_time_label}**!")
             st.balloons()
-            st.rerun()  # Auto-refresh the app to show updated availability
+            st.rerun()
 
 # === TAB 3: My Bookings ===
 with tab3:
@@ -194,4 +194,4 @@ with tab4:
         if confirm and st.button("Cancel Booking", type="primary"):
             delete_booking(booking_id, villa)
             st.success("Booking cancelled successfully!")
-            st.rerun()  # Auto-refresh after cancellation
+            st.rerun()
