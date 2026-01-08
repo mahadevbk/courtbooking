@@ -164,7 +164,7 @@ st.markdown("""
 }
 
 [data-testid="stHeader"] {
-  background: linear-gradient(to top, #052134 , #010f1a) !important;
+  background: linear-gradient(to bottom, #052134 , #010f1a) !important;
 }
     h1, h2, h3, .stTitle { font-family: 'Audiowide', cursive !important; color: #2c3e50; }
     .stButton>button { background-color: #4CAF50; color: white; font-family: 'Audiowide', cursive; }
