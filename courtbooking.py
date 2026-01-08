@@ -307,6 +307,45 @@ with tab5:
         st.write("No activity recorded.")
 
 
+# --- BACKUP SECTION ---
+st.divider()
+st.subheader("💾 Data Backup")
+col_db1, col_db2 = st.columns(2)
+
+# Function to convert dataframe to CSV
+@st.cache_data
+def convert_df(df):
+    return df.to_csv(index=False).encode('utf-8')
+
+with col_db1:
+    # Fetch and download Bookings
+    all_bookings_resp = supabase.table("bookings").select("*").execute()
+    if all_bookings_resp.data:
+        bookings_df = pd.DataFrame(all_bookings_resp.data)
+        st.download_button(
+            label="📥 Download Bookings CSV",
+            data=convert_df(bookings_df),
+            file_name=f"bookings_backup_{get_today()}.csv",
+            mime="text/csv",
+        )
+
+with col_db2:
+    # Fetch and download Logs
+    all_logs_resp = supabase.table("logs").select("*").execute()
+    if all_logs_resp.data:
+        logs_df = pd.DataFrame(all_logs_resp.data)
+        st.download_button(
+            label="📥 Download Activity Logs CSV",
+            data=convert_df(logs_df),
+            file_name=f"logs_backup_{get_today()}.csv",
+            mime="text/csv",
+        )
+
+
+
+
+
+
 # Footer
 st.markdown("""
 <div style='background-color: #0d5384; padding: 1rem; border-left: 5px solid #fff500; border-radius: 0.5rem; color: white;'>
