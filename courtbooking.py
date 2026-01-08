@@ -306,26 +306,41 @@ with tab4:
             st.success("Cancelled!")
             st.rerun()
 
+
 with tab5:
-    #st.subheader("Community Activity Log (Last 14 Days)")
-    #st.caption("Timezone: UTC+4")
-    #logs = get_logs_last_14_days()
-    #if logs:
-    #    log_df = pd.DataFrame(logs, columns=["timestamp", "event_type", "details"])
-    #    st.table(log_df)
-    #else:
-    #    st.write("No activity recorded.")
-   
     st.subheader("Community Activity Log (Last 14 Days)")
     st.caption("Timezone: UTC+4")
+    
     logs = get_logs_last_14_days()
     
     if logs:
+        # 1. Create the DataFrame
         log_df = pd.DataFrame(logs, columns=["timestamp", "event_type", "details"])
-        # This hides the 0, 1, 2... column
-        st.table(log_df.style.hide(axis='index'))
+
+        # 2. Format the timestamp for better readability
+        # Converts "2026-01-08T17:34:33..." to "Jan 08, 17:34"
+        log_df['timestamp'] = pd.to_datetime(log_df['timestamp']).dt.strftime('%b %d, %H:%M')
+
+        # 3. Define a function to color the event types
+        def color_events(val):
+            if val == "Booking Created":
+                return 'background-color: #d4edda; color: #155724;' # Light green
+            elif val == "Booking Cancelled":
+                return 'background-color: #f8d7da; color: #721c24;' # Light red
+            return ''
+
+        # 4. Apply styling and display
+        # We use st.dataframe because it supports 'hide_index'
+        styled_df = log_df.style.applymap(color_events, subset=['event_type'])
+        
+        st.dataframe(
+            styled_df, 
+            hide_index=True, 
+            use_container_width=True
+        )
+        
     else:
-        st.write("No activity recorded.")
+        st.info("No activity recorded in the last 14 days.")
 
 
 
