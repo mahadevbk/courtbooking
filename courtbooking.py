@@ -242,7 +242,7 @@ with tab1:
     st.link_button("🌐 View Full 14-Day Schedule (Full Page)", url="/?view=full", width="stretch")
     
     st.divider()
-    st.subheader("🔍 Villa Lookup")
+    st.subheader("🔍 Booking Lookup")
     villas_active = get_villas_with_active_bookings()
     if villas_active:
         look_villa = st.selectbox("Select Villa:", options=["-- Select --"] + villas_active)
