@@ -318,20 +318,20 @@ with tab5:
         log_df = pd.DataFrame(logs, columns=["timestamp", "event_type", "details"])
 
         # 2. Format the timestamp for better readability
-        # Converts "2026-01-08T17:34:33..." to "Jan 08, 17:34"
         log_df['timestamp'] = pd.to_datetime(log_df['timestamp']).dt.strftime('%b %d, %H:%M')
 
-        # 3. Define a function to color the event types
-        def color_events(val):
-            if val == "Booking Created":
-                return 'background-color: #d4edda; color: #155724;' # Light green
-            elif val == "Booking Cancelled":
-                return 'background-color: #f8d7da; color: #721c24;' # Light red
-            return ''
+        # 3. Define the coloring logic
+        def style_rows(row):
+            styles = [''] * len(row)
+            if row.event_type == "Booking Created":
+                styles[1] = 'background-color: #d4edda; color: #155724; font-weight: bold;' # Green
+            elif row.event_type in ["Booking Deleted", "Booking Cancelled"]:
+                styles[1] = 'background-color: #f8d7da; color: #721c24; font-weight: bold;' # Red
+            return styles
 
         # 4. Apply styling and display
-        # We use st.dataframe because it supports 'hide_index'
-        styled_df = log_df.style.applymap(color_events, subset=['event_type'])
+        # We use 'axis=1' to look at the row data for our condition
+        styled_df = log_df.style.apply(style_rows, axis=1)
         
         st.dataframe(
             styled_df, 
