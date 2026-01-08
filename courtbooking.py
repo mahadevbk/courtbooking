@@ -7,7 +7,6 @@ import zipfile
 import io
 
 # --- DATABASE SETUP (SUPABASE) ---
-# Ensure these are set in your Streamlit Cloud Secrets
 url: str = st.secrets["SUPABASE_URL"]
 key: str = st.secrets["SUPABASE_KEY"]
 supabase: Client = create_client(url, key)
@@ -24,7 +23,6 @@ start_hours = list(range(7, 22))
 # --- HELPER FUNCTIONS ---
 
 def get_utc_plus_4():
-    """Returns the current time in UTC+4"""
     return datetime.now(timezone.utc).replace(tzinfo=None) + timedelta(hours=4)
 
 def get_today():
@@ -35,7 +33,6 @@ def get_next_14_days():
     return [today + timedelta(days=i) for i in range(15)]
 
 def add_log(event_type, details):
-    """Records activity in the Supabase logs table"""
     timestamp = get_utc_plus_4().isoformat()
     supabase.table("logs").insert({
         "timestamp": timestamp,
@@ -44,7 +41,6 @@ def add_log(event_type, details):
     }).execute()
 
 def get_bookings_for_day_with_details(date_str):
-    """Fetches all bookings for a specific date from Supabase"""
     response = supabase.table("bookings").select("court, start_hour, sub_community, villa").eq("date", date_str).execute()
     return {(row['court'], row['start_hour']): f"{row['sub_community']} - {row['villa']}" for row in response.data}
 
@@ -64,11 +60,8 @@ def color_cell(val):
         return "background-color: #f8d7da; color: #721c24; font-weight: bold;"
 
 def get_active_bookings_count(villa, sub_community):
-    """Counts active bookings for a user in Supabase"""
     today_str = get_today().strftime('%Y-%m-%d')
     now_hour = get_utc_plus_4().hour
-    
-    # Complex filter for date > today OR (date == today AND hour >= now)
     response = supabase.table("bookings").select("id", count="exact")\
         .eq("villa", villa)\
         .eq("sub_community", sub_community)\
@@ -114,7 +107,6 @@ def get_user_bookings(villa, sub_community):
     return response.data
 
 def delete_booking(booking_id, villa, sub_community):
-    # Fetch details for logging first
     record = supabase.table("bookings").select("court, date, start_hour").eq("id", booking_id).single().execute()
     if record.data:
         b = record.data
@@ -162,13 +154,10 @@ st.markdown("""
   background: linear-gradient(to bottom, #010f1a, #052134);
   background-attachment: scroll;
 }
-
-[data-testid="stHeader"] {
-  background: linear-gradient(to bottom, #052134 , #010f1a) !important;
-}
-    h1, h2, h3, .stTitle { font-family: 'Audiowide', cursive !important; color: #2c3e50; }
-    .stButton>button { background-color: #4CAF50; color: white; font-family: 'Audiowide', cursive; }
-    .stDataFrame th { font-family: 'Audiowide', cursive; font-size: 12px; background-color: #2c3e50 !important; color: white !important; }
+[data-testid="stHeader"] { background: linear-gradient(to bottom, #052134 , #010f1a) !important; }
+h1, h2, h3, .stTitle { font-family: 'Audiowide', cursive !important; color: #2c3e50; }
+.stButton>button { background-color: #4CAF50; color: white; font-family: 'Audiowide', cursive; }
+.stDataFrame th { font-family: 'Audiowide', cursive; font-size: 12px; background-color: #2c3e50 !important; color: white !important; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -196,6 +185,7 @@ if st.query_params.get("view") == "full":
                 else:
                     row.append("Available")
             data[label] = row
+        # Updated width to 'stretch'
         st.dataframe(pd.DataFrame(data, index=courts).style.map(color_cell), width="stretch")
         st.divider()
     st.stop()
@@ -203,7 +193,6 @@ if st.query_params.get("view") == "full":
 # --- MAIN APP ---
 st.title("🎾 Book that Court ...")
 st.caption("An Un-Official & Community Driven Booking Solution.")
-#st.info(" REMOVE HASH, TYPE TEXT HERE FOR BROADCAST MESSAGE ")
 
 if 'authenticated' not in st.session_state:
     st.session_state.authenticated = False
@@ -248,8 +237,9 @@ with tab1:
                 row.append("Available")
         data[label] = row
 
+    # Updated width to 'stretch'
     st.dataframe(pd.DataFrame(data, index=courts).style.map(color_cell), width="stretch")
-    st.link_button("🌐 View Full 14-Day Schedule (Full Page)", url="/?view=full", width="stretch")
+    st.link_button("🌐 View Full 14-Day Schedule (Full Page)", url="/?view=full")
     
     st.divider()
     st.subheader("🔍 Booking Lookup")
@@ -262,7 +252,6 @@ with tab1:
                 st.selectbox("Active bookings:", options=active_list)
             else:
                 st.write("No active bookings found for this villa.")
-
 
 with tab2:
     st.subheader("Book a New Slot")
@@ -306,7 +295,6 @@ with tab4:
             st.success("Cancelled!")
             st.rerun()
 
-
 with tab5:
     st.subheader("Community Activity Log (Last 14 Days)")
     st.caption("Timezone: UTC+4")
@@ -314,59 +302,44 @@ with tab5:
     logs = get_logs_last_14_days()
     
     if logs:
-        # 1. Create the DataFrame
         log_df = pd.DataFrame(logs, columns=["timestamp", "event_type", "details"])
-
-        # 2. Format the timestamp for better readability
         log_df['timestamp'] = pd.to_datetime(log_df['timestamp']).dt.strftime('%b %d, %H:%M')
 
-        # 3. Define the coloring logic
+        # Coloring logic for Red/Green
         def style_rows(row):
             styles = [''] * len(row)
             if row.event_type == "Booking Created":
-                styles[1] = 'background-color: #d4edda; color: #155724; font-weight: bold;' # Green
+                styles[1] = 'background-color: #d4edda; color: #155724; font-weight: bold;'
             elif row.event_type in ["Booking Deleted", "Booking Cancelled"]:
-                styles[1] = 'background-color: #f8d7da; color: #721c24; font-weight: bold;' # Red
+                styles[1] = 'background-color: #f8d7da; color: #721c24; font-weight: bold;'
             return styles
 
-        # 4. Apply styling and display
-        # We use 'axis=1' to look at the row data for our condition
         styled_df = log_df.style.apply(style_rows, axis=1)
         
+        # Fixed hide_index and width warning
         st.dataframe(
             styled_df, 
             hide_index=True, 
-            use_container_width=True
+            width="stretch"
         )
-        
     else:
         st.info("No activity recorded in the last 14 days.")
-
-
 
 # --- BACKUP SECTION ---
 st.divider()
 st.subheader("💾 Data Backup")
 
-# Function to create a ZIP file containing both CSVs
 def create_zip_backup():
-    # 1. Fetch data from Supabase
     bookings_data = supabase.table("bookings").select("*").execute().data
     logs_data = supabase.table("logs").select("*").execute().data
-    
-    # 2. Convert to DataFrames
     df_bookings = pd.DataFrame(bookings_data)
     df_logs = pd.DataFrame(logs_data)
-    
-    # 3. Create an in-memory zip file
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "x", zipfile.ZIP_DEFLATED) as vz:
         vz.writestr(f"bookings_backup_{get_today()}.csv", df_bookings.to_csv(index=False))
         vz.writestr(f"logs_backup_{get_today()}.csv", df_logs.to_csv(index=False))
-    
     return buf.getvalue()
 
-# Single Download Button
 st.download_button(
     label="📥 Download All Data (ZIP)",
     data=create_zip_backup(),
@@ -375,14 +348,9 @@ st.download_button(
     use_container_width=True
 )
 
-
-
-
-
 # Footer
 st.markdown("""
 <div style='background-color: #0d5384; padding: 1rem; border-left: 5px solid #fff500; border-radius: 0.5rem; color: white;'>
 Built with ❤️ using <a href='https://streamlit.io/' style='color: #ccff00;'>Streamlit</a> — free and open source.
-<a href='https://devs-scripts.streamlit.app/' style='color: #ccff00;'>Other Scripts by dev</a> on Streamlit.
 </div>
 """, unsafe_allow_html=True)
