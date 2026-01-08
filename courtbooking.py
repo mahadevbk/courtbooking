@@ -1,3 +1,4 @@
+import time
 import streamlit as st
 import sqlite3
 from datetime import datetime, timedelta, date, timezone
@@ -249,8 +250,9 @@ with tab1:
         if look_villa != "-- Select --":
             st.selectbox("Active bookings:", options=get_active_bookings_for_villa_display(look_villa))
 
+
 with tab2:
-    st.subheader("Book a Slot")
+    st.subheader("Book a New Slot")
     date_choice = st.selectbox("Date:", [d.strftime('%Y-%m-%d') for d in get_next_14_days()])
     court_choice = st.selectbox("Court:", courts)
     time_choice = st.selectbox("Time Slot:", [f"{h:02d}:00 - {h+1:02d}:00" for h in start_hours])
@@ -260,12 +262,24 @@ with tab2:
     st.info(f"Active bookings: {active_count} / 6")
 
     if st.button("Book This Slot", type="primary"):
-        if is_slot_in_past(date_choice, start_h): st.error("⛔ Slot passed.")
-        elif is_slot_booked(court_choice, date_choice, start_h): st.error("❌ Slot taken.")
-        elif active_count >= 6: st.error("🚫 Limit reached.")
+        if is_slot_in_past(date_choice, start_h): 
+            st.error("⛔ Slot passed.")
+        elif is_slot_booked(court_choice, date_choice, start_h): 
+            st.error("❌ Slot taken.")
+        elif active_count >= 6: 
+            st.error("🚫 Limit reached.")
         else:
+            # 1. Perform the database write
             book_slot(villa, sub_community, court_choice, date_choice, start_h)
-            st.success("✅ Booked!")
+            
+            # 2. Trigger the visual confirmation
+            st.balloons()
+            st.success(f"✅ SUCCESS! {court_choice} booked for {date_choice} at {start_h:02d}:00")
+            
+            # 3. Wait briefly so the user sees the confirmation/balloons
+            time.sleep(2.5) 
+            
+            # 4. Refresh the app to update availability tables
             st.rerun()
 
 with tab3:
