@@ -1,36 +1,14 @@
 import time
 import streamlit as st
-import sqlite3
-from datetime import datetime, timedelta, date, timezone
+from supabase import create_client, Client
+from datetime import datetime, timedelta, timezone
 import pandas as pd
 
-# Database setup with schema migration
-conn = sqlite3.connect('bookings.db', check_same_thread=False)
-c = conn.cursor()
-
-# Create tables
-c.execute('''CREATE TABLE IF NOT EXISTS bookings
-             (id INTEGER PRIMARY KEY AUTOINCREMENT,
-              villa TEXT,
-              court TEXT,
-              date TEXT,
-              start_hour INTEGER,
-              sub_community TEXT)''')
-
-c.execute('''CREATE TABLE IF NOT EXISTS logs
-             (id INTEGER PRIMARY KEY AUTOINCREMENT,
-              timestamp DATETIME,
-              event_type TEXT,
-              details TEXT)''')
-
-# Migration: Ensure sub_community exists in bookings
-c.execute("PRAGMA table_info(bookings)")
-columns = [col[1] for col in c.fetchall()]
-if 'sub_community' not in columns:
-    c.execute("ALTER TABLE bookings ADD COLUMN sub_community TEXT")
-    conn.commit()
-
-conn.commit()
+# --- DATABASE SETUP (SUPABASE) ---
+# Ensure these are set in your Streamlit Cloud Secrets
+url: str = st.secrets["SUPABASE_URL"]
+key: str = st.secrets["SUPABASE_KEY"]
+supabase: Client = create_client(url, key)
 
 # Constants
 sub_community_list = [
@@ -44,8 +22,7 @@ start_hours = list(range(7, 22))
 # --- HELPER FUNCTIONS ---
 
 def get_utc_plus_4():
-    """Returns the current time in UTC+4 without deprecation warnings"""
-    # Modern way: Get current UTC time, then add 4 hours
+    """Returns the current time in UTC+4"""
     return datetime.now(timezone.utc).replace(tzinfo=None) + timedelta(hours=4)
 
 def get_today():
@@ -56,15 +33,18 @@ def get_next_14_days():
     return [today + timedelta(days=i) for i in range(15)]
 
 def add_log(event_type, details):
-    """Records activity in the log table with UTC+4 timestamp"""
-    timestamp = get_utc_plus_4().strftime('%Y-%m-%d %H:%M:%S')
-    c.execute("INSERT INTO logs (timestamp, event_type, details) VALUES (?, ?, ?)",
-              (timestamp, event_type, details))
-    conn.commit()
+    """Records activity in the Supabase logs table"""
+    timestamp = get_utc_plus_4().isoformat()
+    supabase.table("logs").insert({
+        "timestamp": timestamp,
+        "event_type": event_type,
+        "details": details
+    }).execute()
 
 def get_bookings_for_day_with_details(date_str):
-    c.execute("SELECT court, start_hour, sub_community, villa FROM bookings WHERE date=?", (date_str,))
-    return {(row[0], row[1]): f"{row[2]} - {row[3]}" for row in c.fetchall()}
+    """Fetches all bookings for a specific date from Supabase"""
+    response = supabase.table("bookings").select("court, start_hour, sub_community, villa").eq("date", date_str).execute()
+    return {(row['court'], row['start_hour']): f"{row['sub_community']} - {row['villa']}" for row in response.data}
 
 def abbreviate_community(full_name):
     if full_name.startswith("Mira Oasis"):
@@ -82,18 +62,25 @@ def color_cell(val):
         return "background-color: #f8d7da; color: #721c24; font-weight: bold;"
 
 def get_active_bookings_count(villa, sub_community):
+    """Counts active bookings for a user in Supabase"""
     today_str = get_today().strftime('%Y-%m-%d')
     now_hour = get_utc_plus_4().hour
-    c.execute("""
-        SELECT COUNT(*) FROM bookings 
-        WHERE villa=? AND sub_community=? AND (date > ? OR (date = ? AND start_hour >= ?))
-    """, (villa, sub_community, today_str, today_str, now_hour))
-    return c.fetchone()[0]
+    
+    # Complex filter for date > today OR (date == today AND hour >= now)
+    response = supabase.table("bookings").select("id", count="exact")\
+        .eq("villa", villa)\
+        .eq("sub_community", sub_community)\
+        .or_(f"date.gt.{today_str},and(date.eq.{today_str},start_hour.gte.{now_hour})")\
+        .execute()
+    return response.count
 
 def is_slot_booked(court, date_str, start_hour):
-    c.execute("SELECT 1 FROM bookings WHERE court=? AND date=? AND start_hour=?", 
-              (court, date_str, start_hour))
-    return c.fetchone() is not None
+    response = supabase.table("bookings").select("id")\
+        .eq("court", court)\
+        .eq("date", date_str)\
+        .eq("start_hour", start_hour)\
+        .execute()
+    return len(response.data) > 0
 
 def is_slot_in_past(date_str, start_hour):
     now = get_utc_plus_4()
@@ -105,54 +92,65 @@ def is_slot_in_past(date_str, start_hour):
     return False
 
 def book_slot(villa, sub_community, court, date_str, start_hour):
-    c.execute("INSERT INTO bookings (villa, sub_community, court, date, start_hour) VALUES (?, ?, ?, ?, ?)",
-              (villa, sub_community, court, date_str, start_hour))
-    conn.commit()
+    supabase.table("bookings").insert({
+        "villa": villa,
+        "sub_community": sub_community,
+        "court": court,
+        "date": date_str,
+        "start_hour": start_hour
+    }).execute()
     log_detail = f"{sub_community} Villa {villa} booked {court} for {date_str} at {start_hour:02d}:00"
     add_log("Booking Created", log_detail)
 
 def get_user_bookings(villa, sub_community):
-    c.execute("SELECT id, court, date, start_hour FROM bookings WHERE villa=? AND sub_community=? ORDER BY date, start_hour", 
-              (villa, sub_community))
-    return c.fetchall()
+    response = supabase.table("bookings").select("id, court, date, start_hour")\
+        .eq("villa", villa)\
+        .eq("sub_community", sub_community)\
+        .order("date")\
+        .order("start_hour")\
+        .execute()
+    return response.data
 
 def delete_booking(booking_id, villa, sub_community):
-    c.execute("SELECT court, date, start_hour FROM bookings WHERE id=?", (booking_id,))
-    b = c.fetchone()
-    if b:
-        log_detail = f"{sub_community} Villa {villa} cancelled {b[0]} for {b[1]} at {b[2]:02d}:00"
+    # Fetch details for logging first
+    record = supabase.table("bookings").select("court, date, start_hour").eq("id", booking_id).single().execute()
+    if record.data:
+        b = record.data
+        log_detail = f"{sub_community} Villa {villa} cancelled {b['court']} for {b['date']} at {b['start_hour']:02d}:00"
         add_log("Booking Deleted", log_detail)
     
-    c.execute("DELETE FROM bookings WHERE id=? AND villa=? AND sub_community=?", (booking_id, villa, sub_community))
-    conn.commit()
+    supabase.table("bookings").delete().eq("id", booking_id).eq("villa", villa).eq("sub_community", sub_community).execute()
 
 def get_logs_last_14_days():
-    """Fetches logs with latest entry at the top, using UTC+4 for cutoff calculation"""
-    cutoff = (get_utc_plus_4() - timedelta(days=14)).strftime('%Y-%m-%d %H:%M:%S')
-    c.execute("SELECT timestamp, event_type, details FROM logs WHERE timestamp >= ? ORDER BY timestamp DESC", (cutoff,))
-    return c.fetchall()
+    cutoff = (get_utc_plus_4() - timedelta(days=14)).isoformat()
+    response = supabase.table("logs").select("timestamp, event_type, details")\
+        .gte("timestamp", cutoff)\
+        .order("timestamp", desc=True)\
+        .execute()
+    return response.data
 
 def get_villas_with_active_bookings():
     today_str = get_today().strftime('%Y-%m-%d')
     now_hour = get_utc_plus_4().hour
-    c.execute("""
-        SELECT DISTINCT villa, sub_community FROM bookings 
-        WHERE date > ? OR (date = ? AND start_hour >= ?)
-        ORDER BY villa
-    """, (today_str, today_str, now_hour))
-    return [f"{row[1]} - {row[0]}" for row in c.fetchall()]
+    response = supabase.table("bookings").select("villa, sub_community")\
+        .or_(f"date.gt.{today_str},and(date.eq.{today_str},start_hour.gte.{now_hour})")\
+        .execute()
+    
+    unique_villas = sorted(list(set([f"{row['sub_community']} - {row['villa']}" for row in response.data])))
+    return unique_villas
 
 def get_active_bookings_for_villa_display(villa_identifier):
     sub_comm, villa_num = villa_identifier.split(" - ")
     today_str = get_today().strftime('%Y-%m-%d')
     now_hour = get_utc_plus_4().hour
-    c.execute("""
-        SELECT court, date, start_hour FROM bookings 
-        WHERE villa=? AND sub_community=? AND (date > ? OR (date = ? AND start_hour >= ?))
-        ORDER BY date, start_hour
-    """, (villa_num, sub_comm, today_str, today_str, now_hour))
-    bookings = c.fetchall()
-    return [f"{b[1]} | {b[2]:02d}:00 | {b[0]}" for b in bookings]
+    response = supabase.table("bookings").select("court, date, start_hour")\
+        .eq("villa", villa_num)\
+        .eq("sub_community", sub_comm)\
+        .or_(f"date.gt.{today_str},and(date.eq.{today_str},start_hour.gte.{now_hour})")\
+        .order("date")\
+        .order("start_hour")\
+        .execute()
+    return [f"{b['date']} | {b['start_hour']:02d}:00 | {b['court']}" for b in response.data]
 
 # --- UI STYLING ---
 st.markdown("""
@@ -248,7 +246,11 @@ with tab1:
     if villas_active:
         look_villa = st.selectbox("Select Villa:", options=["-- Select --"] + villas_active)
         if look_villa != "-- Select --":
-            st.selectbox("Active bookings:", options=get_active_bookings_for_villa_display(look_villa))
+            active_list = get_active_bookings_for_villa_display(look_villa)
+            if active_list:
+                st.selectbox("Active bookings:", options=active_list)
+            else:
+                st.write("No active bookings found for this villa.")
 
 
 with tab2:
@@ -269,17 +271,10 @@ with tab2:
         elif active_count >= 6: 
             st.error("🚫 Limit reached.")
         else:
-            # 1. Perform the database write
             book_slot(villa, sub_community, court_choice, date_choice, start_h)
-            
-            # 2. Trigger the visual confirmation
             st.balloons()
             st.success(f"✅ SUCCESS! {court_choice} booked for {date_choice} at {start_h:02d}:00")
-            
-            # 3. Wait briefly so the user sees the confirmation/balloons
             time.sleep(2.5) 
-            
-            # 4. Refresh the app to update availability tables
             st.rerun()
 
 with tab3:
@@ -287,13 +282,13 @@ with tab3:
     my_b = get_user_bookings(villa, sub_community)
     if not my_b: st.info("No bookings.")
     else:
-        for b in my_b: st.write(f"• **{b[1]}** – {b[2]} at {b[3]:02d}:00")
+        for b in my_b: st.write(f"• **{b['court']}** – {b['date']} at {b['start_hour']:02d}:00")
 
 with tab4:
     st.subheader("Cancel Booking")
     my_b = get_user_bookings(villa, sub_community)
     if my_b:
-        choice = st.selectbox("Select:", [f"{b[1]} on {b[2]} at {b[3]:02d}:00 (ID: {b[0]})" for b in my_b])
+        choice = st.selectbox("Select:", [f"{b['court']} on {b['date']} at {b['start_hour']:02d}:00 (ID: {b['id']})" for b in my_b])
         b_id = int(choice.split("ID: ")[-1].strip(")"))
         if st.checkbox("Confirm cancel") and st.button("Cancel Booking", type="primary"):
             delete_booking(b_id, villa, sub_community)
@@ -305,7 +300,7 @@ with tab5:
     st.caption("Timezone: UTC+4")
     logs = get_logs_last_14_days()
     if logs:
-        log_df = pd.DataFrame(logs, columns=["Timestamp", "Action", "Details"])
+        log_df = pd.DataFrame(logs, columns=["timestamp", "event_type", "details"])
         st.table(log_df)
     else:
         st.write("No activity recorded.")
