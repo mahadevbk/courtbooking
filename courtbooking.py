@@ -162,6 +162,10 @@ st.markdown("""
   background: linear-gradient(to bottom, #010f1a, #052134);
   background-attachment: scroll;
 }
+
+[data-testid="stHeader"] {
+  background: linear-gradient(to top, #052134 , #010f1a) !important;
+}
     h1, h2, h3, .stTitle { font-family: 'Audiowide', cursive !important; color: #2c3e50; }
     .stButton>button { background-color: #4CAF50; color: white; font-family: 'Audiowide', cursive; }
     .stDataFrame th { font-family: 'Audiowide', cursive; font-size: 12px; background-color: #2c3e50 !important; color: white !important; }
