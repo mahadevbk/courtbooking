@@ -158,6 +158,10 @@ def get_active_bookings_for_villa_display(villa_identifier):
 st.markdown("""
 <link href="https://fonts.googleapis.com/css2?family=Audiowide&display=swap" rel="stylesheet">
 <style>
+.stApp {
+  background: linear-gradient(to bottom, #010f1a, #052134);
+  background-attachment: scroll;
+}
     h1, h2, h3, .stTitle { font-family: 'Audiowide', cursive !important; color: #2c3e50; }
     .stButton>button { background-color: #4CAF50; color: white; font-family: 'Audiowide', cursive; }
     .stDataFrame th { font-family: 'Audiowide', cursive; font-size: 12px; background-color: #2c3e50 !important; color: white !important; }
