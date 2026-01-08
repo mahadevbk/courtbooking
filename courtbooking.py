@@ -195,7 +195,7 @@ if st.query_params.get("view") == "full":
 # --- MAIN APP ---
 st.title("🎾 Book that Court ...")
 st.caption("An Un-Official & Community Driven Booking Solution.")
-st.info("Apologies. A bug in the code deleted the old database.  The bug has since been fixed but the old bookings done since 7th Jan and Early morning on 8th Jan, have been lost. Please rebook those slots.")
+st.info("Apologies. A bug in the code deleted the old database.  It has since been fixed but the old bookings done since 7th Jan and Early morning on 8th Jan, have been lost. Please rebook those slots.")
 
 if 'authenticated' not in st.session_state:
     st.session_state.authenticated = False
