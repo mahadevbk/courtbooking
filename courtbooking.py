@@ -307,12 +307,23 @@ with tab4:
             st.rerun()
 
 with tab5:
+    #st.subheader("Community Activity Log (Last 14 Days)")
+    #st.caption("Timezone: UTC+4")
+    #logs = get_logs_last_14_days()
+    #if logs:
+    #    log_df = pd.DataFrame(logs, columns=["timestamp", "event_type", "details"])
+    #    st.table(log_df)
+    #else:
+    #    st.write("No activity recorded.")
+   
     st.subheader("Community Activity Log (Last 14 Days)")
     st.caption("Timezone: UTC+4")
     logs = get_logs_last_14_days()
+    
     if logs:
         log_df = pd.DataFrame(logs, columns=["timestamp", "event_type", "details"])
-        st.table(log_df)
+        # This hides the 0, 1, 2... column
+        st.table(log_df.style.hide(axis='index'))
     else:
         st.write("No activity recorded.")
 
