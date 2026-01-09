@@ -212,7 +212,7 @@ with col1:
     )
 
 with col2:
-    st.title("🎾 Book that Court ...")
+    st.header("🎾 Book that Court ...")
     
 st.caption("An Un-Official & Community Driven Booking Solution.")
 
@@ -369,6 +369,8 @@ st.download_button(
     mime="application/zip",
     use_container_width=True
 )
+
+
 
 # Footer
 st.markdown("""
