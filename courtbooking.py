@@ -411,14 +411,20 @@ with tab5:
         st.info("No activity recorded in the last 14 days.")
 
 # --- BACKUP SECTION ---
+# --- BACKUP SECTION ---
 st.divider()
 st.subheader("💾 Data Backup")
 
-def create_zip_backup():format_match_scores_and_date
+def create_zip_backup():
+    # Fetch all data from Supabase
     bookings_data = supabase.table("bookings").select("*").execute().data
     logs_data = supabase.table("logs").select("*").execute().data
+    
+    # Create DataFrames
     df_bookings = pd.DataFrame(bookings_data)
     df_logs = pd.DataFrame(logs_data)
+    
+    # Create ZIP in memory
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "x", zipfile.ZIP_DEFLATED) as vz:
         vz.writestr(f"bookings_backup_{get_today()}.csv", df_bookings.to_csv(index=False))
@@ -432,7 +438,6 @@ st.download_button(
     mime="application/zip",
     width="stretch"
 )
-
 
 
 # Footer
