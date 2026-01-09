@@ -367,10 +367,25 @@ st.download_button(
 
 
 # Footer
-st.markdown("""
-<div style='background-color: #0d5384; padding: 1rem; border-left: 5px solid #fff500; border-radius: 0.5rem; color: white;'>
-Built with ❤️ using <a href='https://streamlit.io/' style='color: #ccff00;'>Streamlit</a> — free and open source.
-<a href='https://devs-scripts.streamlit.app/' style='color: #ccff00;'>Other Scripts by dev</a> on Streamlit.
-</div>
-""", unsafe_allow_html=True)
+image_url = "https://raw.githubusercontent.com/mahadevbk/courtbooking/main/qr-code.miracourtbooking.streamlit.app.png"
+
+# Create two columns. 
+# The [1, 5] ratio makes the left column small and the right column wide.
+col1, col2 = st.columns([1, 5])
+
+with col1:
+    # Set height to 100px as requested
+    st.markdown(
+        f'<img src="{image_url}" height="100">',
+        unsafe_allow_html=True
+    )
+
+with col2:
+    st.markdown("""
+    <div style='background-color: #0d5384; padding: 1rem; border-left: 5px solid #fff500; border-radius: 0.5rem; color: white;'>
+    Built with ❤️ using <a href='https://streamlit.io/' style='color: #ccff00;'>Streamlit</a> — free and open source.
+    <a href='https://devs-scripts.streamlit.app/' style='color: #ccff00;'>Other Scripts by dev</a> on Streamlit.
+    </div>
+    """, unsafe_allow_html=True)
+
 
