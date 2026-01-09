@@ -194,7 +194,7 @@ if st.query_params.get("view") == "full":
 image_url = "https://raw.githubusercontent.com/mahadevbk/courtbooking/main/qr-code.miracourtbooking.streamlit.app.png"
 
 st.markdown(
-    f'<img src="{image_url}" height="100">',
+    f'<img src="{image_url}" height="10">',
     unsafe_allow_html=True
 )
 st.title("🎾 Book that Court ...")
