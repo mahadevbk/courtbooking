@@ -195,6 +195,22 @@ if st.query_params.get("view") == "full":
 
 st.subheader("🎾 Book that Court ...")    
 st.caption("An Un-Official & Community Driven Booking Solution.")
+    # 1. Calculate the statistics
+villas_active = get_villas_with_active_bookings()
+    
+    # Get total active bookings count from the database
+today_str = get_today().strftime('%Y-%m-%d')
+now_hour = get_utc_plus_4().hour
+total_active_response = supabase.table("bookings").select("id", count="exact")\
+    .or_(f"date.gt.{today_str},and(date.eq.{today_str},start_hour.gte.{now_hour})")\
+    .execute()
+    
+total_residences = len(villas_active)
+total_bookings = total_active_response.count if total_active_response.count else 0
+
+# 2. Display the summary text
+st.write(f"📊 **{total_residences}** Residences have **{total_bookings}** active bookings.")
+
 
 if 'authenticated' not in st.session_state:
     st.session_state.authenticated = False
@@ -247,21 +263,7 @@ with tab1:
     st.subheader("🔍 Booking Lookup")
 
     
-    # 1. Calculate the statistics
-    villas_active = get_villas_with_active_bookings()
-    
-    # Get total active bookings count from the database
-    today_str = get_today().strftime('%Y-%m-%d')
-    now_hour = get_utc_plus_4().hour
-    total_active_response = supabase.table("bookings").select("id", count="exact")\
-        .or_(f"date.gt.{today_str},and(date.eq.{today_str},start_hour.gte.{now_hour})")\
-        .execute()
-    
-    total_residences = len(villas_active)
-    total_bookings = total_active_response.count if total_active_response.count else 0
 
-    # 2. Display the summary text
-    st.write(f"📊 **{total_residences}** Residences have **{total_bookings}** active bookings.")
 
     # 3. Existing dropdown logic
     if villas_active:
