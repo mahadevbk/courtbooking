@@ -206,7 +206,7 @@ with col1:
     )
 
 with col2:
-    st.header("🎾 Book that Court ...")
+    st.subheader("🎾 Book that Court ...")
     
 st.caption("An Un-Official & Community Driven Booking Solution.")
 
