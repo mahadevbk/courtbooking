@@ -261,7 +261,7 @@ with tab1:
     total_bookings = total_active_response.count if total_active_response.count else 0
 
     # 2. Display the summary text
-    st.info(f"📊 **{total_residences}** Residences have **{total_bookings}** active bookings as of now.")
+    st.info(f"📊 **{total_residences}** Residences have **{total_bookings}** active bookings.")
 
     # 3. Existing dropdown logic
     if villas_active:
