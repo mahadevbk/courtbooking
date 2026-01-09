@@ -200,7 +200,7 @@ if 'authenticated' not in st.session_state:
     st.session_state.authenticated = False
 
 if not st.session_state.authenticated:
-    st.subheader("Please log in ")
+    st.write("Please log in ")
     col1, col2 = st.columns(2)
     with col1:
         sub_community_input = st.selectbox("Select Your Sub-Community", options=sub_community_list, index=None)
