@@ -192,22 +192,8 @@ if st.query_params.get("view") == "full":
 
 # --- MAIN APP ---
 
-image_url = "https://raw.githubusercontent.com/mahadevbk/courtbooking/main/qr-code.miracourtbooking.streamlit.app.png"
 
-# Create two columns. 
-# The [1, 5] ratio makes the left column small and the right column wide.
-col1, col2 = st.columns([1, 5])
-
-with col1:
-    # Set height to 100px as requested
-    st.markdown(
-        f'<img src="{image_url}" height="70">',
-        unsafe_allow_html=True
-    )
-
-with col2:
-    st.subheader("🎾 Book that Court ...")
-    
+st.subheader("🎾 Book that Court ...")    
 st.caption("An Un-Official & Community Driven Booking Solution.")
 
 if 'authenticated' not in st.session_state:
