@@ -191,6 +191,10 @@ if st.query_params.get("view") == "full":
     st.stop()
 
 # --- MAIN APP ---
+#st.markdown(
+#    '<img src="https://raw.githubusercontent.com/mahadevbk/mmd/main/mmdheaderQ12026.png" height="100">',
+#    unsafe_allow_html=True
+#)
 st.title("🎾 Book that Court ...")
 st.caption("An Un-Official & Community Driven Booking Solution.")
 
