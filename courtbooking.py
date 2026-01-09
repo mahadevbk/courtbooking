@@ -191,13 +191,7 @@ if st.query_params.get("view") == "full":
     st.stop()
 
 # --- MAIN APP ---
-#image_url = "https://raw.githubusercontent.com/mahadevbk/courtbooking/main/qr-code.miracourtbooking.streamlit.app.png"
 
-#st.markdown(
-#    f'<img src="{image_url}" height="10">',
-#    unsafe_allow_html=True
-#)
-#st.title("🎾 Book that Court ...")
 image_url = "https://raw.githubusercontent.com/mahadevbk/courtbooking/main/qr-code.miracourtbooking.streamlit.app.png"
 
 # Create two columns. 
@@ -207,7 +201,7 @@ col1, col2 = st.columns([1, 5])
 with col1:
     # Set height to 100px as requested
     st.markdown(
-        f'<img src="{image_url}" height="100">',
+        f'<img src="{image_url}" height="70">',
         unsafe_allow_html=True
     )
 
