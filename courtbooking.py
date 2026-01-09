@@ -315,7 +315,7 @@ with tab1:
         # Displaying with a color gradient
         st.dataframe(
             heatmap_data.style.background_gradient(cmap="YlGnBu"), 
-            use_container_width=True
+            width="stretch"
         )
     else:
         st.info("Charts will appear here once more bookings are made!")
@@ -414,7 +414,7 @@ with tab5:
 st.divider()
 st.subheader("💾 Data Backup")
 
-def create_zip_backup():
+def create_zip_backup():format_match_scores_and_date
     bookings_data = supabase.table("bookings").select("*").execute().data
     logs_data = supabase.table("logs").select("*").execute().data
     df_bookings = pd.DataFrame(bookings_data)
@@ -430,7 +430,7 @@ st.download_button(
     data=create_zip_backup(),
     file_name=f"court_booking_backup_{get_today()}.zip",
     mime="application/zip",
-    use_container_width=True
+    width="stretch"
 )
 
 
