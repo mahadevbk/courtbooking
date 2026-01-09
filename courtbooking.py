@@ -146,6 +146,20 @@ def get_active_bookings_for_villa_display(villa_identifier):
         .execute()
     return [f"{b['date']} | {b['start_hour']:02d}:00 | {b['court']}" for b in response.data]
 
+def get_peak_time_data():
+    # Fetch all booking data
+    response = supabase.table("bookings").select("date, start_hour").execute()
+    df = pd.DataFrame(response.data)
+    
+    if df.empty:
+        return pd.DataFrame()
+
+    # Convert date to day name for the heatmap
+    df['date'] = pd.to_datetime(df['date'])
+    df['day_of_week'] = df['date'].dt.day_name()
+    
+    return df
+
 # --- UI STYLING ---
 st.markdown("""
 <link href="https://fonts.googleapis.com/css2?family=Audiowide&display=swap" rel="stylesheet">
@@ -258,6 +272,55 @@ with tab1:
     # Updated width to 'stretch'
     st.dataframe(pd.DataFrame(data, index=courts).style.map(color_cell), width="stretch")
     st.link_button("🌐 View Full 14-Day Schedule (Full Page)", url="/?view=full")
+
+
+    
+# Existing table is above this...
+    st.dataframe(pd.DataFrame(data, index=courts).style.map(color_cell), width="stretch")
+    st.link_button("🌐 View Full 14-Day Schedule (Full Page)", url="/?view=full")
+    
+    # --- NEW: Peak Times & Heatmap Section ---
+    st.divider()
+    st.subheader("📊 Community Usage Insights")
+    
+    usage_data = get_peak_time_data()
+    
+    if not usage_data.empty:
+        col_charts1, col_charts2 = st.columns([1, 1])
+        
+        with col_charts1:
+            st.write("**🔥 Busiest Hours**")
+            # Count bookings per hour
+            hour_counts = usage_data['start_hour'].value_counts().sort_index()
+            # Map index to readable time (e.g., 07:00)
+            chart_df = pd.DataFrame({
+                "Bookings": hour_counts.values
+            }, index=[f"{h:02d}:00" for h in hour_counts.index])
+            st.bar_chart(chart_df, color="#4CAF50")
+
+        with col_charts2:
+            st.write("**📅 Busiest Days**")
+            # Count bookings per day
+            day_counts = usage_data['day_of_week'].value_counts()
+            days_order = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
+            day_counts = day_counts.reindex(days_order).fillna(0)
+            st.area_chart(day_counts, color="#0d5384")
+
+        # --- Heatmap Style Table ---
+        st.write("**Weekly Intensity Heatmap**")
+        heatmap_data = usage_data.groupby(['day_of_week', 'start_hour']).size().unstack(fill_value=0)
+        heatmap_data = heatmap_data.reindex(days_order).fillna(0)
+        
+        # Displaying with a color gradient
+        st.dataframe(
+            heatmap_data.style.background_gradient(cmap="YlGnBu"), 
+            use_container_width=True
+        )
+    else:
+        st.info("Charts will appear here once more bookings are made!")
+    
+    # Existing Lookup section continues below...
+    
     
     st.divider()
     st.subheader("🔍 Booking Lookup")
