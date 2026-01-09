@@ -271,8 +271,8 @@ with tab1:
         data[label] = row
 
     # Updated width to 'stretch'
-    st.dataframe(pd.DataFrame(data, index=courts).style.map(color_cell), width="stretch")
-    st.link_button("🌐 View Full 14-Day Schedule (Full Page)", url="/?view=full")
+    #st.dataframe(pd.DataFrame(data, index=courts).style.map(color_cell), width="stretch")
+    #st.link_button("🌐 View Full 14-Day Schedule (Full Page)", url="/?view=full")
 
 
     
