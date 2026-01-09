@@ -209,7 +209,7 @@ total_residences = len(villas_active)
 total_bookings = total_active_response.count if total_active_response.count else 0
 
 # 2. Display the summary text
-st.write(f"📊 **{total_residences}** Residences have **{total_bookings}** active bookings.")
+st.write(f"**{total_residences}** Residences have **{total_bookings}** active bookings.")
 
 
 if 'authenticated' not in st.session_state:
