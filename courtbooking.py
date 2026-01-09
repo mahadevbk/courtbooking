@@ -245,16 +245,33 @@ with tab1:
     
     st.divider()
     st.subheader("🔍 Booking Lookup")
+
+    
+    # 1. Calculate the statistics
     villas_active = get_villas_with_active_bookings()
+    
+    # Get total active bookings count from the database
+    today_str = get_today().strftime('%Y-%m-%d')
+    now_hour = get_utc_plus_4().hour
+    total_active_response = supabase.table("bookings").select("id", count="exact")\
+        .or_(f"date.gt.{today_str},and(date.eq.{today_str},start_hour.gte.{now_hour})")\
+        .execute()
+    
+    total_residences = len(villas_active)
+    total_bookings = total_active_response.count if total_active_response.count else 0
+
+    # 2. Display the summary text
+    st.info(f"📊 **{total_residences}** Residences have **{total_bookings}** active bookings as of now.")
+
+    # 3. Existing dropdown logic
     if villas_active:
-        look_villa = st.selectbox("Select Villa:", options=["-- Select --"] + villas_active)
+        look_villa = st.selectbox("Select Villa to see details:", options=["-- Select --"] + villas_active)
         if look_villa != "-- Select --":
             active_list = get_active_bookings_for_villa_display(look_villa)
             if active_list:
-                st.selectbox("Active bookings:", options=active_list)
+                st.selectbox("Active bookings for this villa:", options=active_list)
             else:
                 st.write("No active bookings found for this villa.")
-
 with tab2:
     st.subheader("Book a New Slot")
     date_choice = st.selectbox("Date:", [d.strftime('%Y-%m-%d') for d in get_next_14_days()])
