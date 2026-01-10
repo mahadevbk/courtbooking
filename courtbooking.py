@@ -161,6 +161,26 @@ def get_peak_time_data():
     
     return df
 
+
+def delete_expired_bookings():
+    """Deletes bookings that occurred before the current hour."""
+    now = get_utc_plus_4()
+    today_str = now.strftime('%Y-%m-%d')
+    current_hour = now.hour
+    
+    # Delete bookings from previous days
+    supabase.table("bookings").delete().lt("date", today_str).execute()
+    
+    # Delete bookings from today that have already started
+    supabase.table("bookings").delete().eq("date", today_str).lt("start_hour", current_hour).execute()
+
+# This ensures it runs only once per session/day automatically
+if "expired_cleaned" not in st.session_state:
+    delete_expired_bookings()
+    st.session_state["expired_cleaned"] = True
+
+
+
 # --- UI STYLING ---
 st.markdown("""
 <link href="https://fonts.googleapis.com/css2?family=Audiowide&display=swap" rel="stylesheet">
