@@ -57,6 +57,8 @@ def abbreviate_community(full_name):
 def color_cell(val):
     if val == "Available":
         return "background-color: #d4edda; color: #155724; font-weight: bold;"
+    elif val == "—":
+        return "background-color: #e9ecef; color: #e9ecef; border: none;"
     else:
         return "background-color: #f8d7da; color: #721c24; font-weight: bold;"
 
@@ -71,6 +73,7 @@ def get_active_bookings_count(villa, sub_community):
     return response.count
 
 def is_slot_booked(court, date_str, start_hour):
+    # Check if slot is already booked in DB
     response = supabase.table("bookings").select("id")\
         .eq("court", court)\
         .eq("date", date_str)\
@@ -148,14 +151,12 @@ def get_active_bookings_for_villa_display(villa_identifier):
     return [f"{b['date']} | {b['start_hour']:02d}:00 | {b['court']}" for b in response.data]
 
 def get_peak_time_data():
-    # Fetch all booking data
     response = supabase.table("bookings").select("date, start_hour").execute()
     df = pd.DataFrame(response.data)
     
     if df.empty:
         return pd.DataFrame()
 
-    # Convert date to day name for the heatmap
     df['date'] = pd.to_datetime(df['date'])
     df['day_of_week'] = df['date'].dt.day_name()
     
@@ -163,18 +164,13 @@ def get_peak_time_data():
 
 
 def delete_expired_bookings():
-    """Deletes bookings that occurred before the current hour."""
     now = get_utc_plus_4()
     today_str = now.strftime('%Y-%m-%d')
     current_hour = now.hour
     
-    # Delete bookings from previous days
     supabase.table("bookings").delete().lt("date", today_str).execute()
-    
-    # Delete bookings from today that have already started
     supabase.table("bookings").delete().eq("date", today_str).lt("start_hour", current_hour).execute()
 
-# This ensures it runs only once per session/day automatically
 if "expired_cleaned" not in st.session_state:
     delete_expired_bookings()
     st.session_state["expired_cleaned"] = True
@@ -213,27 +209,26 @@ if st.query_params.get("view") == "full":
             row = []
             for court in courts:
                 key = (court, h)
-                if key in bookings_with_details:
+                if is_slot_in_past(d_str, h):
+                    row.append("—")
+                elif key in bookings_with_details:
                     full_comm, villa_num = bookings_with_details[key].rsplit(" - ", 1)
                     abbr = abbreviate_community(full_comm)
                     row.append(f"{abbr}-{villa_num}")
                 else:
                     row.append("Available")
             data[label] = row
-        # Updated width to 'stretch'
         st.dataframe(pd.DataFrame(data, index=courts).style.map(color_cell), width="stretch")
         st.divider()
     st.stop()
 
 # --- MAIN APP ---
 
-
 st.subheader("🎾 Book that Court ...")    
 st.caption("An Un-Official & Community Driven Booking Solution.")
-    # 1. Calculate the statistics
+
 villas_active = get_villas_with_active_bookings()
     
-    # Get total active bookings count from the database
 today_str = get_today().strftime('%Y-%m-%d')
 now_hour = get_utc_plus_4().hour
 total_active_response = supabase.table("bookings").select("id", count="exact")\
@@ -243,7 +238,6 @@ total_active_response = supabase.table("bookings").select("id", count="exact")\
 total_residences = len(villas_active)
 total_bookings = total_active_response.count if total_active_response.count else 0
 
-# 2. Display the summary text
 st.write(f"**{total_residences}** Residences have **{total_bookings}** active bookings.")
 
 
@@ -251,7 +245,6 @@ if 'authenticated' not in st.session_state:
     st.session_state.authenticated = False
 
 if not st.session_state.authenticated:
-    #st.write("Please log in ")
     col1, col2 = st.columns(2)
     with col1:
         sub_community_input = st.selectbox("Select Your Sub-Community", options=sub_community_list, index=None)
@@ -283,24 +276,18 @@ with tab1:
         row = []
         for court in courts:
             key = (court, h)
-            if key in bookings_with_details:
+            if is_slot_in_past(selected_date, h):
+                row.append("—")
+            elif key in bookings_with_details:
                 full_comm, villa_num = bookings_with_details[key].rsplit(" - ", 1)
                 row.append(f"{abbreviate_community(full_comm)}-{villa_num}")
             else:
                 row.append("Available")
         data[label] = row
 
-    # Updated width to 'stretch'
-    #st.dataframe(pd.DataFrame(data, index=courts).style.map(color_cell), width="stretch")
-    #st.link_button("🌐 View Full 14-Day Schedule (Full Page)", url="/?view=full")
-
-
-    
-# Existing table is above this...
     st.dataframe(pd.DataFrame(data, index=courts).style.map(color_cell), width="stretch")
     st.link_button("🌐 View Full 14-Day Schedule (Full Page)", url="/?view=full")
     
-    # --- NEW: Peak Times & Heatmap Section ---
     st.divider()
     st.subheader("📊 Community Usage Insights")
     
@@ -311,9 +298,7 @@ with tab1:
         
         with col_charts1:
             st.write("**🔥 Busiest Hours**")
-            # Count bookings per hour
             hour_counts = usage_data['start_hour'].value_counts().sort_index()
-            # Map index to readable time (e.g., 07:00)
             chart_df = pd.DataFrame({
                 "Bookings": hour_counts.values
             }, index=[f"{h:02d}:00" for h in hour_counts.index])
@@ -321,18 +306,15 @@ with tab1:
 
         with col_charts2:
             st.write("**📅 Busiest Days**")
-            # Count bookings per day
             day_counts = usage_data['day_of_week'].value_counts()
             days_order = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
             day_counts = day_counts.reindex(days_order).fillna(0)
             st.area_chart(day_counts, color="#0d5384")
 
-        # --- Heatmap Style Table ---
         st.write("**Weekly Intensity Heatmap**")
         heatmap_data = usage_data.groupby(['day_of_week', 'start_hour']).size().unstack(fill_value=0)
         heatmap_data = heatmap_data.reindex(days_order).fillna(0)
         
-        # Displaying with a color gradient
         st.dataframe(
             heatmap_data.style.background_gradient(cmap="YlGnBu"), 
             width="stretch"
@@ -340,16 +322,9 @@ with tab1:
     else:
         st.info("Charts will appear here once more bookings are made!")
     
-    # Existing Lookup section continues below...
-    
-    
     st.divider()
     st.subheader("🔍 Booking Lookup")
 
-    
-
-
-    # 3. Existing dropdown logic
     if villas_active:
         look_villa = st.selectbox("Select Villa to see details:", options=["-- Select --"] + villas_active)
         if look_villa != "-- Select --":
@@ -410,7 +385,6 @@ with tab5:
         log_df = pd.DataFrame(logs, columns=["timestamp", "event_type", "details"])
         log_df['timestamp'] = pd.to_datetime(log_df['timestamp']).dt.strftime('%b %d, %H:%M')
 
-        # Coloring logic for Red/Green
         def style_rows(row):
             styles = [''] * len(row)
             if row.event_type == "Booking Created":
@@ -421,7 +395,6 @@ with tab5:
 
         styled_df = log_df.style.apply(style_rows, axis=1)
         
-        # Fixed hide_index and width warning
         st.dataframe(
             styled_df, 
             hide_index=True, 
@@ -431,20 +404,16 @@ with tab5:
         st.info("No activity recorded in the last 14 days.")
 
 # --- BACKUP SECTION ---
-# --- BACKUP SECTION ---
 st.divider()
 st.subheader("💾 Data Backup")
 
 def create_zip_backup():
-    # Fetch all data from Supabase
     bookings_data = supabase.table("bookings").select("*").execute().data
     logs_data = supabase.table("logs").select("*").execute().data
     
-    # Create DataFrames
     df_bookings = pd.DataFrame(bookings_data)
     df_logs = pd.DataFrame(logs_data)
     
-    # Create ZIP in memory
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "x", zipfile.ZIP_DEFLATED) as vz:
         vz.writestr(f"bookings_backup_{get_today()}.csv", df_bookings.to_csv(index=False))
@@ -455,20 +424,16 @@ st.download_button(
     label="📥 Download All Data (ZIP)",
     data=create_zip_backup(),
     file_name=f"court_booking_backup_{get_today()}.zip",
-    mime="application/zip",
-    width="stretch"
+    mime="application/zip"
 )
 
 
 # Footer
 image_url = "https://raw.githubusercontent.com/mahadevbk/courtbooking/main/qr-code.miracourtbooking.streamlit.app.png"
 
-# Create two columns. 
-# The [1, 5] ratio makes the left column small and the right column wide.
 col1, col2 = st.columns([1, 5])
 
 with col1:
-    # Set height to 100px as requested
     st.markdown(
         f'<img src="{image_url}" height="100">',
         unsafe_allow_html=True
@@ -481,5 +446,3 @@ with col2:
     <a href='https://devs-scripts.streamlit.app/' style='color: #ccff00;'>Other Scripts by dev</a> on Streamlit.
     </div>
     """, unsafe_allow_html=True)
-
-
