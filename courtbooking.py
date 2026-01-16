@@ -377,7 +377,7 @@ with tab2:
                 st.error("❌ This slot was just taken! Please refresh and try another.")
             else:
                 book_slot(villa, sub_community, court_choice, date_choice, start_h)
-                st.balloons()
+                st.snow()
                 st.success(f"✅ SUCCESS! {court_choice} booked for {date_choice} at {start_h:02d}:00")
                 time.sleep(2.5) 
                 st.rerun()
