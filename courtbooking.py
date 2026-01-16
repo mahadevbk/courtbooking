@@ -349,8 +349,16 @@ with tab1:
 
 with tab2:
     st.subheader("Book a New Slot")
-    date_choice = st.selectbox("Date:", [d.strftime('%Y-%m-%d') for d in get_next_14_days()])
+    # Updated: This creates a list like "2026-01-16 (Friday)"
+    date_options = [f"{d.strftime('%Y-%m-%d')} ({d.strftime('%A')})" for d in get_next_14_days()]
+    selected_date_full = st.selectbox("Date:", date_options)
+    
+    # Extract just the date part (YYYY-MM-DD) for database logic
+    date_choice = selected_date_full.split(" (")[0]
+    
     court_choice = st.selectbox("Court:", courts)
+    #date_choice = st.selectbox("Date:", [d.strftime('%Y-%m-%d') for d in get_next_14_days()])
+    #court_choice = st.selectbox("Court:", courts)
     
     # Dynamically fetch only free slots
     free_hours = get_available_hours(court_choice, date_choice)
