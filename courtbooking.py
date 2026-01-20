@@ -72,6 +72,16 @@ def get_active_bookings_count(villa, sub_community):
         .execute()
     return response.count
 
+
+def get_daily_bookings_count(villa, sub_community, date_str):
+    response = supabase.table("bookings").select("id", count="exact")\
+        .eq("villa", villa)\
+        .eq("sub_community", sub_community)\
+        .eq("date", date_str)\
+        .execute()
+    return response.count
+
+
 def is_slot_booked(court, date_str, start_hour):
     # Check if slot is already booked in DB
     response = supabase.table("bookings").select("id")\
@@ -347,9 +357,10 @@ with tab1:
             else:
                 st.write("No active bookings found for this villa.")
 
+
 with tab2:
     st.subheader("Book a New Slot")
-    # Updated: This creates a list like "2026-01-16 (Friday)"
+    # Date selection
     date_options = [f"{d.strftime('%Y-%m-%d')} ({d.strftime('%A')})" for d in get_next_14_days()]
     selected_date_full = st.selectbox("Date:", date_options)
     
@@ -357,8 +368,6 @@ with tab2:
     date_choice = selected_date_full.split(" (")[0]
     
     court_choice = st.selectbox("Court:", courts)
-    #date_choice = st.selectbox("Date:", [d.strftime('%Y-%m-%d') for d in get_next_14_days()])
-    #court_choice = st.selectbox("Court:", courts)
     
     # Dynamically fetch only free slots
     free_hours = get_available_hours(court_choice, date_choice)
@@ -370,17 +379,27 @@ with tab2:
         time_options = [f"{h:02d}:00 - {h+1:02d}:00" for h in free_hours]
         time_choice = st.selectbox("Time Slot:", time_options)
 
+    # Fetch current booking counts for validation
     active_count = get_active_bookings_count(villa, sub_community)
-    st.info(f"Active bookings: {active_count} / 6")
+    daily_count = get_daily_bookings_count(villa, sub_community, date_choice)
+    
+    # Display status to the user
+    col_status1, col_status2 = st.columns(2)
+    with col_status1:
+        st.info(f"Total active bookings: **{active_count} / 6**")
+    with col_status2:
+        st.info(f"Bookings for {date_choice}: **{daily_count} / 2**")
 
     if st.button("Book This Slot", type="primary"):
         if not time_choice:
             st.error("Please select an available time slot.")
         elif active_count >= 6: 
-            st.error("🚫 Limit reached. You cannot have more than 6 active bookings.")
+            st.error("🚫 Overall limit reached. You cannot have more than 6 active bookings total.")
+        elif daily_count >= 2:
+            st.error(f"🚫 Daily limit reached. You cannot have more than 2 bookings on {date_choice}.")
         else:
             start_h = int(time_choice.split(":")[0])
-            # We do a final double-check in case someone else booked it while the user was looking
+            # Final check to prevent double booking if two users are on the same page
             if is_slot_booked(court_choice, date_choice, start_h):
                 st.error("❌ This slot was just taken! Please refresh and try another.")
             else:
