@@ -470,36 +470,34 @@ with tab3:
                 st.markdown(f"""
                     <div style="
                         background-color: #0d5384; 
-                        padding: 15px; 
-                        border-radius: 10px 10px 0px 0px; 
-                        border-left: 5px solid #4CAF50; 
+                        padding: 18px; 
+                        border-radius: 12px 12px 0px 0px; 
+                        border-left: 6px solid #4CAF50; 
                         color: white;
-                        box-shadow: 2px 2px 5px rgba(0,0,0,0.3);
-                        margin-top: 10px;
+                        box-shadow: 0px 4px 10px rgba(0,0,0,0.4);
+                        margin-top: 15px;
                     ">
-                        <div style="display: flex; justify-content: space-between; align-items: center;">
-                            <span style="font-family: 'Audiowide'; font-size: 1.1rem;">🎾 {b['court']}</span>
-                            <span style="font-size: 0.8rem; opacity: 0.8;">{sub_community} - {villa}</span>
+                        <div style="display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid rgba(255,255,255,0.1); padding-bottom: 8px; margin-bottom: 10px;">
+                            <span style="font-family: 'Audiowide'; font-size: 1.2rem; color: #ccff00;">🎾 {b['court']}</span>
+                            <span style="font-size: 1.1rem; font-weight: bold; color: white;">{sub_community} - {villa}</span>
                         </div>
-                        <div style="margin-top: 8px;">
-                            <span style="font-weight: bold;">{day_name}, {formatted_date}</span>
+                        <div>
+                            <span style="font-size: 1.0rem; opacity: 0.9;">{day_name}, {formatted_date}</span>
                         </div>
-                        <div style="font-size: 1.2rem; color: #ccff00; font-weight: bold; margin-top: 5px;">
+                        <div style="font-size: 1.4rem; font-weight: bold; margin-top: 5px; font-family: 'Audiowide';">
                             ⏰ {time_display}
                         </div>
                     </div>
                 """, unsafe_allow_html=True)
                 
-                # Action Button attached to the card
-                if st.button(f"Cancel Booking ({time_display})", key=f"cancel_{i}", use_container_width=True):
+                # Integrated Action Button
+                if st.button(f"❌ Cancel Booking ({time_display})", key=f"cancel_{i}", use_container_width=True):
                     for booking_id in b['ids']:
-                        # Call existing delete function
                         delete_booking(booking_id, villa, sub_community)
-                    st.success(f"Cancelled {b['court']} for {b['date']}")
-                    time.sleep(1)
+                    st.success(f"Successfully cancelled your booking for {b['date']}.")
+                    time.sleep(1.5)
                     st.rerun()
-                st.markdown('<div style="margin-bottom: 20px;"></div>', unsafe_allow_html=True)
-
+                st.markdown('<div style="margin-bottom: 25px;"></div>', unsafe_allow_html=True)
 
 
 
