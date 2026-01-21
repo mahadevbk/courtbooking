@@ -464,6 +464,10 @@ with tab3:
             end_time = max(b['start_hours']) + 1
             time_display = f"{start_time:02d}:00 - {end_time:02d}:00"
             
+            # ID Display logic
+            id_list = sorted(b['ids'])
+            id_display = f"#{id_list[0]}" if len(id_list) == 1 else f"#{id_list[0]}-{id_list[-1]}"
+            
             # Use a container to group the card and the button
             with st.container():
                 # CSS Card Styling
@@ -477,24 +481,27 @@ with tab3:
                         box-shadow: 0px 4px 10px rgba(0,0,0,0.4);
                         margin-top: 15px;
                     ">
+                        <div style="font-family: 'Audiowide'; color: rgba(255,255,255,0.6); font-size: 0.9rem; margin-bottom: 5px;">
+                            BOOKING ID: {id_display}
+                        </div>
                         <div style="display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid rgba(255,255,255,0.1); padding-bottom: 8px; margin-bottom: 10px;">
-                            <span style="font-family: 'Audiowide'; font-size: 1.2rem; color: #ccff00;">🎾 {b['court']}</span>
+                            <span style="font-family: 'Audiowide'; font-size: 1.3rem; color: #ccff00;">🎾 {b['court']}</span>
                             <span style="font-size: 1.1rem; font-weight: bold; color: white;">{sub_community} - {villa}</span>
                         </div>
                         <div>
                             <span style="font-size: 1.0rem; opacity: 0.9;">{day_name}, {formatted_date}</span>
                         </div>
-                        <div style="font-size: 1.4rem; font-weight: bold; margin-top: 5px; font-family: 'Audiowide';">
+                        <div style="font-size: 1.5rem; font-weight: bold; margin-top: 5px; font-family: 'Audiowide'; color: white;">
                             ⏰ {time_display}
                         </div>
                     </div>
                 """, unsafe_allow_html=True)
                 
                 # Integrated Action Button
-                if st.button(f"❌ Cancel Booking ({time_display})", key=f"cancel_{i}", use_container_width=True):
+                if st.button(f"❌ Cancel Booking {id_display}", key=f"cancel_{i}", use_container_width=True):
                     for booking_id in b['ids']:
                         delete_booking(booking_id, villa, sub_community)
-                    st.success(f"Successfully cancelled your booking for {b['date']}.")
+                    st.success(f"Successfully cancelled booking {id_display}")
                     time.sleep(1.5)
                     st.rerun()
                 st.markdown('<div style="margin-bottom: 25px;"></div>', unsafe_allow_html=True)
