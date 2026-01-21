@@ -482,7 +482,7 @@ with tab3:
                         margin-top: 15px;
                     ">
                         <div style="font-family: 'Audiowide'; color: rgba(255,255,255,0.6); font-size: 0.9rem; margin-bottom: 5px;">
-                            BOOKING ID: {id_display}
+                            BOOKING CONF.: {id_display}
                         </div>
                         <div style="display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid rgba(255,255,255,0.1); padding-bottom: 8px; margin-bottom: 10px;">
                             <span style="font-family: 'Audiowide'; font-size: 1.3rem; color: #ccff00;">🎾 {b['court']}</span>
