@@ -361,6 +361,7 @@ with tab1:
 
 with tab2:
     st.subheader("Book a New Slot")
+    st.info("App allows 6 Active bookings spanning 14 days, A maximum of 2 active bookings per day.")
     # Date selection
     date_options = [f"{d.strftime('%Y-%m-%d')} ({d.strftime('%A')})" for d in get_next_14_days()]
     selected_date_full = st.selectbox("Date:", date_options)
