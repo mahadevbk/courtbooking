@@ -285,7 +285,7 @@ if not st.session_state.authenticated:
 sub_community, villa = st.session_state.sub_community, st.session_state.villa
 st.success(f"✅ Logged in as: **{sub_community} - Villa {villa}**")
 
-tab1, tab2, tab3, tab4, tab5 = st.tabs(["📅 Availability", "➕ Book", "📋 My Bookings", "❌ Cancel", "📜 Activity Log"])
+tab1, tab2, tab3, tab4 = st.tabs(["📅 Availability", "➕ Book", "📋 My Bookings", "📜 Activity Log"])
 
 with tab1:
     st.subheader("Court Availability")
@@ -502,17 +502,6 @@ with tab3:
 
 
 with tab4:
-    st.subheader("Cancel Booking")
-    my_b = get_user_bookings(villa, sub_community)
-    if my_b:
-        choice = st.selectbox("Select:", [f"{b['court']} on {b['date']} at {b['start_hour']:02d}:00 (ID: {b['id']})" for b in my_b])
-        b_id = int(choice.split("ID: ")[-1].strip(")"))
-        if st.checkbox("Confirm cancel") and st.button("Cancel Booking", type="primary"):
-            delete_booking(b_id, villa, sub_community)
-            st.success("Cancelled!")
-            st.rerun()
-
-with tab5:
     st.subheader("Community Activity Log (Last 14 Days)")
     st.caption("Timezone: UTC+4")
     
