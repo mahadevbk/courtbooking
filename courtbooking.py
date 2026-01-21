@@ -410,12 +410,98 @@ with tab2:
                 time.sleep(2.5) 
                 st.rerun()
 
+
 with tab3:
-    st.subheader("My Bookings")
+    st.subheader("📋 My Bookings")
+    # Fetch user specific bookings
     my_b = get_user_bookings(villa, sub_community)
-    if not my_b: st.info("No bookings.")
+    
+    if not my_b:
+        st.info("You have no active bookings.")
     else:
-        for b in my_b: st.write(f"• **{b['court']}** – {b['date']} at {b['start_hour']:02d}:00")
+        # --- MERGING LOGIC FOR CONSECUTIVE HOURS ---
+        df_my_b = pd.DataFrame(my_b)
+        # Sort to ensure consecutive hours are adjacent
+        df_my_b = df_my_b.sort_values(['date', 'court', 'start_hour'])
+        
+        merged_bookings = []
+        if not df_my_b.empty:
+            current_booking = None
+            
+            for _, row in df_my_b.iterrows():
+                if current_booking is None:
+                    current_booking = {
+                        'court': row['court'],
+                        'date': row['date'],
+                        'start_hours': [row['start_hour']],
+                        'ids': [row['id']]
+                    }
+                else:
+                    # Check if same day, same court, and hour is consecutive
+                    if (row['date'] == current_booking['date'] and 
+                        row['court'] == current_booking['court'] and 
+                        row['start_hour'] == max(current_booking['start_hours']) + 1):
+                        current_booking['start_hours'].append(row['start_hour'])
+                        current_booking['ids'].append(row['id'])
+                    else:
+                        merged_bookings.append(current_booking)
+                        current_booking = {
+                            'court': row['court'],
+                            'date': row['date'],
+                            'start_hours': [row['start_hour']],
+                            'ids': [row['id']]
+                        }
+            merged_bookings.append(current_booking)
+
+        # --- RENDER CARDS ---
+        for i, b in enumerate(merged_bookings):
+            b_date = datetime.strptime(b['date'], '%Y-%m-%d')
+            day_name = b_date.strftime('%A')
+            formatted_date = b_date.strftime('%b %d, %Y')
+            
+            # Calculate time range
+            start_time = min(b['start_hours'])
+            end_time = max(b['start_hours']) + 1
+            time_display = f"{start_time:02d}:00 - {end_time:02d}:00"
+            
+            # Use a container to group the card and the button
+            with st.container():
+                # CSS Card Styling
+                st.markdown(f"""
+                    <div style="
+                        background-color: #0d5384; 
+                        padding: 15px; 
+                        border-radius: 10px 10px 0px 0px; 
+                        border-left: 5px solid #4CAF50; 
+                        color: white;
+                        box-shadow: 2px 2px 5px rgba(0,0,0,0.3);
+                        margin-top: 10px;
+                    ">
+                        <div style="display: flex; justify-content: space-between; align-items: center;">
+                            <span style="font-family: 'Audiowide'; font-size: 1.1rem;">🎾 {b['court']}</span>
+                            <span style="font-size: 0.8rem; opacity: 0.8;">{sub_community} - {villa}</span>
+                        </div>
+                        <div style="margin-top: 8px;">
+                            <span style="font-weight: bold;">{day_name}, {formatted_date}</span>
+                        </div>
+                        <div style="font-size: 1.2rem; color: #ccff00; font-weight: bold; margin-top: 5px;">
+                            ⏰ {time_display}
+                        </div>
+                    </div>
+                """, unsafe_allow_html=True)
+                
+                # Action Button attached to the card
+                if st.button(f"Cancel Booking ({time_display})", key=f"cancel_{i}", use_container_width=True):
+                    for booking_id in b['ids']:
+                        # Call existing delete function
+                        delete_booking(booking_id, villa, sub_community)
+                    st.success(f"Cancelled {b['court']} for {b['date']}")
+                    time.sleep(1)
+                    st.rerun()
+                st.markdown('<div style="margin-bottom: 20px;"></div>', unsafe_allow_html=True)
+
+
+
 
 with tab4:
     st.subheader("Cancel Booking")
