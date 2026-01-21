@@ -249,7 +249,7 @@ if st.query_params.get("view") == "full":
 
 st.subheader("🎾 Book that Court ...")    
 st.caption("An Un-Official & Community Driven Booking Solution.")
-st.info("App allows 6 Active bookings spanning 14 days, A maximum of 2 active bookings per day. Bookings now show as Booking cards & Delete booking has beeh shifted to inside each Card. ")
+st.info("Bookings now show as Booking cards & Delete booking has beeh shifted to inside each Card. ")
 
 villas_active = get_villas_with_active_bookings()
     
