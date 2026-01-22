@@ -412,8 +412,40 @@ with tab2:
                 st.rerun()
 
 
+
 with tab3:
     st.subheader("📋 My Bookings")
+    
+    # Custom CSS to make the cancel button match the Audiowide theme and stand out
+    st.markdown("""
+        <style>
+        div[st-sidebar-separator] { margin: 0; }
+        /* Style for the specific cancel buttons */
+        .stButton>button[key^="cancel_"] {
+            font-family: 'Audiowide', cursive !important;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            background-color: #ff4b4b !important; /* Danger Red */
+            color: white !important;
+            border: none !important;
+            border-radius: 0px 0px 12px 12px !important; /* Rounds bottom corners to match card */
+            margin-top: -16px !important; /* Pulls button up to touch the card */
+            padding: 10px !important;
+        }
+        /* Custom Success Message Style */
+        .custom-success {
+            font-family: 'Audiowide', cursive;
+            background-color: #d4edda;
+            color: #155724;
+            padding: 15px;
+            border-radius: 8px;
+            border-left: 5px solid #28a745;
+            margin-bottom: 20px;
+            text-transform: uppercase;
+        }
+        </style>
+    """, unsafe_allow_html=True)
+
     # Fetch user specific bookings
     my_b = get_user_bookings(villa, sub_community)
     
@@ -422,7 +454,6 @@ with tab3:
     else:
         # --- MERGING LOGIC FOR CONSECUTIVE HOURS ---
         df_my_b = pd.DataFrame(my_b)
-        # Sort to ensure consecutive hours are adjacent
         df_my_b = df_my_b.sort_values(['date', 'court', 'start_hour'])
         
         merged_bookings = []
@@ -438,7 +469,6 @@ with tab3:
                         'ids': [row['id']]
                     }
                 else:
-                    # Check if same day, same court, and hour is consecutive
                     if (row['date'] == current_booking['date'] and 
                         row['court'] == current_booking['court'] and 
                         row['start_hour'] == max(current_booking['start_hours']) + 1):
@@ -460,18 +490,15 @@ with tab3:
             day_name = b_date.strftime('%A')
             formatted_date = b_date.strftime('%b %d, %Y')
             
-            # Calculate time range
             start_time = min(b['start_hours'])
             end_time = max(b['start_hours']) + 1
             time_display = f"{start_time:02d}:00 - {end_time:02d}:00"
             
-            # ID Display logic
             id_list = sorted(b['ids'])
             id_display = f"#{id_list[0]}" if len(id_list) == 1 else f"#{id_list[0]}-{id_list[-1]}"
             
-            # Use a container to group the card and the button
             with st.container():
-                # CSS Card Styling
+                # CSS Card Styling (Reduced bottom margin so it connects to button)
                 st.markdown(f"""
                     <div style="
                         background-color: #0d5384; 
@@ -498,13 +525,16 @@ with tab3:
                     </div>
                 """, unsafe_allow_html=True)
                 
-                # Integrated Action Button
-                if st.button(f"❌ Cancel Booking {id_display}", key=f"cancel_{i}", use_container_width=True):
+                # Action Button (Visually attached to card)
+                if st.button(f"❌ CANCEL BOOKING {id_display}", key=f"cancel_{i}", use_container_width=True):
                     for booking_id in b['ids']:
                         delete_booking(booking_id, villa, sub_community)
-                    st.success(f"Successfully cancelled booking {id_display}")
+                    
+                    # Updated Success Message
+                    st.markdown(f'<div class="custom-success">✅ SUCCESS , BOOKING CANCELLED</div>', unsafe_allow_html=True)
                     time.sleep(1.5)
                     st.rerun()
+                
                 st.markdown('<div style="margin-bottom: 25px;"></div>', unsafe_allow_html=True)
 
 
