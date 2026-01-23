@@ -249,7 +249,7 @@ if st.query_params.get("view") == "full":
 
 st.subheader("🎾 Book that Court ...")    
 st.caption("An Un-Official & Community Driven Booking Solution.")
-st.info("Bookings now show as Booking cards with the Delete option. ")
+#st.info("Bookings now show as Booking cards with the Delete option. ")
 
 villas_active = get_villas_with_active_bookings()
     
