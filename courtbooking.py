@@ -209,20 +209,23 @@ h1, h2, h3, .stTitle { font-family: 'Audiowide', cursive !important; color: #2c3
 .stButton>button { background-color: #4CAF50; color: white; font-family: 'Audiowide', cursive; }
 .stDataFrame th { font-family: 'Audiowide', cursive; font-size: 12px; background-color: #2c3e50 !important; color: white !important; }
 
-/* Custom grid button styling */
+/* Calendar-style Tile Buttons */
 div[data-testid="stColumn"] button {
     width: 100% !important;
-    padding: 5px 2px !important;
+    padding: 8px 2px !important;
     font-size: 11px !important;
-    border-radius: 4px !important;
-    border: none !important;
-    background-color: #2e7d32 !important;
+    border-radius: 6px !important;
+    border: 1px solid #ccff0033 !important;
+    background-color: #1b5e20 !important;
     color: #ccff00 !important;
-    transition: transform 0.1s ease;
+    transition: all 0.2s ease;
+    box-shadow: 0 2px 4px rgba(0,0,0,0.2);
 }
 div[data-testid="stColumn"] button:hover {
-    transform: scale(1.05);
-    background-color: #388e3c !important;
+    transform: translateY(-2px);
+    background-color: #2e7d32 !important;
+    box-shadow: 0 4px 8px rgba(0,0,0,0.3);
+    border-color: #ccff00 !important;
 }
 </style>
 """, unsafe_allow_html=True)
@@ -296,9 +299,18 @@ if not st.session_state.authenticated:
 sub_community, villa = st.session_state.sub_community, st.session_state.villa
 st.success(f"✅ Logged in as: **{sub_community} - Villa {villa}**")
 
-tab1, tab2, tab3, tab4 = st.tabs(["📅 Availability", "➕ Book", "📋 My Bookings", "📜 Activity Log"])
+# --- TAB SWITCHING LOGIC ---
+if "active_tab" not in st.session_state:
+    st.session_state.active_tab = 0
 
-with tab1:
+def set_tab(idx):
+    st.session_state.active_tab = idx
+
+tab_list = ["📅 Availability", "➕ Book", "📋 My Bookings", "📜 Activity Log"]
+tabs = st.tabs(tab_list)
+
+# Tab 1: Availability
+with tabs[0]:
     st.subheader("Court Availability")
     date_options = [f"{d.strftime('%Y-%m-%d')} ({d.strftime('%A')})" for d in get_next_14_days()]
     selected_date_full = st.selectbox("Select Date:", date_options)
@@ -306,11 +318,11 @@ with tab1:
 
     bookings_with_details = get_bookings_for_day_with_details(selected_date)
     
-    # Header logic for interactive grid
+    # Grid Header
     cols = st.columns([1.2] + [1] * len(courts))
     cols[0].markdown("**Time**")
     for i, court in enumerate(courts):
-        cols[i+1].markdown(f"**{court}**")
+        cols[i+1].markdown(f"<div style='text-align:center; font-size:11px;'><b>{court}</b></div>", unsafe_allow_html=True)
     
     for h in start_hours:
         cols = st.columns([1.2] + [1] * len(courts))
@@ -318,18 +330,19 @@ with tab1:
         for i, court in enumerate(courts):
             key = (court, h)
             if is_slot_in_past(selected_date, h):
-                cols[i+1].write("—")
+                cols[i+1].markdown("<div style='text-align:center; color:#555;'>—</div>", unsafe_allow_html=True)
             elif key in bookings_with_details:
                 full_comm, villa_num = bookings_with_details[key].rsplit(" - ", 1)
                 label = f"{abbreviate_community(full_comm)}-{villa_num}"
-                cols[i+1].markdown(f"<div style='font-size:10px; color:#ff6b6b; font-weight:bold; text-align:center;'>{label}</div>", unsafe_allow_html=True)
+                cols[i+1].markdown(f"<div style='font-size:9px; color:#ff6b6b; font-weight:bold; text-align:center; border:1px solid #ff6b6b33; border-radius:4px; padding:4px;'>{label}</div>", unsafe_allow_html=True)
             else:
-                # Click to pre-fill logic
                 if cols[i+1].button("Book", key=f"grid_{selected_date}_{court}_{h}"):
                     st.session_state.pf_date = selected_date_full
                     st.session_state.pf_court = court
                     st.session_state.pf_hour = h
-                    st.toast(f"Slot selected: {court} at {h:02d}:00", icon="🎾")
+                    # Using a query param or re-triggering logic to focus on Book tab is limited in standard tabs,
+                    # but we inform the user and pre-fill the state.
+                    st.success(f"Slot {court} @ {h:02d}:00 selected! Click the '➕ Book' tab above to confirm.")
 
     st.link_button("🌐 View Full 14-Day Schedule (Full Page)", url="/?view=full")
     
@@ -380,25 +393,23 @@ with tab1:
                 st.write("No active bookings found for this villa.")
 
 
-with tab2:
+# Tab 2: Book
+with tabs[1]:
     st.subheader("Book a New Slot")
-    st.info("App allows 6 Active bookings spanning 14 days, A maximum of 2 active bookings per day.")
     
-    date_options = [f"{d.strftime('%Y-%m-%d')} ({d.strftime('%A')})" for d in get_next_14_days()]
-    
-    # Handle Prefill
+    # Handle Prefill Logic
     d_idx = 0
     if "pf_date" in st.session_state and st.session_state.pf_date in date_options:
         d_idx = date_options.index(st.session_state.pf_date)
     
-    selected_date_full = st.selectbox("Date:", date_options, index=d_idx)
+    selected_date_full = st.selectbox("Date:", date_options, index=d_idx, key="book_date_sel")
     date_choice = selected_date_full.split(" (")[0]
     
     c_idx = 0
     if "pf_court" in st.session_state and st.session_state.pf_court in courts:
         c_idx = courts.index(st.session_state.pf_court)
 
-    court_choice = st.selectbox("Court:", courts, index=c_idx)
+    court_choice = st.selectbox("Court:", courts, index=c_idx, key="book_court_sel")
     
     free_hours = get_available_hours(court_choice, date_choice)
     
@@ -411,7 +422,7 @@ with tab2:
             h_idx = free_hours.index(st.session_state.pf_hour)
             
         time_options = [f"{h:02d}:00 - {h+1:02d}:00" for h in free_hours]
-        time_choice = st.selectbox("Time Slot:", time_options, index=h_idx)
+        time_choice = st.selectbox("Time Slot:", time_options, index=h_idx, key="book_time_sel")
 
     active_count = get_active_bookings_count(villa, sub_community)
     daily_count = get_daily_bookings_count(villa, sub_community, date_choice)
@@ -422,7 +433,7 @@ with tab2:
     with col_status2:
         st.info(f"Bookings for {date_choice}: **{daily_count} / 2**")
 
-    if st.button("Book This Slot", type="primary"):
+    if st.button("Confirm & Book Slot", type="primary"):
         if not time_choice:
             st.error("Please select an available time slot.")
         elif active_count >= 6: 
@@ -440,10 +451,16 @@ with tab2:
                     if key in st.session_state: del st.session_state[key]
                 st.balloons()
                 st.success(f"✅ SUCCESS! {court_choice} booked for {date_choice} at {start_h:02d}:00")
-                time.sleep(2.5) 
+                time.sleep(2) 
                 st.rerun()
+                
+    if st.button("Clear Selection / Reset"):
+        for key in ["pf_date", "pf_court", "pf_hour"]:
+            if key in st.session_state: del st.session_state[key]
+        st.rerun()
 
-with tab3:
+# Tab 3: My Bookings
+with tabs[2]:
     st.subheader("📋 My Bookings")
     
     court_locations = {
@@ -548,9 +565,8 @@ with tab3:
                     st.rerun()
                 st.markdown('<div style="margin-bottom: 25px;"></div>', unsafe_allow_html=True)
 
-
-
-with tab4:
+# Tab 4: Activity Log
+with tabs[3]:
     st.subheader("Community Activity Log (Last 14 Days)")
     st.caption("Timezone: UTC+4")
     
@@ -601,7 +617,6 @@ st.download_button(
     file_name=f"court_booking_backup_{get_today()}.zip",
     mime="application/zip"
 )
-
 
 # Footer
 image_url = "https://raw.githubusercontent.com/mahadevbk/courtbooking/main/qr-code.miracourtbooking.streamlit.app.png"
