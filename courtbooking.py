@@ -310,7 +310,58 @@ with tab1:
         data[label] = row
 
     st.dataframe(pd.DataFrame(data, index=courts).style.map(color_cell), width="stretch")
+
     st.link_button("🌐 View Full 14-Day Schedule (Full Page)", url="/?view=full")
+
+# --- QUICK BOOK SECTION ---
+    st.divider()
+    st.markdown("### ⚡ Quick Book")
+    
+    q_col1, q_col2, q_col3 = st.columns(3)
+    
+    with q_col1:
+        q_court = st.selectbox("Select Court", options=courts, key="q_court_select")
+    
+    with q_col2:
+        q_free_hours = get_available_hours(q_court, selected_date)
+        if not q_free_hours:
+            st.warning("No slots available")
+            q_time = None
+        else:
+            q_time_options = [f"{h:02d}:00" for h in q_free_hours]
+            q_time = st.selectbox("Select Time", options=q_time_options, key="q_time_select")
+            
+    with q_col3:
+        st.write("") # Spacer to align with dropdowns
+        st.write("") 
+        if st.button("🚀 Book Now", key="q_book_btn", use_container_width=True):
+            if q_time:
+                active_count = get_active_bookings_count(villa, sub_community)
+                daily_count = get_daily_bookings_count(villa, sub_community, selected_date)
+                
+                if active_count >= 6:
+                    st.error("Limit Reached (Max 6 active)")
+                elif daily_count >= 2:
+                    st.error("Daily Limit Reached (Max 2 per day)")
+                else:
+                    start_h = int(q_time.split(":")[0])
+                    if is_slot_booked(q_court, selected_date, start_h):
+                        st.error("Slot taken!")
+                    else:
+                        book_slot(villa, sub_community, q_court, selected_date, start_h)
+                        st.balloons()
+                        st.success(f"Booked {q_court} at {q_time}")
+                        time.sleep(2)
+                        st.rerun()
+
+    
+    # (Rest of Tab 1: Community Insights and Lookup remains identical to your file)
+
+
+
+
+
+    #st.link_button("🌐 View Full 14-Day Schedule (Full Page)", url="/?view=full")
     
     st.divider()
     st.subheader("📊 Community Usage Insights")
@@ -602,6 +653,3 @@ with col2:
     <a href='https://devs-scripts.streamlit.app/' style='color: #ccff00;'>Other Scripts by dev</a> on Streamlit.
     </div>
     """, unsafe_allow_html=True)
-
-
-
