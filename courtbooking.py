@@ -413,38 +413,22 @@ with tab2:
 
 
 
+
 with tab3:
     st.subheader("📋 My Bookings")
     
-    # Custom CSS to make the cancel button match the Audiowide theme and stand out
-    st.markdown("""
-        <style>
-        div[st-sidebar-separator] { margin: 0; }
-        /* Style for the specific cancel buttons */
-        .stButton>button[key^="cancel_"] {
-            font-family: 'Audiowide', cursive !important;
-            text-transform: uppercase;
-            letter-spacing: 1px;
-            background-color: #ff4b4b !important; /* Danger Red */
-            color: white !important;
-            border: none !important;
-            border-radius: 0px 0px 12px 12px !important; /* Rounds bottom corners to match card */
-            margin-top: -16px !important; /* Pulls button up to touch the card */
-            padding: 10px !important;
-        }
-        /* Custom Success Message Style */
-        .custom-success {
-            font-family: 'Audiowide', cursive;
-            background-color: #d4edda;
-            color: #155724;
-            padding: 15px;
-            border-radius: 8px;
-            border-left: 5px solid #28a745;
-            margin-bottom: 20px;
-            text-transform: uppercase;
-        }
-        </style>
-    """, unsafe_allow_html=True)
+    # --- COURT LOCATION MAPPING ---
+    court_locations = {
+        "Mira 2": "https://maps.google.com/?q=25.003702,55.306740",
+        "Mira 4": "https://maps.google.com/?q=25.010338,55.305798",
+        "Mira 5A": "https://maps.google.com/?q=25.007513,55.303432",
+        "Mira 5B": "https://maps.google.com/?q=25.007513,55.303432",
+        "Mira Oasis 1": "https://maps.google.com/?q=25.010536,55.296654",
+        "Mira Oasis 2": "https://maps.google.com/?q=25.016439,55.298626",
+        "Mira Oasis 3A": "https://maps.google.com/?q=25.012520,55.298313",
+        "Mira Oasis 3B": "https://maps.google.com/?q=25.012520,55.298313",
+        "Mira Oasis 3C": "https://maps.google.com/?q=25.015327,55.301998"
+    }
 
     # Fetch user specific bookings
     my_b = get_user_bookings(villa, sub_community)
@@ -490,15 +474,21 @@ with tab3:
             day_name = b_date.strftime('%A')
             formatted_date = b_date.strftime('%b %d, %Y')
             
+            # Calculate time range
             start_time = min(b['start_hours'])
             end_time = max(b['start_hours']) + 1
             time_display = f"{start_time:02d}:00 - {end_time:02d}:00"
             
+            # ID Display logic
             id_list = sorted(b['ids'])
             id_display = f"#{id_list[0]}" if len(id_list) == 1 else f"#{id_list[0]}-{id_list[-1]}"
             
+            # Get location URL
+            map_url = court_locations.get(b['court'], "#")
+            
+            # Use a container to group the card and the button
             with st.container():
-                # CSS Card Styling (Reduced bottom margin so it connects to button)
+                # CSS Card Styling (Added Location Link)
                 st.markdown(f"""
                     <div style="
                         background-color: #0d5384; 
@@ -509,8 +499,9 @@ with tab3:
                         box-shadow: 0px 4px 10px rgba(0,0,0,0.4);
                         margin-top: 15px;
                     ">
-                        <div style="font-family: 'Audiowide'; color: rgba(255,255,255,0.6); font-size: 0.9rem; margin-bottom: 5px;">
-                            BOOKING CONF.: {id_display}
+                        <div style="display: flex; justify-content: space-between; font-family: 'Audiowide'; color: rgba(255,255,255,0.6); font-size: 0.8rem; margin-bottom: 5px;">
+                            <span>BOOKING CONF.: {id_display}</span>
+                            <a href="{map_url}" target="_blank" style="color: #ccff00; text-decoration: none;">📍 View Location</a>
                         </div>
                         <div style="display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid rgba(255,255,255,0.1); padding-bottom: 8px; margin-bottom: 10px;">
                             <span style="font-family: 'Audiowide'; font-size: 1.3rem; color: #ccff00;">🎾 {b['court']}</span>
@@ -525,17 +516,15 @@ with tab3:
                     </div>
                 """, unsafe_allow_html=True)
                 
-                # Action Button (Visually attached to card)
-                if st.button(f"❌ CANCEL BOOKING {id_display}", key=f"cancel_{i}", use_container_width=True):
+                # Integrated Action Button
+                if st.button(f"❌ Cancel Booking {id_display}", key=f"cancel_{i}", use_container_width=True):
                     for booking_id in b['ids']:
                         delete_booking(booking_id, villa, sub_community)
-                    
-                    # Updated Success Message
-                    st.markdown(f'<div class="custom-success">✅ SUCCESS , BOOKING CANCELLED</div>', unsafe_allow_html=True)
+                    st.success(f"Successfully cancelled booking {id_display}")
                     time.sleep(1.5)
                     st.rerun()
-                
                 st.markdown('<div style="margin-bottom: 25px;"></div>', unsafe_allow_html=True)
+
 
 
 
