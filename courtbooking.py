@@ -83,7 +83,6 @@ def get_daily_bookings_count(villa, sub_community, date_str):
 
 
 def is_slot_booked(court, date_str, start_hour):
-    # Check if slot is already booked in DB
     response = supabase.table("bookings").select("id")\
         .eq("court", court)\
         .eq("date", date_str)\
@@ -187,14 +186,11 @@ if "expired_cleaned" not in st.session_state:
 
 
 def get_available_hours(court, date_str):
-    # 1. Get all hours already booked for this court/date
     response = supabase.table("bookings").select("start_hour").eq("court", court).eq("date", date_str).execute()
     booked_hours = [row['start_hour'] for row in response.data]
     
-    # 2. Filter the global start_hours list
     available = []
     for h in start_hours:
-        # Keep if NOT booked AND NOT in the past
         if h not in booked_hours and not is_slot_in_past(date_str, h):
             available.append(h)
     return available
@@ -212,6 +208,22 @@ st.markdown("""
 h1, h2, h3, .stTitle { font-family: 'Audiowide', cursive !important; color: #2c3e50; }
 .stButton>button { background-color: #4CAF50; color: white; font-family: 'Audiowide', cursive; }
 .stDataFrame th { font-family: 'Audiowide', cursive; font-size: 12px; background-color: #2c3e50 !important; color: white !important; }
+
+/* Custom grid button styling */
+div[data-testid="stColumn"] button {
+    width: 100% !important;
+    padding: 5px 2px !important;
+    font-size: 11px !important;
+    border-radius: 4px !important;
+    border: none !important;
+    background-color: #2e7d32 !important;
+    color: #ccff00 !important;
+    transition: transform 0.1s ease;
+}
+div[data-testid="stColumn"] button:hover {
+    transform: scale(1.05);
+    background-color: #388e3c !important;
+}
 </style>
 """, unsafe_allow_html=True)
 
@@ -249,7 +261,6 @@ if st.query_params.get("view") == "full":
 
 st.subheader("🎾 Book that Court ...")    
 st.caption("An Un-Official & Community Driven Booking Solution.")
-#st.info("Bookings now show as Booking cards with the Delete option. ")
 
 villas_active = get_villas_with_active_bookings()
     
@@ -294,22 +305,32 @@ with tab1:
     selected_date = selected_date_full.split(" (")[0]
 
     bookings_with_details = get_bookings_for_day_with_details(selected_date)
-    data = {}
+    
+    # Header logic for interactive grid
+    cols = st.columns([1.2] + [1] * len(courts))
+    cols[0].markdown("**Time**")
+    for i, court in enumerate(courts):
+        cols[i+1].markdown(f"**{court}**")
+    
     for h in start_hours:
-        label = f"{h:02d}:00 - {h+1:02d}:00"
-        row = []
-        for court in courts:
+        cols = st.columns([1.2] + [1] * len(courts))
+        cols[0].write(f"{h:02d}:00")
+        for i, court in enumerate(courts):
             key = (court, h)
             if is_slot_in_past(selected_date, h):
-                row.append("—")
+                cols[i+1].write("—")
             elif key in bookings_with_details:
                 full_comm, villa_num = bookings_with_details[key].rsplit(" - ", 1)
-                row.append(f"{abbreviate_community(full_comm)}-{villa_num}")
+                label = f"{abbreviate_community(full_comm)}-{villa_num}"
+                cols[i+1].markdown(f"<div style='font-size:10px; color:#ff6b6b; font-weight:bold; text-align:center;'>{label}</div>", unsafe_allow_html=True)
             else:
-                row.append("Available")
-        data[label] = row
+                # Click to pre-fill logic
+                if cols[i+1].button("Book", key=f"grid_{selected_date}_{court}_{h}"):
+                    st.session_state.pf_date = selected_date_full
+                    st.session_state.pf_court = court
+                    st.session_state.pf_hour = h
+                    st.toast(f"Slot selected: {court} at {h:02d}:00", icon="🎾")
 
-    st.dataframe(pd.DataFrame(data, index=courts).style.map(color_cell), width="stretch")
     st.link_button("🌐 View Full 14-Day Schedule (Full Page)", url="/?view=full")
     
     st.divider()
@@ -362,30 +383,39 @@ with tab1:
 with tab2:
     st.subheader("Book a New Slot")
     st.info("App allows 6 Active bookings spanning 14 days, A maximum of 2 active bookings per day.")
-    # Date selection
-    date_options = [f"{d.strftime('%Y-%m-%d')} ({d.strftime('%A')})" for d in get_next_14_days()]
-    selected_date_full = st.selectbox("Date:", date_options)
     
-    # Extract just the date part (YYYY-MM-DD) for database logic
+    date_options = [f"{d.strftime('%Y-%m-%d')} ({d.strftime('%A')})" for d in get_next_14_days()]
+    
+    # Handle Prefill
+    d_idx = 0
+    if "pf_date" in st.session_state and st.session_state.pf_date in date_options:
+        d_idx = date_options.index(st.session_state.pf_date)
+    
+    selected_date_full = st.selectbox("Date:", date_options, index=d_idx)
     date_choice = selected_date_full.split(" (")[0]
     
-    court_choice = st.selectbox("Court:", courts)
+    c_idx = 0
+    if "pf_court" in st.session_state and st.session_state.pf_court in courts:
+        c_idx = courts.index(st.session_state.pf_court)
+
+    court_choice = st.selectbox("Court:", courts, index=c_idx)
     
-    # Dynamically fetch only free slots
     free_hours = get_available_hours(court_choice, date_choice)
     
     if not free_hours:
         st.warning(f"😔 Sorry, no slots available for {court_choice} on {date_choice}.")
         time_choice = None
     else:
+        h_idx = 0
+        if "pf_hour" in st.session_state and st.session_state.pf_hour in free_hours:
+            h_idx = free_hours.index(st.session_state.pf_hour)
+            
         time_options = [f"{h:02d}:00 - {h+1:02d}:00" for h in free_hours]
-        time_choice = st.selectbox("Time Slot:", time_options)
+        time_choice = st.selectbox("Time Slot:", time_options, index=h_idx)
 
-    # Fetch current booking counts for validation
     active_count = get_active_bookings_count(villa, sub_community)
     daily_count = get_daily_bookings_count(villa, sub_community, date_choice)
     
-    # Display status to the user
     col_status1, col_status2 = st.columns(2)
     with col_status1:
         st.info(f"Total active bookings: **{active_count} / 6**")
@@ -401,23 +431,21 @@ with tab2:
             st.error(f"🚫 Daily limit reached. You cannot have more than 2 bookings on {date_choice}.")
         else:
             start_h = int(time_choice.split(":")[0])
-            # Final check to prevent double booking if two users are on the same page
             if is_slot_booked(court_choice, date_choice, start_h):
                 st.error("❌ This slot was just taken! Please refresh and try another.")
             else:
                 book_slot(villa, sub_community, court_choice, date_choice, start_h)
+                # Reset prefill state
+                for key in ["pf_date", "pf_court", "pf_hour"]:
+                    if key in st.session_state: del st.session_state[key]
                 st.balloons()
                 st.success(f"✅ SUCCESS! {court_choice} booked for {date_choice} at {start_h:02d}:00")
                 time.sleep(2.5) 
                 st.rerun()
 
-
-
-
 with tab3:
     st.subheader("📋 My Bookings")
     
-    # --- COURT LOCATION MAPPING ---
     court_locations = {
         "Mira 2": "https://maps.google.com/?q=25.003702,55.306740",
         "Mira 4": "https://maps.google.com/?q=25.010338,55.305798",
@@ -430,13 +458,11 @@ with tab3:
         "Mira Oasis 3C": "https://maps.google.com/?q=25.015327,55.301998"
     }
 
-    # Fetch user specific bookings
     my_b = get_user_bookings(villa, sub_community)
     
     if not my_b:
         st.info("You have no active bookings.")
     else:
-        # --- MERGING LOGIC FOR CONSECUTIVE HOURS ---
         df_my_b = pd.DataFrame(my_b)
         df_my_b = df_my_b.sort_values(['date', 'court', 'start_hour'])
         
@@ -468,27 +494,21 @@ with tab3:
                         }
             merged_bookings.append(current_booking)
 
-        # --- RENDER CARDS ---
         for i, b in enumerate(merged_bookings):
             b_date = datetime.strptime(b['date'], '%Y-%m-%d')
             day_name = b_date.strftime('%A')
             formatted_date = b_date.strftime('%b %d, %Y')
             
-            # Calculate time range
             start_time = min(b['start_hours'])
             end_time = max(b['start_hours']) + 1
             time_display = f"{start_time:02d}:00 - {end_time:02d}:00"
             
-            # ID Display logic
             id_list = sorted(b['ids'])
             id_display = f"#{id_list[0]}" if len(id_list) == 1 else f"#{id_list[0]}-{id_list[-1]}"
             
-            # Get location URL
             map_url = court_locations.get(b['court'], "#")
             
-            # Use a container to group the card and the button
             with st.container():
-                # CSS Card Styling (Location link moved under court name)
                 st.markdown(f"""
                     <div style="
                         background-color: #0d5384; 
@@ -520,7 +540,6 @@ with tab3:
                     </div>
                 """, unsafe_allow_html=True)
                 
-                # Integrated Action Button
                 if st.button(f"❌ Cancel Booking {id_display}", key=f"cancel_{i}", use_container_width=True):
                     for booking_id in b['ids']:
                         delete_booking(booking_id, villa, sub_community)
