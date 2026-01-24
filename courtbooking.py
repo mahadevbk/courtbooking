@@ -488,7 +488,7 @@ with tab3:
             
             # Use a container to group the card and the button
             with st.container():
-                # CSS Card Styling (Added Location Link)
+                # CSS Card Styling (Location link moved under court name)
                 st.markdown(f"""
                     <div style="
                         background-color: #0d5384; 
@@ -499,13 +499,17 @@ with tab3:
                         box-shadow: 0px 4px 10px rgba(0,0,0,0.4);
                         margin-top: 15px;
                     ">
-                        <div style="display: flex; justify-content: space-between; font-family: 'Audiowide'; color: rgba(255,255,255,0.6); font-size: 0.8rem; margin-bottom: 5px;">
-                            <span>BOOKING CONF.: {id_display}</span>
-                            <a href="{map_url}" target="_blank" style="color: #ccff00; text-decoration: none;">📍 View Location</a>
+                        <div style="font-family: 'Audiowide'; color: rgba(255,255,255,0.6); font-size: 0.8rem; margin-bottom: 5px;">
+                            BOOKING CONF.: {id_display}
                         </div>
-                        <div style="display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid rgba(255,255,255,0.1); padding-bottom: 8px; margin-bottom: 10px;">
+                        <div style="display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 2px;">
                             <span style="font-family: 'Audiowide'; font-size: 1.3rem; color: #ccff00;">🎾 {b['court']}</span>
                             <span style="font-size: 1.1rem; font-weight: bold; color: white;">{sub_community} - {villa}</span>
+                        </div>
+                        <div style="margin-bottom: 10px; border-bottom: 1px solid rgba(255,255,255,0.1); padding-bottom: 8px;">
+                            <a href="{map_url}" target="_blank" style="color: #ccff00; text-decoration: none; font-size: 0.9rem; font-weight: bold;">
+                                📍 View Location Pin
+                            </a>
                         </div>
                         <div>
                             <span style="font-size: 1.0rem; opacity: 0.9;">{day_name}, {formatted_date}</span>
@@ -524,7 +528,6 @@ with tab3:
                     time.sleep(1.5)
                     st.rerun()
                 st.markdown('<div style="margin-bottom: 25px;"></div>', unsafe_allow_html=True)
-
 
 
 
