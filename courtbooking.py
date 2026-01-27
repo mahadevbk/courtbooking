@@ -187,14 +187,18 @@ if "expired_cleaned" not in st.session_state:
 
 
 def get_available_hours(court, date_str):
-    # 1. Get all hours already booked for this court/date
-    response = supabase.table("bookings").select("start_hour").eq("court", court).eq("date", date_str).execute()
-    booked_hours = [row['start_hour'] for row in response.data]
+    try:
+        # 1. Get all hours already booked for this court/date
+        response = supabase.table("bookings").select("start_hour").eq("court", court).eq("date", date_str).execute()
+        booked_hours = [row['start_hour'] for row in response.data]
+    except Exception as e:
+        # This prevents the app from crashing when Supabase returns HTML instead of JSON
+        st.warning("⚠️ Database connection error. Please try again in a few seconds.")
+        return []
     
     # 2. Filter the global start_hours list
     available = []
     for h in start_hours:
-        # Keep if NOT booked AND NOT in the past
         if h not in booked_hours and not is_slot_in_past(date_str, h):
             available.append(h)
     return available
