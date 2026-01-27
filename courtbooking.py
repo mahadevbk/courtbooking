@@ -174,16 +174,15 @@ def get_peak_time_data():
 
 
 def delete_expired_bookings():
-    now = get_utc_plus_4()
-    today_str = now.strftime('%Y-%m-%d')
-    current_hour = now.hour
-    
-    supabase.table("bookings").delete().lt("date", today_str).execute()
-    supabase.table("bookings").delete().eq("date", today_str).lt("start_hour", current_hour).execute()
-
-if "expired_cleaned" not in st.session_state:
-    delete_expired_bookings()
-    st.session_state["expired_cleaned"] = True
+    try:
+        now = get_utc_plus_4()
+        today_str = now.strftime('%Y-%m-%d')
+        current_hour = now.hour
+        
+        supabase.table("bookings").delete().lt("date", today_str).execute()
+        supabase.table("bookings").delete().eq("date", today_str).lt("start_hour", current_hour).execute()
+    except Exception:
+        pass # Silently fail here so the app can still load for the user
 
 
 def get_available_hours(court, date_str):
