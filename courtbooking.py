@@ -112,9 +112,13 @@ def book_slot(villa, sub_community, court, date_str, start_hour):
     add_log("Booking Created", log_detail)
 
 def get_user_bookings(villa, sub_community):
+    today_str = get_today().strftime('%Y-%m-%d')
+    now_hour = get_utc_plus_4().hour
+    
     response = supabase.table("bookings").select("id, court, date, start_hour")\
         .eq("villa", villa)\
         .eq("sub_community", sub_community)\
+        .or_(f"date.gt.{today_str},and(date.eq.{today_str},start_hour.gte.{now_hour})")\
         .order("date")\
         .order("start_hour")\
         .execute()
