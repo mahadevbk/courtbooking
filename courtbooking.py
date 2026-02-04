@@ -597,7 +597,8 @@ with tab4:
     
     if logs:
         log_df = pd.DataFrame(logs, columns=["timestamp", "event_type", "details"])
-        log_df['timestamp'] = pd.to_datetime(log_df['timestamp']).dt.strftime('%b %d, %H:%M')
+        #log_df['timestamp'] = pd.to_datetime(log_df['timestamp']).dt.strftime('%b %d, %H:%M')
+        log_df['timestamp'] = pd.to_datetime(log_df['timestamp'], format='ISO8601').dt.strftime('%b %d, %H:%M')
 
         def style_rows(row):
             styles = [''] * len(row)
