@@ -623,24 +623,41 @@ st.divider()
 st.subheader("💾 Data Backup")
 
 def create_zip_backup():
-    bookings_data = supabase.table("bookings").select("*").execute().data
-    logs_data = supabase.table("logs").select("*").execute().data
-    
-    df_bookings = pd.DataFrame(bookings_data)
-    df_logs = pd.DataFrame(logs_data)
-    
-    buf = io.BytesIO()
-    with zipfile.ZipFile(buf, "x", zipfile.ZIP_DEFLATED) as vz:
-        vz.writestr(f"bookings_backup_{get_today()}.csv", df_bookings.to_csv(index=False))
-        vz.writestr(f"logs_backup_{get_today()}.csv", df_logs.to_csv(index=False))
-    return buf.getvalue()
+    try:
+        # Fetch data from Supabase
+        bookings_data = supabase.table("bookings").select("*").execute().data
+        logs_data = supabase.table("logs").select("*").execute().data
+        
+        # Convert to DataFrames
+        df_bookings = pd.DataFrame(bookings_data)
+        df_logs = pd.DataFrame(logs_data)
+        
+        # Create an in-memory ZIP file
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as vz:
+            # We use "w" (write) instead of "x" (exclusive create) for better compatibility
+            vz.writestr(f"bookings_backup_{get_today()}.csv", df_bookings.to_csv(index=False))
+            vz.writestr(f"logs_backup_{get_today()}.csv", df_logs.to_csv(index=False))
+        
+        return buf.getvalue()
+    except Exception as e:
+        st.error(f"Backup failed: {e}")
+        return None
 
-st.download_button(
-    label="📥 Download All Data (ZIP)",
-    data=create_zip_backup(),
-    file_name=f"court_booking_backup_{get_today()}.zip",
-    mime="application/zip"
-)
+# Materialize the data before passing it to the download button
+# This prevents the 'Missing file' error in the Streamlit MediaHandler
+backup_data = create_zip_backup()
+
+if backup_data:
+    st.download_button(
+        label="📥 Download All Data (ZIP)",
+        data=backup_data,
+        file_name=f"court_booking_backup_{get_today()}.zip",
+        mime="application/zip",
+        use_container_width=True
+    )
+else:
+    st.warning("⚠️ Unable to generate backup at this time.")
 
 
 # Footer
