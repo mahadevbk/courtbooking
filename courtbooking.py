@@ -628,45 +628,38 @@ with tab4:
         st.info("No activity recorded in the last 14 days.")
 
 # --- BACKUP SECTION ---
+# --- BACKUP SECTION (FIXED) ---
 st.divider()
 st.subheader("💾 Data Backup")
 
-def create_zip_backup():
+def get_zip_data():
     try:
-        # Fetch data from Supabase
         bookings_data = supabase.table("bookings").select("*").execute().data
         logs_data = supabase.table("logs").select("*").execute().data
         
-        # Convert to DataFrames
         df_bookings = pd.DataFrame(bookings_data)
         df_logs = pd.DataFrame(logs_data)
         
-        # Create an in-memory ZIP file
         buf = io.BytesIO()
         with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as vz:
-            # We use "w" (write) instead of "x" (exclusive create) for better compatibility
-            vz.writestr(f"bookings_backup_{get_today()}.csv", df_bookings.to_csv(index=False))
-            vz.writestr(f"logs_backup_{get_today()}.csv", df_logs.to_csv(index=False))
-        
+            vz.writestr(f"bookings_{get_today()}.csv", df_bookings.to_csv(index=False))
+            vz.writestr(f"logs_{get_today()}.csv", df_logs.to_csv(index=False))
         return buf.getvalue()
     except Exception as e:
-        st.error(f"Backup failed: {e}")
         return None
 
-# Materialize the data before passing it to the download button
-# This prevents the 'Missing file' error in the Streamlit MediaHandler
-backup_data = create_zip_backup()
-
-if backup_data:
-    st.download_button(
-        label="📥 Download All Data (ZIP)",
-        data=backup_data,
-        file_name=f"court_booking_backup_{get_today()}.zip",
-        mime="application/zip",
-        use_container_width=True
-    )
-else:
-    st.warning("⚠️ Unable to generate backup at this time.")
+# Use a standard button to "prepare" the download if the auto-generate fails
+if st.button("Generate Backup Link"):
+    data = get_zip_data()
+    if data:
+        st.download_button(
+            label="Click here to Download ZIP",
+            data=data,
+            file_name=f"court_booking_backup_{get_today()}.zip",
+            mime="application/zip"
+        )
+    else:
+        st.error("Failed to fetch data for backup.")
 
 
 # Footer
