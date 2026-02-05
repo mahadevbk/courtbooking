@@ -128,10 +128,8 @@ def get_user_bookings(villa, sub_community):
             .execute()
         return response.data
     except Exception as e:
-        # Log the error to the console for debugging
-        print(f"Database error in get_user_bookings: {e}")
-        # Return an empty list so the app doesn't crash, just shows "No bookings"
-        return []
+        st.error("📡 Database connection lag. Please refresh.")
+        return [] # Return empty list so the UI doesn't crash
 
 def delete_booking(booking_id, villa, sub_community):
     record = supabase.table("bookings").select("court, date, start_hour").eq("id", booking_id).single().execute()
