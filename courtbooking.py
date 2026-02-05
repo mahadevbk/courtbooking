@@ -6,6 +6,7 @@ import pandas as pd
 import matplotlib.pyplot as plt
 import zipfile
 import io
+from postgrest.exceptions import APIError # Add this import at the top
 
 # --- DATABASE SETUP (SUPABASE) ---
 url: str = st.secrets["SUPABASE_URL"]
@@ -111,18 +112,26 @@ def book_slot(villa, sub_community, court, date_str, start_hour):
     log_detail = f"{sub_community} Villa {villa} booked {court} for {date_str} at {start_hour:02d}:00"
     add_log("Booking Created", log_detail)
 
+
+
 def get_user_bookings(villa, sub_community):
     today_str = get_today().strftime('%Y-%m-%d')
     now_hour = get_utc_plus_4().hour
     
-    response = supabase.table("bookings").select("id, court, date, start_hour")\
-        .eq("villa", villa)\
-        .eq("sub_community", sub_community)\
-        .or_(f"date.gt.{today_str},and(date.eq.{today_str},start_hour.gte.{now_hour})")\
-        .order("date")\
-        .order("start_hour")\
-        .execute()
-    return response.data
+    try:
+        response = supabase.table("bookings").select("id, court, date, start_hour")\
+            .eq("villa", villa)\
+            .eq("sub_community", sub_community)\
+            .or_(f"date.gt.{today_str},and(date.eq.{today_str},start_hour.gte.{now_hour})")\
+            .order("date")\
+            .order("start_hour")\
+            .execute()
+        return response.data
+    except Exception as e:
+        # Log the error to the console for debugging
+        print(f"Database error in get_user_bookings: {e}")
+        # Return an empty list so the app doesn't crash, just shows "No bookings"
+        return []
 
 def delete_booking(booking_id, villa, sub_community):
     record = supabase.table("bookings").select("court, date, start_hour").eq("id", booking_id).single().execute()
