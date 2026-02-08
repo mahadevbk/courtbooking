@@ -3,15 +3,20 @@ import streamlit as st
 from supabase import create_client, Client
 from datetime import datetime, timedelta, timezone
 import pandas as pd
-import matplotlib.pyplot as plt
 import zipfile
 import io
-from postgrest.exceptions import APIError # Add this import at the top
+import random
+from postgrest.exceptions import APIError 
 
 # --- DATABASE SETUP (SUPABASE) ---
-url: str = st.secrets["SUPABASE_URL"]
-key: str = st.secrets["SUPABASE_KEY"]
-supabase: Client = create_client(url, key)
+# Cache the client to prevent re-initialization on every rerun
+@st.cache_resource
+def init_supabase():
+    url: str = st.secrets["SUPABASE_URL"]
+    key: str = st.secrets["SUPABASE_KEY"]
+    return create_client(url, key)
+
+supabase: Client = init_supabase()
 
 # Constants
 sub_community_list = [
@@ -34,16 +39,43 @@ def get_next_14_days():
     today = get_today()
     return [today + timedelta(days=i) for i in range(15)]
 
+# --- RETRY LOGIC WRAPPER ---
+def run_query(query_method):
+    """
+    Executes a Supabase query with retry logic to handle network blips
+    and Cloudflare 500 errors.
+    """
+    max_retries = 3
+    for attempt in range(max_retries):
+        try:
+            return query_method.execute()
+        except Exception as e:
+            # Check if it's the last attempt
+            if attempt == max_retries - 1:
+                st.error(f"⚠️ Connection Error: {str(e)}")
+                # Return a dummy object with empty data to prevent crash
+                class DummyResponse:
+                    data = []
+                    count = 0
+                return DummyResponse()
+            
+            # Wait with exponential backoff before retrying (0.5s, 1s, 2s)
+            time.sleep((0.5 * (2 ** attempt)) + random.uniform(0, 0.2))
+
 def add_log(event_type, details):
     timestamp = get_utc_plus_4().isoformat()
-    supabase.table("logs").insert({
-        "timestamp": timestamp,
-        "event_type": event_type,
-        "details": details
-    }).execute()
+    # We use fire-and-forget for logs, but use retry just in case
+    try:
+        run_query(supabase.table("logs").insert({
+            "timestamp": timestamp,
+            "event_type": event_type,
+            "details": details
+        }))
+    except:
+        pass # Don't crash app if logging fails
 
 def get_bookings_for_day_with_details(date_str):
-    response = supabase.table("bookings").select("court, start_hour, sub_community, villa").eq("date", date_str).execute()
+    response = run_query(supabase.table("bookings").select("court, start_hour, sub_community, villa").eq("date", date_str))
     return {(row['court'], row['start_hour']): f"{row['sub_community']} - {row['villa']}" for row in response.data}
 
 def abbreviate_community(full_name):
@@ -66,30 +98,32 @@ def color_cell(val):
 def get_active_bookings_count(villa, sub_community):
     today_str = get_today().strftime('%Y-%m-%d')
     now_hour = get_utc_plus_4().hour
-    response = supabase.table("bookings").select("id", count="exact")\
+    response = run_query(
+        supabase.table("bookings").select("id", count="exact")\
         .eq("villa", villa)\
         .eq("sub_community", sub_community)\
-        .or_(f"date.gt.{today_str},and(date.eq.{today_str},start_hour.gte.{now_hour})")\
-        .execute()
-    return response.count
+        .or_(f"date.gt.{today_str},and(date.eq.{today_str},start_hour.gte.{now_hour})")
+    )
+    return response.count if response.count is not None else 0
 
 
 def get_daily_bookings_count(villa, sub_community, date_str):
-    response = supabase.table("bookings").select("id", count="exact")\
+    response = run_query(
+        supabase.table("bookings").select("id", count="exact")\
         .eq("villa", villa)\
         .eq("sub_community", sub_community)\
-        .eq("date", date_str)\
-        .execute()
-    return response.count
+        .eq("date", date_str)
+    )
+    return response.count if response.count is not None else 0
 
 
 def is_slot_booked(court, date_str, start_hour):
-    # Check if slot is already booked in DB
-    response = supabase.table("bookings").select("id")\
+    response = run_query(
+        supabase.table("bookings").select("id")\
         .eq("court", court)\
         .eq("date", date_str)\
-        .eq("start_hour", start_hour)\
-        .execute()
+        .eq("start_hour", start_hour)
+    )
     return len(response.data) > 0
 
 def is_slot_in_past(date_str, start_hour):
@@ -102,77 +136,80 @@ def is_slot_in_past(date_str, start_hour):
     return False
 
 def book_slot(villa, sub_community, court, date_str, start_hour):
-    supabase.table("bookings").insert({
+    run_query(supabase.table("bookings").insert({
         "villa": villa,
         "sub_community": sub_community,
         "court": court,
         "date": date_str,
         "start_hour": start_hour
-    }).execute()
+    }))
     log_detail = f"{sub_community} Villa {villa} booked {court} for {date_str} at {start_hour:02d}:00"
     add_log("Booking Created", log_detail)
-
-
 
 def get_user_bookings(villa, sub_community):
     today_str = get_today().strftime('%Y-%m-%d')
     now_hour = get_utc_plus_4().hour
     
-    try:
-        response = supabase.table("bookings").select("id, court, date, start_hour")\
-            .eq("villa", villa)\
-            .eq("sub_community", sub_community)\
-            .or_(f"date.gt.{today_str},and(date.eq.{today_str},start_hour.gte.{now_hour})")\
-            .order("date")\
-            .order("start_hour")\
-            .execute()
-        return response.data
-    except Exception as e:
-        st.error("📡 Database connection lag. Please refresh.")
-        return [] # Return empty list so the UI doesn't crash
+    response = run_query(
+        supabase.table("bookings").select("id, court, date, start_hour")\
+        .eq("villa", villa)\
+        .eq("sub_community", sub_community)\
+        .or_(f"date.gt.{today_str},and(date.eq.{today_str},start_hour.gte.{now_hour})")\
+        .order("date")\
+        .order("start_hour")
+    )
+    return response.data
 
 def delete_booking(booking_id, villa, sub_community):
-    record = supabase.table("bookings").select("court, date, start_hour").eq("id", booking_id).single().execute()
+    # Retrieve details for logging before deleting
+    record = run_query(supabase.table("bookings").select("court, date, start_hour").eq("id", booking_id).single())
+    
     if record.data:
         b = record.data
         log_detail = f"{sub_community} Villa {villa} cancelled {b['court']} for {b['date']} at {b['start_hour']:02d}:00"
         add_log("Booking Deleted", log_detail)
     
-    supabase.table("bookings").delete().eq("id", booking_id).eq("villa", villa).eq("sub_community", sub_community).execute()
+    run_query(supabase.table("bookings").delete().eq("id", booking_id).eq("villa", villa).eq("sub_community", sub_community))
 
 def get_logs_last_14_days():
     cutoff = (get_utc_plus_4() - timedelta(days=14)).isoformat()
-    response = supabase.table("logs").select("timestamp, event_type, details")\
+    response = run_query(
+        supabase.table("logs").select("timestamp, event_type, details")\
         .gte("timestamp", cutoff)\
-        .order("timestamp", desc=True)\
-        .execute()
+        .order("timestamp", desc=True)
+    )
     return response.data
 
 def get_villas_with_active_bookings():
     today_str = get_today().strftime('%Y-%m-%d')
     now_hour = get_utc_plus_4().hour
-    response = supabase.table("bookings").select("villa, sub_community")\
-        .or_(f"date.gt.{today_str},and(date.eq.{today_str},start_hour.gte.{now_hour})")\
-        .execute()
+    response = run_query(
+        supabase.table("bookings").select("villa, sub_community")\
+        .or_(f"date.gt.{today_str},and(date.eq.{today_str},start_hour.gte.{now_hour})")
+    )
     
     unique_villas = sorted(list(set([f"{row['sub_community']} - {row['villa']}" for row in response.data])))
     return unique_villas
 
 def get_active_bookings_for_villa_display(villa_identifier):
-    sub_comm, villa_num = villa_identifier.split(" - ")
-    today_str = get_today().strftime('%Y-%m-%d')
-    now_hour = get_utc_plus_4().hour
-    response = supabase.table("bookings").select("court, date, start_hour")\
-        .eq("villa", villa_num)\
-        .eq("sub_community", sub_comm)\
-        .or_(f"date.gt.{today_str},and(date.eq.{today_str},start_hour.gte.{now_hour})")\
-        .order("date")\
-        .order("start_hour")\
-        .execute()
-    return [f"{b['date']} | {b['start_hour']:02d}:00 | {b['court']}" for b in response.data]
+    try:
+        sub_comm, villa_num = villa_identifier.split(" - ")
+        today_str = get_today().strftime('%Y-%m-%d')
+        now_hour = get_utc_plus_4().hour
+        response = run_query(
+            supabase.table("bookings").select("court, date, start_hour")\
+            .eq("villa", villa_num)\
+            .eq("sub_community", sub_comm)\
+            .or_(f"date.gt.{today_str},and(date.eq.{today_str},start_hour.gte.{now_hour})")\
+            .order("date")\
+            .order("start_hour")
+        )
+        return [f"{b['date']} | {b['start_hour']:02d}:00 | {b['court']}" for b in response.data]
+    except Exception:
+        return []
 
 def get_peak_time_data():
-    response = supabase.table("bookings").select("date, start_hour").execute()
+    response = run_query(supabase.table("bookings").select("date, start_hour"))
     df = pd.DataFrame(response.data)
     
     if df.empty:
@@ -183,28 +220,11 @@ def get_peak_time_data():
     
     return df
 
-
-def delete_expired_bookings():
-    try:
-        now = get_utc_plus_4()
-        today_str = now.strftime('%Y-%m-%d')
-        current_hour = now.hour
-        
-        supabase.table("bookings").delete().lt("date", today_str).execute()
-        supabase.table("bookings").delete().eq("date", today_str).lt("start_hour", current_hour).execute()
-    except Exception:
-        pass # Silently fail here so the app can still load for the user
-
-
 def get_available_hours(court, date_str):
-    try:
-        # 1. Get all hours already booked for this court/date
-        response = supabase.table("bookings").select("start_hour").eq("court", court).eq("date", date_str).execute()
-        booked_hours = [row['start_hour'] for row in response.data]
-    except Exception as e:
-        # This prevents the app from crashing when Supabase returns HTML instead of JSON
-        st.warning("⚠️ Database connection error. Please try again in a few seconds.")
-        return []
+    # 1. Get all hours already booked for this court/date
+    response = run_query(supabase.table("bookings").select("start_hour").eq("court", court).eq("date", date_str))
+    
+    booked_hours = [row['start_hour'] for row in response.data]
     
     # 2. Filter the global start_hours list
     available = []
@@ -263,20 +283,27 @@ if st.query_params.get("view") == "full":
 
 st.subheader("🎾 Book that Court ...")    
 st.caption("An Un-Official & Community Driven Booking Solution.")
-#st.info("Bookings now show as Booking cards with the Delete option. ")
 
-villas_active = get_villas_with_active_bookings()
+# Wrapper for top level stats to prevent crash on load
+try:
+    villas_active = get_villas_with_active_bookings()
+        
+    today_str = get_today().strftime('%Y-%m-%d')
+    now_hour = get_utc_plus_4().hour
     
-today_str = get_today().strftime('%Y-%m-%d')
-now_hour = get_utc_plus_4().hour
-total_active_response = supabase.table("bookings").select("id", count="exact")\
-    .or_(f"date.gt.{today_str},and(date.eq.{today_str},start_hour.gte.{now_hour})")\
-    .execute()
-    
-total_residences = len(villas_active)
-total_bookings = total_active_response.count if total_active_response.count else 0
+    total_active_response = run_query(
+        supabase.table("bookings").select("id", count="exact")\
+        .or_(f"date.gt.{today_str},and(date.eq.{today_str},start_hour.gte.{now_hour})")
+    )
+        
+    total_residences = len(villas_active)
+    # Check if count is None (network fail) and default to 0
+    total_bookings = total_active_response.count if total_active_response.count is not None else 0
 
-st.write(f"**{total_residences}** Residences have **{total_bookings}** active bookings.")
+    st.write(f"**{total_residences}** Residences have **{total_bookings}** active bookings.")
+except Exception:
+    st.write("Unable to load live stats (Network refreshing...)")
+    villas_active = []
 
 
 if 'authenticated' not in st.session_state:
@@ -368,14 +395,6 @@ with tab1:
                         time.sleep(2)
                         st.rerun()
 
-    
-    # (Rest of Tab 1: Community Insights and Lookup remains identical to your file)
-
-
-
-
-
-    #st.link_button("🌐 View Full 14-Day Schedule (Full Page)", url="/?view=full")
     
     st.divider()
     st.subheader("📊 Community Usage Insights")
@@ -626,14 +645,13 @@ with tab4:
         st.info("No activity recorded in the last 14 days.")
 
 # --- BACKUP SECTION ---
-# --- BACKUP SECTION (FIXED) ---
 st.divider()
 st.subheader("💾 Data Backup")
 
 def get_zip_data():
     try:
-        bookings_data = supabase.table("bookings").select("*").execute().data
-        logs_data = supabase.table("logs").select("*").execute().data
+        bookings_data = run_query(supabase.table("bookings").select("*")).data
+        logs_data = run_query(supabase.table("logs").select("*")).data
         
         df_bookings = pd.DataFrame(bookings_data)
         df_logs = pd.DataFrame(logs_data)
