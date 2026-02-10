@@ -9,6 +9,7 @@ import random
 from postgrest.exceptions import APIError 
 
 # --- DATABASE SETUP (SUPABASE) ---
+# Cache the client to prevent re-initialization on every rerun
 @st.cache_resource
 def init_supabase():
     url: str = st.secrets["SUPABASE_URL"]
@@ -27,6 +28,7 @@ courts = ["Mira 2", "Mira 4", "Mira 5A", "Mira 5B", "Mira Oasis 1", "Mira Oasis 
 start_hours = list(range(7, 22))
 
 # --- HELPER FUNCTIONS ---
+
 def get_utc_plus_4():
     return datetime.now(timezone.utc).replace(tzinfo=None) + timedelta(hours=4)
 
@@ -37,26 +39,40 @@ def get_next_14_days():
     today = get_today()
     return [today + timedelta(days=i) for i in range(15)]
 
+# --- RETRY LOGIC WRAPPER ---
 def run_query(query_method):
+    """
+    Executes a Supabase query with retry logic to handle network blips
+    and Cloudflare 500 errors.
+    """
     max_retries = 3
     for attempt in range(max_retries):
         try:
             return query_method.execute()
         except Exception as e:
+            # Check if it's the last attempt
             if attempt == max_retries - 1:
                 st.error(f"⚠️ Connection Error: {str(e)}")
+                # Return a dummy object with empty data to prevent crash
                 class DummyResponse:
                     data = []
                     count = 0
                 return DummyResponse()
+            
+            # Wait with exponential backoff before retrying (0.5s, 1s, 2s)
             time.sleep((0.5 * (2 ** attempt)) + random.uniform(0, 0.2))
 
 def add_log(event_type, details):
     timestamp = get_utc_plus_4().isoformat()
+    # We use fire-and-forget for logs, but use retry just in case
     try:
-        run_query(supabase.table("logs").insert({"timestamp": timestamp, "event_type": event_type, "details": details}))
+        run_query(supabase.table("logs").insert({
+            "timestamp": timestamp,
+            "event_type": event_type,
+            "details": details
+        }))
     except:
-        pass
+        pass # Don't crash app if logging fails
 
 def get_bookings_for_day_with_details(date_str):
     response = run_query(supabase.table("bookings").select("court, start_hour, sub_community, villa").eq("date", date_str))
@@ -90,6 +106,7 @@ def get_active_bookings_count(villa, sub_community):
     )
     return response.count if response.count is not None else 0
 
+
 def get_daily_bookings_count(villa, sub_community, date_str):
     response = run_query(
         supabase.table("bookings").select("id", count="exact")\
@@ -98,6 +115,7 @@ def get_daily_bookings_count(villa, sub_community, date_str):
         .eq("date", date_str)
     )
     return response.count if response.count is not None else 0
+
 
 def is_slot_booked(court, date_str, start_hour):
     response = run_query(
@@ -131,6 +149,7 @@ def book_slot(villa, sub_community, court, date_str, start_hour):
 def get_user_bookings(villa, sub_community):
     today_str = get_today().strftime('%Y-%m-%d')
     now_hour = get_utc_plus_4().hour
+    
     response = run_query(
         supabase.table("bookings").select("id, court, date, start_hour")\
         .eq("villa", villa)\
@@ -142,22 +161,33 @@ def get_user_bookings(villa, sub_community):
     return response.data
 
 def delete_booking(booking_id, villa, sub_community):
+    # Retrieve details for logging before deleting
     record = run_query(supabase.table("bookings").select("court, date, start_hour").eq("id", booking_id).single())
+    
     if record.data:
         b = record.data
         log_detail = f"{sub_community} Villa {villa} cancelled {b['court']} for {b['date']} at {b['start_hour']:02d}:00"
         add_log("Booking Deleted", log_detail)
+    
     run_query(supabase.table("bookings").delete().eq("id", booking_id).eq("villa", villa).eq("sub_community", sub_community))
 
 def get_logs_last_14_days():
     cutoff = (get_utc_plus_4() - timedelta(days=14)).isoformat()
-    response = run_query(supabase.table("logs").select("timestamp, event_type, details").gte("timestamp", cutoff).order("timestamp", desc=True))
+    response = run_query(
+        supabase.table("logs").select("timestamp, event_type, details")\
+        .gte("timestamp", cutoff)\
+        .order("timestamp", desc=True)
+    )
     return response.data
 
 def get_villas_with_active_bookings():
     today_str = get_today().strftime('%Y-%m-%d')
     now_hour = get_utc_plus_4().hour
-    response = run_query(supabase.table("bookings").select("villa, sub_community").or_(f"date.gt.{today_str},and(date.eq.{today_str},start_hour.gte.{now_hour})"))
+    response = run_query(
+        supabase.table("bookings").select("villa, sub_community")\
+        .or_(f"date.gt.{today_str},and(date.eq.{today_str},start_hour.gte.{now_hour})")
+    )
+    
     unique_villas = sorted(list(set([f"{row['sub_community']} - {row['villa']}" for row in response.data])))
     return unique_villas
 
@@ -181,22 +211,37 @@ def get_active_bookings_for_villa_display(villa_identifier):
 def get_peak_time_data():
     response = run_query(supabase.table("bookings").select("date, start_hour"))
     df = pd.DataFrame(response.data)
-    if df.empty: return pd.DataFrame()
+    
+    if df.empty:
+        return pd.DataFrame()
+
     df['date'] = pd.to_datetime(df['date'])
     df['day_of_week'] = df['date'].dt.day_name()
+    
     return df
 
 def get_available_hours(court, date_str):
+    # 1. Get all hours already booked for this court/date
     response = run_query(supabase.table("bookings").select("start_hour").eq("court", court).eq("date", date_str))
+    
     booked_hours = [row['start_hour'] for row in response.data]
-    available = [h for h in start_hours if h not in booked_hours and not is_slot_in_past(date_str, h)]
+    
+    # 2. Filter the global start_hours list
+    available = []
+    for h in start_hours:
+        if h not in booked_hours and not is_slot_in_past(date_str, h):
+            available.append(h)
     return available
+
 
 # --- UI STYLING ---
 st.markdown("""
 <link href="https://fonts.googleapis.com/css2?family=Audiowide&display=swap" rel="stylesheet">
 <style>
-.stApp { background: linear-gradient(to bottom, #010f1a, #052134); background-attachment: scroll; }
+.stApp {
+  background: linear-gradient(to bottom, #010f1a, #052134);
+  background-attachment: scroll;
+}
 [data-testid="stHeader"] { background: linear-gradient(to bottom, #052134 , #010f1a) !important; }
 h1, h2, h3, .stTitle { font-family: 'Audiowide', cursive !important; color: #2c3e50; }
 .stButton>button { background-color: #4CAF50; color: white; font-family: 'Audiowide', cursive; }
@@ -204,15 +249,7 @@ h1, h2, h3, .stTitle { font-family: 'Audiowide', cursive !important; color: #2c3
 </style>
 """, unsafe_allow_html=True)
 
-# --- SESSION STATE INITIALIZATION ---
-if 'active_tab' not in st.session_state:
-    st.session_state.active_tab = "📅 Availability"
-if 'prefill_court' not in st.session_state:
-    st.session_state.prefill_court = None
-if 'prefill_time' not in st.session_state:
-    st.session_state.prefill_time = None
-
-# --- FULL FRAME PAGE ---
+# --- LOGIC FOR FULL FRAME PAGE ---
 if st.query_params.get("view") == "full":
     st.title("📅 Full 14-Day Schedule")
     if st.button("⬅️ Back to Booking App"):
@@ -229,39 +266,55 @@ if st.query_params.get("view") == "full":
             row = []
             for court in courts:
                 key = (court, h)
-                if is_slot_in_past(d_str, h): row.append("—")
+                if is_slot_in_past(d_str, h):
+                    row.append("—")
                 elif key in bookings_with_details:
                     full_comm, villa_num = bookings_with_details[key].rsplit(" - ", 1)
-                    row.append(f"{abbreviate_community(full_comm)}-{villa_num}")
-                else: row.append("Available")
+                    abbr = abbreviate_community(full_comm)
+                    row.append(f"{abbr}-{villa_num}")
+                else:
+                    row.append("Available")
             data[label] = row
         st.dataframe(pd.DataFrame(data, index=courts).style.map(color_cell), width="stretch")
         st.divider()
     st.stop()
 
 # --- MAIN APP ---
+
 st.subheader("🎾 Book that Court ...")    
 st.caption("An Un-Official & Community Driven Booking Solution.")
 
+# Wrapper for top level stats to prevent crash on load
 try:
     villas_active = get_villas_with_active_bookings()
+        
     today_str = get_today().strftime('%Y-%m-%d')
     now_hour = get_utc_plus_4().hour
-    total_active_response = run_query(supabase.table("bookings").select("id", count="exact").or_(f"date.gt.{today_str},and(date.eq.{today_str},start_hour.gte.{now_hour})"))
+    
+    total_active_response = run_query(
+        supabase.table("bookings").select("id", count="exact")\
+        .or_(f"date.gt.{today_str},and(date.eq.{today_str},start_hour.gte.{now_hour})")
+    )
+        
     total_residences = len(villas_active)
+    # Check if count is None (network fail) and default to 0
     total_bookings = total_active_response.count if total_active_response.count is not None else 0
+
     st.write(f"**{total_residences}** Residences have **{total_bookings}** active bookings.")
 except Exception:
     st.write("Unable to load live stats (Network refreshing...)")
     villas_active = []
+
 
 if 'authenticated' not in st.session_state:
     st.session_state.authenticated = False
 
 if not st.session_state.authenticated:
     col1, col2 = st.columns(2)
-    with col1: sub_community_input = st.selectbox("Select Your Sub-Community", options=sub_community_list, index=None)
-    with col2: villa_input = st.text_input("Enter Villa Number").strip().upper()
+    with col1:
+        sub_community_input = st.selectbox("Select Your Sub-Community", options=sub_community_list, index=None)
+    with col2:
+        villa_input = st.text_input("Enter Villa Number").strip().upper()
 
     if st.button("Confirm Identity", type="primary"):
         if sub_community_input and villa_input:
@@ -273,166 +326,373 @@ if not st.session_state.authenticated:
 sub_community, villa = st.session_state.sub_community, st.session_state.villa
 st.success(f"✅ Logged in as: **{sub_community} - Villa {villa}**")
 
-# --- NAVIGATION VIA SESSION STATE ---
-tabs_list = ["📅 Availability", "➕ Book", "📋 My Bookings", "📜 Activity Log"]
-st.session_state.active_tab = st.radio("Navigation", options=tabs_list, horizontal=True, label_visibility="collapsed", index=tabs_list.index(st.session_state.active_tab))
+tab1, tab2, tab3, tab4 = st.tabs(["📅 Availability", "➕ Book", "📋 My Bookings", "📜 Activity Log"])
 
-# --- TAB 1: AVAILABILITY ---
-if st.session_state.active_tab == "📅 Availability":
+with tab1:
     st.subheader("Court Availability")
     date_options = [f"{d.strftime('%Y-%m-%d')} ({d.strftime('%A')})" for d in get_next_14_days()]
     selected_date_full = st.selectbox("Select Date:", date_options)
     selected_date = selected_date_full.split(" (")[0]
 
     bookings_with_details = get_bookings_for_day_with_details(selected_date)
-    
-    # 1. Static Overview Dataframe
     data = {}
     for h in start_hours:
         label = f"{h:02d}:00 - {h+1:02d}:00"
         row = []
         for court in courts:
             key = (court, h)
-            if is_slot_in_past(selected_date, h): row.append("—")
+            if is_slot_in_past(selected_date, h):
+                row.append("—")
             elif key in bookings_with_details:
                 full_comm, villa_num = bookings_with_details[key].rsplit(" - ", 1)
                 row.append(f"{abbreviate_community(full_comm)}-{villa_num}")
-            else: row.append("Available")
+            else:
+                row.append("Available")
         data[label] = row
+
     st.dataframe(pd.DataFrame(data, index=courts).style.map(color_cell), width="stretch")
+
     st.link_button("🌐 View Full 14-Day Schedule (Full Page)", url="/?view=full")
 
-    # 2. Interactive Click-to-Book Grid
+# --- QUICK BOOK SECTION ---
     st.divider()
-    st.markdown("### ⚡ Click a slot to start booking")
-    grid_cols = st.columns(len(courts))
-    for i, court in enumerate(courts):
-        with grid_cols[i]:
-            st.markdown(f"**{court}**")
-            for h in start_hours:
-                key = (court, h)
-                is_past = is_slot_in_past(selected_date, h)
-                is_booked = key in bookings_with_details
-                btn_key = f"grid_{court}_{selected_date}_{h}"
+    st.markdown("### ⚡ Quick Book")
+    
+    q_col1, q_col2, q_col3 = st.columns(3)
+    
+    with q_col1:
+        q_court = st.selectbox("Select Court", options=courts, key="q_court_select")
+    
+    with q_col2:
+        q_free_hours = get_available_hours(q_court, selected_date)
+        if not q_free_hours:
+            st.warning("No slots available")
+            q_time = None
+        else:
+            q_time_options = [f"{h:02d}:00" for h in q_free_hours]
+            q_time = st.selectbox("Select Time", options=q_time_options, key="q_time_select")
+            
+    with q_col3:
+        st.write("") # Spacer to align with dropdowns
+        st.write("") 
+        if st.button("🚀 Book Now", key="q_book_btn", use_container_width=True):
+            if q_time:
+                active_count = get_active_bookings_count(villa, sub_community)
+                daily_count = get_daily_bookings_count(villa, sub_community, selected_date)
                 
-                if is_past:
-                    st.button(f"{h:02d}:00", key=btn_key, disabled=True)
-                elif is_booked:
-                    st.button(f"🚫 {h:02d}", key=btn_key, disabled=True, help=f"Booked by {bookings_with_details[key]}")
+                if active_count >= 6:
+                    st.error("Limit Reached (Max 6 active)")
+                elif daily_count >= 2:
+                    st.error("Daily Limit Reached (Max 2 per day)")
                 else:
-                    if st.button(f"✅ {h:02d}", key=btn_key):
-                        st.session_state.prefill_court = court
-                        st.session_state.prefill_time = f"{h:02d}:00 - {h+1:02d}:00"
-                        st.session_state.active_tab = "➕ Book"
+                    start_h = int(q_time.split(":")[0])
+                    if is_slot_booked(q_court, selected_date, start_h):
+                        st.error("Slot taken!")
+                    else:
+                        book_slot(villa, sub_community, q_court, selected_date, start_h)
+                        st.balloons()
+                        st.success(f"Booked {q_court} at {q_time}")
+                        time.sleep(2)
                         st.rerun()
 
-    # Community Insights...
+    
     st.divider()
     st.subheader("📊 Community Usage Insights")
+    
     usage_data = get_peak_time_data()
+    
     if not usage_data.empty:
         col_charts1, col_charts2 = st.columns([1, 1])
+        
         with col_charts1:
             st.write("**🔥 Busiest Hours**")
             hour_counts = usage_data['start_hour'].value_counts().sort_index()
-            chart_df = pd.DataFrame({"Bookings": hour_counts.values}, index=[f"{h:02d}:00" for h in hour_counts.index])
+            chart_df = pd.DataFrame({
+                "Bookings": hour_counts.values
+            }, index=[f"{h:02d}:00" for h in hour_counts.index])
             st.bar_chart(chart_df, color="#4CAF50")
+
         with col_charts2:
             st.write("**📅 Busiest Days**")
             day_counts = usage_data['day_of_week'].value_counts()
             days_order = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
             day_counts = day_counts.reindex(days_order).fillna(0)
             st.area_chart(day_counts, color="#0d5384")
+
+        st.write("**Weekly Intensity Heatmap**")
+        heatmap_data = usage_data.groupby(['day_of_week', 'start_hour']).size().unstack(fill_value=0)
+        heatmap_data = heatmap_data.reindex(days_order).fillna(0)
+        
+        st.dataframe(
+            heatmap_data.style.background_gradient(cmap="YlGnBu"), 
+            width="stretch"
+        )
+    else:
+        st.info("Charts will appear here once more bookings are made!")
     
     st.divider()
     st.subheader("🔍 Booking Lookup")
+
     if villas_active:
         look_villa = st.selectbox("Select Villa to see details:", options=["-- Select --"] + villas_active)
         if look_villa != "-- Select --":
             active_list = get_active_bookings_for_villa_display(look_villa)
-            if active_list: st.selectbox("Active bookings for this villa:", options=active_list)
-            else: st.write("No active bookings found for this villa.")
+            if active_list:
+                st.selectbox("Active bookings for this villa:", options=active_list)
+            else:
+                st.write("No active bookings found for this villa.")
 
-# --- TAB 2: BOOK ---
-elif st.session_state.active_tab == "➕ Book":
+
+with tab2:
     st.subheader("Book a New Slot")
     st.info("App allows 6 Active bookings spanning 14 days, A maximum of 2 active bookings per day.")
-    
+    # Date selection
     date_options = [f"{d.strftime('%Y-%m-%d')} ({d.strftime('%A')})" for d in get_next_14_days()]
     selected_date_full = st.selectbox("Date:", date_options)
+    
+    # Extract just the date part (YYYY-MM-DD) for database logic
     date_choice = selected_date_full.split(" (")[0]
     
-    # Apply Prefills
-    court_idx = courts.index(st.session_state.prefill_court) if st.session_state.prefill_court in courts else 0
-    court_choice = st.selectbox("Court:", courts, index=court_idx)
+    court_choice = st.selectbox("Court:", courts)
     
+    # Dynamically fetch only free slots
     free_hours = get_available_hours(court_choice, date_choice)
+    
     if not free_hours:
         st.warning(f"😔 Sorry, no slots available for {court_choice} on {date_choice}.")
         time_choice = None
     else:
         time_options = [f"{h:02d}:00 - {h+1:02d}:00" for h in free_hours]
-        time_idx = time_options.index(st.session_state.prefill_time) if st.session_state.prefill_time in time_options else 0
-        time_choice = st.selectbox("Time Slot:", time_options, index=time_idx)
+        time_choice = st.selectbox("Time Slot:", time_options)
 
+    # Fetch current booking counts for validation
     active_count = get_active_bookings_count(villa, sub_community)
     daily_count = get_daily_bookings_count(villa, sub_community, date_choice)
     
+    # Display status to the user
     col_status1, col_status2 = st.columns(2)
-    with col_status1: st.info(f"Total active bookings: **{active_count} / 6**")
-    with col_status2: st.info(f"Bookings for {date_choice}: **{daily_count} / 2**")
+    with col_status1:
+        st.info(f"Total active bookings: **{active_count} / 6**")
+    with col_status2:
+        st.info(f"Bookings for {date_choice}: **{daily_count} / 2**")
 
     if st.button("Book This Slot", type="primary"):
-        if not time_choice: st.error("Please select an available time slot.")
-        elif active_count >= 6: st.error("🚫 Overall limit reached.")
-        elif daily_count >= 2: st.error(f"🚫 Daily limit reached for {date_choice}.")
+        if not time_choice:
+            st.error("Please select an available time slot.")
+        elif active_count >= 6: 
+            st.error("🚫 Overall limit reached. You cannot have more than 6 active bookings total.")
+        elif daily_count >= 2:
+            st.error(f"🚫 Daily limit reached. You cannot have more than 2 bookings on {date_choice}.")
         else:
             start_h = int(time_choice.split(":")[0])
-            if is_slot_booked(court_choice, date_choice, start_h): st.error("❌ Taken!")
+            # Final check to prevent double booking if two users are on the same page
+            if is_slot_booked(court_choice, date_choice, start_h):
+                st.error("❌ This slot was just taken! Please refresh and try another.")
             else:
                 book_slot(villa, sub_community, court_choice, date_choice, start_h)
-                st.session_state.prefill_court, st.session_state.prefill_time = None, None
                 st.balloons()
-                st.success(f"✅ Success!")
-                time.sleep(2)
-                st.session_state.active_tab = "📅 Availability"
+                st.success(f"✅ SUCCESS! {court_choice} booked for {date_choice} at {start_h:02d}:00")
+                time.sleep(2.5) 
                 st.rerun()
 
-# --- TAB 3: MY BOOKINGS ---
-elif st.session_state.active_tab == "📋 My Bookings":
+
+
+
+with tab3:
     st.subheader("📋 My Bookings")
-    court_locations = { "Mira 2": "https://maps.google.com/?q=25.003702,55.306740", "Mira 4": "https://maps.google.com/?q=25.010338,55.305798", "Mira 5A": "https://maps.google.com/?q=25.007513,55.303432", "Mira 5B": "https://maps.google.com/?q=25.007513,55.303432", "Mira Oasis 1": "https://maps.google.com/?q=25.010536,55.296654", "Mira Oasis 2": "https://maps.google.com/?q=25.016439,55.298626", "Mira Oasis 3A": "https://maps.google.com/?q=25.012520,55.298313", "Mira Oasis 3B": "https://maps.google.com/?q=25.012520,55.298313", "Mira Oasis 3C": "https://maps.google.com/?q=25.015327,55.301998" }
+    
+    # --- COURT LOCATION MAPPING ---
+    court_locations = {
+        "Mira 2": "https://maps.google.com/?q=25.003702,55.306740",
+        "Mira 4": "https://maps.google.com/?q=25.010338,55.305798",
+        "Mira 5A": "https://maps.google.com/?q=25.007513,55.303432",
+        "Mira 5B": "https://maps.google.com/?q=25.007513,55.303432",
+        "Mira Oasis 1": "https://maps.google.com/?q=25.010536,55.296654",
+        "Mira Oasis 2": "https://maps.google.com/?q=25.016439,55.298626",
+        "Mira Oasis 3A": "https://maps.google.com/?q=25.012520,55.298313",
+        "Mira Oasis 3B": "https://maps.google.com/?q=25.012520,55.298313",
+        "Mira Oasis 3C": "https://maps.google.com/?q=25.015327,55.301998"
+    }
+
+    # Fetch user specific bookings
     my_b = get_user_bookings(villa, sub_community)
-    if not my_b: st.info("You have no active bookings.")
+    
+    if not my_b:
+        st.info("You have no active bookings.")
     else:
-        for b in my_b:
+        # --- MERGING LOGIC FOR CONSECUTIVE HOURS ---
+        df_my_b = pd.DataFrame(my_b)
+        df_my_b = df_my_b.sort_values(['date', 'court', 'start_hour'])
+        
+        merged_bookings = []
+        if not df_my_b.empty:
+            current_booking = None
+            
+            for _, row in df_my_b.iterrows():
+                if current_booking is None:
+                    current_booking = {
+                        'court': row['court'],
+                        'date': row['date'],
+                        'start_hours': [row['start_hour']],
+                        'ids': [row['id']]
+                    }
+                else:
+                    if (row['date'] == current_booking['date'] and 
+                        row['court'] == current_booking['court'] and 
+                        row['start_hour'] == max(current_booking['start_hours']) + 1):
+                        current_booking['start_hours'].append(row['start_hour'])
+                        current_booking['ids'].append(row['id'])
+                    else:
+                        merged_bookings.append(current_booking)
+                        current_booking = {
+                            'court': row['court'],
+                            'date': row['date'],
+                            'start_hours': [row['start_hour']],
+                            'ids': [row['id']]
+                        }
+            merged_bookings.append(current_booking)
+
+        # --- RENDER CARDS ---
+        for i, b in enumerate(merged_bookings):
+            b_date = datetime.strptime(b['date'], '%Y-%m-%d')
+            day_name = b_date.strftime('%A')
+            formatted_date = b_date.strftime('%b %d, %Y')
+            
+            # Calculate time range
+            start_time = min(b['start_hours'])
+            end_time = max(b['start_hours']) + 1
+            time_display = f"{start_time:02d}:00 - {end_time:02d}:00"
+            
+            # ID Display logic
+            id_list = sorted(b['ids'])
+            id_display = f"#{id_list[0]}" if len(id_list) == 1 else f"#{id_list[0]}-{id_list[-1]}"
+            
+            # Get location URL
+            map_url = court_locations.get(b['court'], "#")
+            
+            # Use a container to group the card and the button
             with st.container():
-                st.markdown(f"**🎾 {b['court']}** | {b['date']} | {b['start_hour']:02d}:00")
-                if st.button(f"❌ Cancel #{b['id']}", key=f"del_{b['id']}"):
-                    delete_booking(b['id'], villa, sub_community)
+                # CSS Card Styling (Location link moved under court name)
+                st.markdown(f"""
+                    <div style="
+                        background-color: #0d5384; 
+                        padding: 18px; 
+                        border-radius: 12px 12px 0px 0px; 
+                        border-left: 6px solid #4CAF50; 
+                        color: white;
+                        box-shadow: 0px 4px 10px rgba(0,0,0,0.4);
+                        margin-top: 15px;
+                    ">
+                        <div style="font-family: 'Audiowide'; color: rgba(255,255,255,0.6); font-size: 0.8rem; margin-bottom: 5px;">
+                            BOOKING CONF.: {id_display}
+                        </div>
+                        <div style="display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 2px;">
+                            <span style="font-family: 'Audiowide'; font-size: 1.3rem; color: #ccff00;">🎾 {b['court']}</span>
+                            <span style="font-size: 1.1rem; font-weight: bold; color: white;">{sub_community} - {villa}</span>
+                        </div>
+                        <div style="margin-bottom: 10px; border-bottom: 1px solid rgba(255,255,255,0.1); padding-bottom: 8px;">
+                            <a href="{map_url}" target="_blank" style="color: #ccff00; text-decoration: none; font-size: 0.9rem; font-weight: bold;">
+                                📍 View Location Pin
+                            </a>
+                        </div>
+                        <div>
+                            <span style="font-size: 1.0rem; opacity: 0.9;">{day_name}, {formatted_date}</span>
+                        </div>
+                        <div style="font-size: 1.5rem; font-weight: bold; margin-top: 5px; font-family: 'Audiowide'; color: white;">
+                            ⏰ {time_display}
+                        </div>
+                    </div>
+                """, unsafe_allow_html=True)
+                
+                # Integrated Action Button
+                if st.button(f"❌ Cancel Booking {id_display}", key=f"cancel_{i}", use_container_width=True):
+                    for booking_id in b['ids']:
+                        delete_booking(booking_id, villa, sub_community)
+                    st.success(f"Successfully cancelled booking {id_display}")
+                    time.sleep(1.5)
                     st.rerun()
+                st.markdown('<div style="margin-bottom: 25px;"></div>', unsafe_allow_html=True)
 
-# --- TAB 4: LOGS ---
-elif st.session_state.active_tab == "📜 Activity Log":
-    st.subheader("Community Activity Log")
+
+
+with tab4:
+    st.subheader("Community Activity Log (Last 14 Days)")
+    st.caption("Timezone: UTC+4")
+    
     logs = get_logs_last_14_days()
+    
     if logs:
-        log_df = pd.DataFrame(logs)
-        st.dataframe(log_df, width="stretch")
+        log_df = pd.DataFrame(logs, columns=["timestamp", "event_type", "details"])
+        #log_df['timestamp'] = pd.to_datetime(log_df['timestamp']).dt.strftime('%b %d, %H:%M')
+        log_df['timestamp'] = pd.to_datetime(log_df['timestamp'], format='ISO8601').dt.strftime('%b %d, %H:%M')
 
-# --- BACKUP & FOOTER ---
+        def style_rows(row):
+            styles = [''] * len(row)
+            if row.event_type == "Booking Created":
+                styles[1] = 'background-color: #d4edda; color: #155724; font-weight: bold;'
+            elif row.event_type in ["Booking Deleted", "Booking Cancelled"]:
+                styles[1] = 'background-color: #f8d7da; color: #721c24; font-weight: bold;'
+            return styles
+
+        styled_df = log_df.style.apply(style_rows, axis=1)
+        
+        st.dataframe(
+            styled_df, 
+            hide_index=True, 
+            width="stretch"
+        )
+    else:
+        st.info("No activity recorded in the last 14 days.")
+
+# --- BACKUP SECTION ---
 st.divider()
 st.subheader("💾 Data Backup")
-if st.button("Generate Backup Link"):
+
+def get_zip_data():
     try:
         bookings_data = run_query(supabase.table("bookings").select("*")).data
+        logs_data = run_query(supabase.table("logs").select("*")).data
+        
         df_bookings = pd.DataFrame(bookings_data)
+        df_logs = pd.DataFrame(logs_data)
+        
         buf = io.BytesIO()
         with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as vz:
             vz.writestr(f"bookings_{get_today()}.csv", df_bookings.to_csv(index=False))
-        st.download_button(label="Click to Download ZIP", data=buf.getvalue(), file_name=f"court_backup_{get_today()}.zip")
-    except: st.error("Backup failed.")
+            vz.writestr(f"logs_{get_today()}.csv", df_logs.to_csv(index=False))
+        return buf.getvalue()
+    except Exception as e:
+        return None
+
+# Use a standard button to "prepare" the download if the auto-generate fails
+if st.button("Generate Backup Link"):
+    data = get_zip_data()
+    if data:
+        st.download_button(
+            label="Click here to Download ZIP",
+            data=data,
+            file_name=f"court_booking_backup_{get_today()}.zip",
+            mime="application/zip"
+        )
+    else:
+        st.error("Failed to fetch data for backup.")
+
+
+# Footer
+image_url = "https://raw.githubusercontent.com/mahadevbk/courtbooking/main/qr-code.miracourtbooking.streamlit.app.png"
 
 col1, col2 = st.columns([1, 5])
-with col1: st.markdown(f'<img src="https://raw.githubusercontent.com/mahadevbk/courtbooking/main/qr-code.miracourtbooking.streamlit.app.png" height="100">', unsafe_allow_html=True)
-with col2: st.markdown("<div style='background-color: #0d5384; padding: 1rem; border-left: 5px solid #fff500; border-radius: 0.5rem; color: white;'>Built with ❤️ using Streamlit.</div>", unsafe_allow_html=True)
+
+with col1:
+    st.markdown(
+        f'<img src="{image_url}" height="100">',
+        unsafe_allow_html=True
+    )
+
+with col2:
+    st.markdown("""
+    <div style='background-color: #0d5384; padding: 1rem; border-left: 5px solid #fff500; border-radius: 0.5rem; color: white;'>
+    Built with ❤️ using <a href='https://streamlit.io/' style='color: #ccff00;'>Streamlit</a> — free and open source.
+    <a href='https://devs-scripts.streamlit.app/' style='color: #ccff00;'>Other Scripts by dev</a> on Streamlit.
+    </div>
+    """, unsafe_allow_html=True)
