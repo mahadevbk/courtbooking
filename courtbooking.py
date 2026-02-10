@@ -50,10 +50,8 @@ def get_bookings_for_day_with_details(date_str):
     return {(row['court'], row['start_hour']): f"{row['sub_community']} - {row['villa']}" for row in response.data}
 
 def abbreviate_community(full_name):
-    if full_name.startswith("Mira Oasis"):
-        return f"MO{full_name.split()[-1]}"
-    if full_name.startswith("Mira"):
-        return f"M{full_name.split()[-1]}"
+    if full_name.startswith("Mira Oasis"): return f"MO{full_name.split()[-1]}"
+    if full_name.startswith("Mira"): return f"M{full_name.split()[-1]}"
     return full_name
 
 def color_cell(val):
@@ -86,12 +84,15 @@ def is_slot_in_past(date_str, start_hour):
 st.markdown("""
 <style>
 .stApp { background: linear-gradient(to bottom, #010f1a, #052134); color: white; }
-h1, h2, h3 { color: #ffffff !important; }
+/* Make radio buttons look like a top nav bar */
+div[data-testid="stRadio"] > div { flex-direction: row; justify-content: center; gap: 20px; border-bottom: 1px solid #333; padding-bottom: 10px; }
+div[data-testid="stRadio"] label { background: #0d2a45; padding: 10px 20px; border-radius: 5px; cursor: pointer; }
+div[data-testid="stRadio"] label[data-selected="true"] { background: #4CAF50; }
 </style>
 """, unsafe_allow_html=True)
 
 # --- SESSION STATE ---
-if 'active_tab' not in st.session_state: st.session_state.active_tab = 0
+if 'nav_tab' not in st.session_state: st.session_state.nav_tab = "📅 Availability"
 if 'prefill' not in st.session_state: st.session_state.prefill = {}
 
 # --- AUTHENTICATION ---
@@ -109,16 +110,19 @@ if not st.session_state.authenticated:
             st.rerun()
     st.stop()
 
-# --- APP LAYOUT ---
-tabs = st.tabs(["📅 Availability", "➕ Book", "📋 My Bookings", "📜 Activity Log"])
+# --- NAVIGATION ---
+nav_options = ["📅 Availability", "➕ Book", "📋 My Bookings", "📜 Activity Log"]
+# We use a radio button so we can programmatically change the index
+selected_tab = st.radio("Navigation", nav_options, label_visibility="collapsed", index=nav_options.index(st.session_state.nav_tab))
+st.session_state.nav_tab = selected_tab
 
 # --- TAB 1: AVAILABILITY ---
-with tabs[0]:
+if st.session_state.nav_tab == "📅 Availability":
     st.subheader("Interactive Schedule")
     date_options = [d.strftime('%Y-%m-%d') for d in get_next_14_days()]
     selected_date = st.selectbox("Select Date:", date_options)
     
-    # Build Data
+    # Build Table Data
     bookings = get_bookings_for_day_with_details(selected_date)
     time_labels = [f"{h:02d}:00" for h in start_hours]
     
@@ -136,58 +140,53 @@ with tabs[0]:
     
     df = pd.DataFrame(df_data).set_index("Time")
 
-    # The Magic Part: Selection Event
+    # FIXED: Valid selection_mode and event handling
     event = st.dataframe(
         df.style.map(color_cell),
         use_container_width=True,
         on_select="rerun",
-        selection_mode="single_cell"
+        selection_mode=["single_row", "single_column"]
     )
 
-    # Process click
-    if event.selection.cells:
-        row_idx, col_idx = event.selection.cells[0]
-        selected_time = time_labels[row_idx]
-        selected_court = courts[col_idx]
-        cell_value = df.iloc[row_idx, col_idx]
-
-        if cell_value == "Available":
+    # If a cell is selected, capture the Court and Time
+    if event.selection.rows and event.selection.columns:
+        row_idx = event.selection.rows[0]
+        selected_court = event.selection.columns[0]
+        selected_time_start = start_hours[row_idx]
+        
+        # Verify the cell value is actually "Available" before redirecting
+        cell_val = df.iloc[row_idx][selected_court]
+        
+        if cell_val == "Available":
             st.session_state.prefill = {
                 "court": selected_court,
-                "time": f"{selected_time} - {int(selected_time[:2])+1:02d}:00",
+                "time": f"{selected_time_start:02d}:00 - {selected_time_start+1:02d}:00",
                 "date": selected_date
             }
-            st.success(f"Selected {selected_court} at {selected_time}. Head to 'Book' tab!")
-            # Optional: Automatic switch can be tricky with st.tabs, 
-            # so we show a clear message or use a button to jump.
-            if st.button(f"Confirm: Book {selected_court} @ {selected_time}"):
-                # To switch tabs automatically, you'd need to use the radio-button method from before.
-                # With st.tabs, the user just clicks the "Book" tab next.
-                pass
+            # Update Nav State and Rerun to jump to Book Tab
+            st.session_state.nav_tab = "➕ Book"
+            st.rerun()
 
 # --- TAB 2: BOOK ---
-with tabs[1]:
+elif st.session_state.nav_tab == "➕ Book":
     st.subheader("New Booking")
-    
-    # Check if we have prefilled data
     pf = st.session_state.prefill
     
+    date_options = [d.strftime('%Y-%m-%d') for d in get_next_14_days()]
     date_choice = st.selectbox("Date:", date_options, index=date_options.index(pf['date']) if pf.get('date') in date_options else 0)
     court_choice = st.selectbox("Court:", courts, index=courts.index(pf['court']) if pf.get('court') in courts else 0)
     
     free_hours = get_available_hours(court_choice, date_choice)
     time_options = [f"{h:02d}:00 - {h+1:02d}:00" for h in free_hours]
     
-    # Add the prefilled time even if it's not in 'free_hours' (to ensure it shows up)
+    # Ensure prefilled time appears in the dropdown
     if pf.get('time') and pf['time'] not in time_options:
         time_options.insert(0, pf['time'])
         
-    time_choice = st.selectbox("Time Slot:", time_options, index=0 if pf.get('time') else 0)
+    time_choice = st.selectbox("Time Slot:", time_options, index=0)
 
     if st.button("Confirm Booking", type="primary"):
-        # (Same booking logic as before)
         start_h = int(time_choice.split(":")[0])
-        # Insert into Supabase...
         supabase.table("bookings").insert({
             "villa": st.session_state.villa,
             "sub_community": st.session_state.sub_community,
@@ -196,9 +195,13 @@ with tabs[1]:
             "start_hour": start_h
         }).execute()
         st.session_state.prefill = {} # Clear prefill
-        st.success("Booked!")
+        st.session_state.nav_tab = "📅 Availability" # Return back
+        st.success("Slot Booked!")
+        time.sleep(1)
         st.rerun()
 
-# --- OTHER TABS (Simplified for brevity) ---
-with tabs[2]: st.write("Your active bookings show here.")
-with tabs[3]: st.write("Recent community activity.")
+# --- OTHER TABS ---
+elif st.session_state.nav_tab == "📋 My Bookings":
+    st.write("Displaying your bookings...")
+elif st.session_state.nav_tab == "📜 Activity Log":
+    st.write("Recent activity...")
