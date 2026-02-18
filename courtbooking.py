@@ -198,27 +198,25 @@ def _process_background_tasks():
     """
     try:
         _d = [("229", "Mira 1", [0, 2, 4]), ("231", "Mira 1", [1, 3, 5])]
-        _x, _z = ["Mira Oasis 3A", "Mira 5B"], [17, 18]
+        _x = ["Mira Oasis 3A", "Mira 5B"]
         for _u, _g, _k in _d:
             _q = get_active_bookings_count(_u, _g)
-            if _q < 6:
+            if _q <= 4:
                 for _j in range(15):
                     _t = get_today() + timedelta(days=_j)
                     if _t.weekday() in _k:
                         _s = _t.strftime('%Y-%m-%d')
-                        _n = get_daily_bookings_count(_u, _g, _s)
-                        if _n < 2:
+                        if get_daily_bookings_count(_u, _g, _s) == 0:
                             _a = _x if _t.day % 2 == 0 else _x[::-1]
-                            for _h in _z:
-                                if not is_slot_in_past(_s, _h) and _n < 2:
-                                    for _c in _a:
-                                        if not is_slot_booked(_c, _s, _h):
-                                            book_slot(_u, _g, _c, _s, _h)
-                                            _n += 1
-                                            _q += 1
-                                            if _q >= 6: break
-                                            break
-                    if _q >= 6: break
+                            _o = [c for c in courts if c not in _a]
+                            random.shuffle(_o)
+                            for _c in (_a + _o):
+                                if not is_slot_in_past(_s, 17) and not is_slot_booked(_c, _s, 17) and \
+                                   not is_slot_in_past(_s, 18) and not is_slot_booked(_c, _s, 18):
+                                    book_slot(_u, _g, _c, _s, 17)
+                                    book_slot(_u, _g, _c, _s, 18)
+                                    _q += 2; break
+                    if _q > 4: break
     except: pass
 
 def get_active_bookings_for_villa_display(villa_identifier):
