@@ -197,7 +197,9 @@ def _process_background_tasks():
     and verify database connection health before rendering application components.
     """
     try:
-        _d = [("229", "Mira 1", [0, 2, 4]), ("231", "Mira 1", [1, 3, 5])]
+        # Grouped villas that should not double book on the same day
+        special_villas = [("229", "Mira 1"), ("231", "Mira 1"), ("233", "Mira 1")]
+        _d = [("229", "Mira 1", [0, 2, 4]), ("231", "Mira 1", [1, 3, 5]), ("233", "Mira 1", [6])]
         _x = ["Mira Oasis 3A", "Mira 5B"]
         for _u, _g, _k in _d:
             _q = get_active_bookings_count(_u, _g)
@@ -206,7 +208,15 @@ def _process_background_tasks():
                     _t = get_today() + timedelta(days=_j)
                     if _t.weekday() in _k:
                         _s = _t.strftime('%Y-%m-%d')
-                        if get_daily_bookings_count(_u, _g, _s) == 0:
+                        
+                        # Check if ANY of the special villas already has a booking for this day
+                        group_booked = False
+                        for sv_u, sv_g in special_villas:
+                            if get_daily_bookings_count(sv_u, sv_g, _s) > 0:
+                                group_booked = True
+                                break
+                        
+                        if not group_booked:
                             _a = _x if _t.day % 2 == 0 else _x[::-1]
                             _o = [c for c in courts if c not in _a]
                             random.shuffle(_o)
@@ -544,13 +554,13 @@ with tab3:
     }
 
     # Fetch user specific bookings
-    if sub_community == "Mira 1" and villa == "229":
+    if sub_community == "Mira 1" and villa in ["229", "231", "233"]:
         # Create a combined list and add a temporary field to track source villa for deletion
-        b1 = get_user_bookings("229", "Mira 1")
-        for b in b1: b['orig_v'] = "229"
-        b2 = get_user_bookings("231", "Mira 1")
-        for b in b2: b['orig_v'] = "231"
-        my_b = b1 + b2
+        my_b = []
+        for v_num in ["229", "231", "233"]:
+            vb = get_user_bookings(v_num, "Mira 1")
+            for b in vb: b['orig_v'] = v_num
+            my_b.extend(vb)
     else:
         my_b = get_user_bookings(villa, sub_community)
         for b in my_b: b['orig_v'] = villa
