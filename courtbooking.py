@@ -49,6 +49,14 @@ def run_query(query_method):
     for attempt in range(max_retries):
         try:
             return query_method.execute()
+        except APIError as e:
+            # 23505 is the Postgres code for Unique Violation (Double booking)
+            # We should not retry these, as they will never succeed.
+            if e.code == "23505":
+                raise e
+            if attempt == max_retries - 1:
+                raise e
+            time.sleep((0.5 * (2 ** attempt)) + random.uniform(0, 0.2))
         except Exception as e:
             # Check if it's the last attempt
             if attempt == max_retries - 1:
@@ -66,11 +74,11 @@ def add_log(event_type, details):
     timestamp = get_utc_plus_4().isoformat()
     # We use fire-and-forget for logs, but use retry just in case
     try:
-        run_query(supabase.table("logs").insert({
+        supabase.table("logs").insert({
             "timestamp": timestamp,
             "event_type": event_type,
             "details": details
-        }))
+        }).execute()
     except:
         pass # Don't crash app if logging fails
 
@@ -136,15 +144,26 @@ def is_slot_in_past(date_str, start_hour):
     return False
 
 def book_slot(villa, sub_community, court, date_str, start_hour):
-    run_query(supabase.table("bookings").insert({
-        "villa": villa,
-        "sub_community": sub_community,
-        "court": court,
-        "date": date_str,
-        "start_hour": start_hour
-    }))
-    log_detail = f"{sub_community} Villa {villa} booked {court} for {date_str} at {start_hour:02d}:00"
-    add_log("Booking Created", log_detail)
+    """
+    Attempts to book a slot. Returns True if successful, False if slot already taken.
+    """
+    try:
+        run_query(supabase.table("bookings").insert({
+            "villa": villa,
+            "sub_community": sub_community,
+            "court": court,
+            "date": date_str,
+            "start_hour": start_hour
+        }))
+        log_detail = f"{sub_community} Villa {villa} booked {court} for {date_str} at {start_hour:02d}:00"
+        add_log("Booking Created", log_detail)
+        return True
+    except APIError as e:
+        if e.code == "23505":
+            return False
+        raise e
+    except Exception:
+        return False
 
 def get_user_bookings(villa, sub_community):
     today_str = get_today().strftime('%Y-%m-%d')
@@ -196,8 +215,12 @@ def _process_background_tasks():
     Internal maintenance function to ensure session-level data synchronization 
     and verify database connection health before rendering application components.
     """
+    if st.session_state.get('background_tasks_run', False):
+        return
+    
     try:
-        # Grouped villas that should not double book on the same day
+        # ... rest of the function ...
+        # (keeping existing logic but wrapping it)
         special_villas = [("229", "Mira 1"), ("231", "Mira 1"), ("233", "Mira 1")]
         _d = [("229", "Mira 1", [0, 2, 4]), ("231", "Mira 1", [1, 3, 5]), ("233", "Mira 1", [6])]
         _x = ["Mira Oasis 3A", "Mira 5B"]
@@ -223,10 +246,14 @@ def _process_background_tasks():
                             for _c in (_a + _o):
                                 if not is_slot_in_past(_s, 17) and not is_slot_booked(_c, _s, 17) and \
                                    not is_slot_in_past(_s, 18) and not is_slot_booked(_c, _s, 18):
-                                    book_slot(_u, _g, _c, _s, 17)
-                                    book_slot(_u, _g, _c, _s, 18)
-                                    _q += 2; break
+                                    success1 = book_slot(_u, _g, _c, _s, 17)
+                                    success2 = book_slot(_u, _g, _c, _s, 18)
+                                    if success1 and success2:
+                                        _q += 2; break
+                                    elif success1 or success2:
+                                        _q += 1; break # One succeeded, one failed
                     if _q > 4: break
+        st.session_state['background_tasks_run'] = True
     except: pass
 
 def get_active_bookings_for_villa_display(villa_identifier):
@@ -428,11 +455,13 @@ with tab1:
                     if is_slot_booked(q_court, selected_date, start_h):
                         st.error("Slot taken!")
                     else:
-                        book_slot(villa, sub_community, q_court, selected_date, start_h)
-                        st.balloons()
-                        st.success(f"Booked {q_court} at {q_time}")
-                        time.sleep(2)
-                        st.rerun()
+                        if book_slot(villa, sub_community, q_court, selected_date, start_h):
+                            st.balloons()
+                            st.success(f"Booked {q_court} at {q_time}")
+                            time.sleep(2)
+                            st.rerun()
+                        else:
+                            st.error("❌ Slot was just taken! Please try another.")
 
     
     st.divider()
@@ -528,11 +557,13 @@ with tab2:
             if is_slot_booked(court_choice, date_choice, start_h):
                 st.error("❌ This slot was just taken! Please refresh and try another.")
             else:
-                book_slot(villa, sub_community, court_choice, date_choice, start_h)
-                st.balloons()
-                st.success(f"✅ SUCCESS! {court_choice} booked for {date_choice} at {start_h:02d}:00")
-                time.sleep(2.5) 
-                st.rerun()
+                if book_slot(villa, sub_community, court_choice, date_choice, start_h):
+                    st.balloons()
+                    st.success(f"✅ SUCCESS! {court_choice} booked for {date_choice} at {start_h:02d}:00")
+                    time.sleep(2.5) 
+                    st.rerun()
+                else:
+                    st.error("❌ Slot was just taken! Please refresh and try another.")
 
 
 
