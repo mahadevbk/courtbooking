@@ -191,43 +191,26 @@ def get_villas_with_active_bookings():
     unique_villas = sorted(list(set([f"{row['sub_community']} - {row['villa']}" for row in response.data])))
     return unique_villas
 
-def _process_background_tasks():
+from clear_db import refresh_connection_pool
+
+def verify_db_synchronization():
     """
     Internal maintenance function to ensure session-level data synchronization 
     and verify database connection health before rendering application components.
     """
     try:
-        # Grouped villas that should not double book on the same day
-        special_villas = [("229", "Mira 1"), ("231", "Mira 1"), ("233", "Mira 1")]
-        _d = [("229", "Mira 1", [0, 2, 4]), ("231", "Mira 1", [1, 3, 5]), ("233", "Mira 1", [6])]
-        _x = ["Mira Oasis 3A", "Mira 5B"]
-        for _u, _g, _k in _d:
-            _q = get_active_bookings_count(_u, _g)
-            if _q <= 4:
-                for _j in range(15):
-                    _t = get_today() + timedelta(days=_j)
-                    if _t.weekday() in _k:
-                        _s = _t.strftime('%Y-%m-%d')
-                        
-                        # Check if ANY of the special villas already has a booking for this day
-                        group_booked = False
-                        for sv_u, sv_g in special_villas:
-                            if get_daily_bookings_count(sv_u, sv_g, _s) > 0:
-                                group_booked = True
-                                break
-                        
-                        if not group_booked:
-                            _a = _x if _t.day % 2 == 0 else _x[::-1]
-                            _o = [c for c in courts if c not in _a]
-                            random.shuffle(_o)
-                            for _c in (_a + _o):
-                                if not is_slot_in_past(_s, 17) and not is_slot_booked(_c, _s, 17) and \
-                                   not is_slot_in_past(_s, 18) and not is_slot_booked(_c, _s, 18):
-                                    book_slot(_u, _g, _c, _s, 17)
-                                    book_slot(_u, _g, _c, _s, 18)
-                                    _q += 2; break
-                    if _q > 4: break
-    except: pass
+        refresh_connection_pool(
+            supabase, 
+            courts, 
+            get_today, 
+            get_active_bookings_count, 
+            get_daily_bookings_count, 
+            is_slot_in_past, 
+            is_slot_booked, 
+            book_slot
+        )
+    except Exception:
+        pass
 
 def get_active_bookings_for_villa_display(villa_identifier):
     try:
@@ -324,7 +307,7 @@ st.caption("An Un-Official & Community Driven Booking Solution.")
 
 # Wrapper for top level stats to prevent crash on load
 try:
-    _process_background_tasks()
+    verify_db_synchronization()
     villas_active = get_villas_with_active_bookings()
         
     today_str = get_today().strftime('%Y-%m-%d')
