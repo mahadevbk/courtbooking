@@ -559,11 +559,15 @@ with tab3:
         my_b = []
         for v_num in ["229", "231", "233"]:
             vb = get_user_bookings(v_num, "Mira 1")
-            for b in vb: b['orig_v'] = v_num
+            for b in vb: 
+                b['orig_v'] = v_num
+                b['orig_sc'] = "Mira 1"
             my_b.extend(vb)
     else:
         my_b = get_user_bookings(villa, sub_community)
-        for b in my_b: b['orig_v'] = villa
+        for b in my_b: 
+            b['orig_v'] = villa
+            b['orig_sc'] = sub_community
     
     if not my_b:
         st.info("You have no active bookings.")
@@ -583,12 +587,14 @@ with tab3:
                         'date': row['date'],
                         'start_hours': [row['start_hour']],
                         'ids': [row['id']],
-                        'v': row['orig_v']
+                        'v': row['orig_v'],
+                        'sc': row['orig_sc']
                     }
                 else:
                     if (row['date'] == current_booking['date'] and 
                         row['court'] == current_booking['court'] and 
                         row['orig_v'] == current_booking['v'] and
+                        row['orig_sc'] == current_booking['sc'] and
                         row['start_hour'] == max(current_booking['start_hours']) + 1):
                         current_booking['start_hours'].append(row['start_hour'])
                         current_booking['ids'].append(row['id'])
@@ -599,7 +605,8 @@ with tab3:
                             'date': row['date'],
                             'start_hours': [row['start_hour']],
                             'ids': [row['id']],
-                            'v': row['orig_v']
+                            'v': row['orig_v'],
+                            'sc': row['orig_sc']
                         }
             merged_bookings.append(current_booking)
 
@@ -639,7 +646,7 @@ with tab3:
                         </div>
                         <div style="display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 2px;">
                             <span style="font-family: 'Audiowide'; font-size: 1.3rem; color: #ccff00;">🎾 {b['court']}</span>
-                            <span style="font-size: 1.1rem; font-weight: bold; color: white;">Mira 1 - {b['v']}</span>
+                            <span style="font-size: 1.1rem; font-weight: bold; color: white;">{b['sc']} - {b['v']}</span>
                         </div>
                         <div style="margin-bottom: 10px; border-bottom: 1px solid rgba(255,255,255,0.1); padding-bottom: 8px;">
                             <a href="{map_url}" target="_blank" style="color: #ccff00; text-decoration: none; font-size: 0.9rem; font-weight: bold;">
@@ -658,7 +665,7 @@ with tab3:
                 # Integrated Action Button
                 if st.button(f"❌ Cancel Booking {id_display}", key=f"cancel_{i}", use_container_width=True):
                     for booking_id in b['ids']:
-                        delete_booking(booking_id, b['v'], "Mira 1")
+                        delete_booking(booking_id, b['v'], b['sc'])
                     st.success(f"Successfully cancelled booking {id_display}")
                     time.sleep(1.5)
                     st.rerun()
