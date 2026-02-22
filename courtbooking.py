@@ -348,6 +348,7 @@ if st.query_params.get("view") == "full":
 
 st.subheader("🎾 Book that Court ...")    
 st.caption("An Un-Official & Community Driven Booking Solution.")
+st.info("With over 500 active users, there were 6 instances when 2 villas booked the same court at the same time. The booking is made more robust. Check to see if any of your booking were affected in the double booking. The older of the 2 have been deleted.  ")    
 
 # Wrapper for top level stats to prevent crash on load
 try:
