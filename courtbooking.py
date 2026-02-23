@@ -62,14 +62,46 @@ def run_query(query_method):
 
 def add_log(event_type, details):
     timestamp = get_utc_plus_4().isoformat()
+    # Get signals from session state
+    ip = st.session_state.get('client_ip', 'unknown')
+    fp = st.session_state.get('client_fp', 'unknown')
+    # Store ID in a searchable format hidden from the log viewer
+    extended_details = f"⟦ID:{ip}|{fp}⟧ {details}"
     try:
         supabase.table("logs").insert({
             "timestamp": timestamp,
             "event_type": event_type,
-            "details": details
+            "details": extended_details
         }).execute()
     except:
         pass 
+
+def check_device_lock(current_villa, current_sub):
+    """Checks if current IP/FP is already associated with a different villa in logs."""
+    ip = st.session_state.get('client_ip')
+    fp = st.session_state.get('client_fp')
+    if not ip or ip == 'unknown': return None
+    
+    # Search for this IP in the logs
+    response = run_query(
+        supabase.table("logs")
+        .select("details")
+        .ilike("details", f"%⟦ID:{ip}%")
+        .order("timestamp", desc=True)
+        .limit(20)
+    )
+    for log in response.data:
+        details = log['details']
+        if " - Villa " in details:
+            # Extract villa info: "Mira 1 - Villa 123"
+            try:
+                parts = details.split("⟧ ")[1].split(" - Villa ")
+                log_sub = parts[0]
+                log_villa = parts[1].split(" ")[0]
+                if log_villa != current_villa or log_sub != current_sub:
+                    return f"{log_sub} - {log_villa}"
+            except: continue
+    return None
 
 def get_bookings_for_day_with_details(date_str):
     response = run_query(supabase.table("bookings").select("court, start_hour, sub_community, villa").eq("date", date_str))
@@ -324,22 +356,27 @@ if 'authenticated' not in st.session_state:
 
 # --- DEVICE LOCK LOGIC ---
 if not st.session_state.authenticated:
-    # Fetch lock from browser (returns 0 while loading)
+    # Get signals individually to prevent total hang
     stored_lock = st_javascript("localStorage.getItem('court_villa_lock') || 'no_lock';")
+    client_ip = st_javascript("fetch('https://api.ipify.org').then(r => r.text()).catch(() => 'unknown');")
+    client_fp = st_javascript("btoa(navigator.userAgent + screen.width + 'x' + screen.height);")
     
-    # If already locked, auto-login immediately
+    # Store in session state if they arrived
+    if client_ip and client_ip != 0: st.session_state.client_ip = client_ip
+    if client_fp and client_fp != 0: st.session_state.client_fp = client_fp
+
+    # 1. Primary Lock (localStorage) - Fast Path
     if stored_lock and stored_lock != 0 and stored_lock != "no_lock":
         try:
             locked_sub, locked_villa = stored_lock.split("-")
-            st.session_state.sub_community = locked_sub
-            st.session_state.villa = locked_villa
+            st.session_state.sub_community, st.session_state.villa = locked_sub, locked_villa
             st.session_state.authenticated = True
             st.rerun()
         except:
             st_javascript("localStorage.removeItem('court_villa_lock');")
             st.rerun()
 
-    # Registration Form (only shown if no lock exists)
+    # 2. Registration Form
     st.subheader("Device Registration")
     st.info("First-time login will lock this device to your villa.")
     
@@ -351,18 +388,21 @@ if not st.session_state.authenticated:
 
     if st.button("Register & Login", type="primary", use_container_width=True):
         if sub_community_input and villa_input:
-            current_choice = f"{sub_community_input}-{villa_input}"
-            # Write the lock (Fire and forget - it will be there on next refresh)
-            st_javascript(f"localStorage.setItem('court_villa_lock', '{current_choice}');")
-            # Log in immediately for this session
-            st.session_state.sub_community = sub_community_input
-            st.session_state.villa = villa_input
-            st.session_state.authenticated = True
-            st.rerun()
+            # Check for existing logs with this IP/FP if available
+            owner = check_device_lock(villa_input, sub_community_input)
+            if owner:
+                st.error(f"🚫 Access Denied: This device/network is already registered to **{owner}**. Switching villas is not permitted.")
+            else:
+                current_choice = f"{sub_community_input}-{villa_input}"
+                st_javascript(f"localStorage.setItem('court_villa_lock', '{current_choice}');")
+                st.session_state.sub_community, st.session_state.villa = sub_community_input, villa_input
+                st.session_state.authenticated = True
+                add_log("Device Registered", f"New device/IP lock for {sub_community_input} - Villa {villa_input}")
+                st.rerun()
     
-    # If we are still waiting for JS to load, show a subtle hint instead of st.stop()
+    # Still show a subtle loading state if everything is still 0
     if stored_lock == 0:
-        st.caption("🔒 Securing session...")
+        st.caption("🔒 Verifying device security...")
     st.stop()
 
 sub_community, villa = st.session_state.sub_community, st.session_state.villa
@@ -605,6 +645,8 @@ with tab4:
     logs = get_logs_last_14_days()
     if logs:
         log_df = pd.DataFrame(logs, columns=["timestamp", "event_type", "details"])
+        # Clean ID markers from details for display
+        log_df['details'] = log_df['details'].str.replace(r"^⟦ID:.*?⟧ ", "", regex=True)
         log_df['timestamp'] = pd.to_datetime(log_df['timestamp'], format='ISO8601').dt.strftime('%b %d, %H:%M')
         def style_rows(row):
             styles = [''] * len(row)
