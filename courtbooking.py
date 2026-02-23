@@ -324,8 +324,34 @@ if 'authenticated' not in st.session_state:
 
 # --- DEVICE LOCK LOGIC ---
 if not st.session_state.authenticated:
-    # Read the lock from the browser
-    stored_lock = st_javascript("localStorage.getItem('court_villa_lock');")
+    # Use a sentinel value to distinguish between loading (0) and empty ('no_lock')
+    stored_lock = st_javascript("localStorage.getItem('court_villa_lock') || 'no_lock';")
+    
+    # Wait for the JS component to return a value
+    if stored_lock == 0:
+        st.info("🔒 Initializing secure session...")
+        st.stop()
+
+    # If device is already locked, auto-login or enforce the choice
+    if stored_lock != "no_lock":
+        try:
+            locked_sub, locked_villa = stored_lock.split("-")
+            st.info(f"📱 This device is locked to: **{locked_sub} - {locked_villa}**")
+            if st.button("Access Locked Villa Account", type="primary", use_container_width=True):
+                st.session_state.sub_community = locked_sub
+                st.session_state.villa = locked_villa
+                st.session_state.authenticated = True
+                st.rerun()
+            st.caption("To switch villas, you must use a different device or clear your browser's site data.")
+            st.stop()
+        except Exception:
+            # Handle corrupt storage by clearing it
+            st_javascript("localStorage.removeItem('court_villa_lock');")
+            st.rerun()
+    
+    # Only show login form if no lock exists
+    st.subheader("Device Registration")
+    st.write("First-time login will lock this device to your villa to prevent misuse.")
     
     col1, col2 = st.columns(2)
     with col1:
@@ -333,19 +359,14 @@ if not st.session_state.authenticated:
     with col2:
         villa_input = st.text_input("Enter Villa Number").strip().upper()
 
-    if st.button("Confirm Identity", type="primary"):
+    if st.button("Register Device & Confirm Identity", type="primary", use_container_width=True):
         if sub_community_input and villa_input:
             current_choice = f"{sub_community_input}-{villa_input}"
-            
-            # Check if device is locked to another villa
-            if stored_lock and stored_lock != current_choice:
-                st.error(f"⚠️ Access Denied: This device is locked to villa {stored_lock}. Switching villas is not permitted on this device.")
-            else:
-                # Set the lock and authenticate
-                st_javascript(f"localStorage.setItem('court_villa_lock', '{current_choice}');")
-                st.session_state.sub_community, st.session_state.villa = sub_community_input, villa_input
-                st.session_state.authenticated = True
-                st.rerun()
+            # Set the lock and authenticate
+            st_javascript(f"localStorage.setItem('court_villa_lock', '{current_choice}');")
+            st.session_state.sub_community, st.session_state.villa = sub_community_input, villa_input
+            st.session_state.authenticated = True
+            st.rerun()
     st.stop()
 
 sub_community, villa = st.session_state.sub_community, st.session_state.villa
