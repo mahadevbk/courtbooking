@@ -332,6 +332,18 @@ if not st.session_state.authenticated:
         st.info("🔒 Initializing secure session...")
         st.stop()
 
+    # If we just registered, double check if it's there or just proceed
+    if st.session_state.get('just_registered'):
+        if stored_lock != "no_lock":
+            st.session_state.authenticated = True
+            st.session_state.just_registered = False
+            st.rerun()
+        else:
+            # Still waiting or failed to write
+            st.info("🔄 Finalizing registration... Please wait a moment.")
+            time.sleep(1)
+            st.rerun()
+
     # If device is already locked, auto-login or enforce the choice
     if stored_lock != "no_lock":
         try:
@@ -362,10 +374,14 @@ if not st.session_state.authenticated:
     if st.button("Register Device & Confirm Identity", type="primary", use_container_width=True):
         if sub_community_input and villa_input:
             current_choice = f"{sub_community_input}-{villa_input}"
-            # Set the lock and authenticate
+            # Step 1: Tell browser to set the item
             st_javascript(f"localStorage.setItem('court_villa_lock', '{current_choice}');")
-            st.session_state.sub_community, st.session_state.villa = sub_community_input, villa_input
-            st.session_state.authenticated = True
+            # Step 2: Set session state to wait for it
+            st.session_state.sub_community = sub_community_input
+            st.session_state.villa = villa_input
+            st.session_state.just_registered = True
+            st.info("⏳ Locking device... please wait.")
+            time.sleep(1)
             st.rerun()
     st.stop()
 
@@ -449,9 +465,13 @@ with tab1:
         st.write("**Weekly Intensity Heatmap**")
         heatmap_data = usage_data.groupby(['day_of_week', 'start_hour']).size().unstack(fill_value=0)
         heatmap_data = heatmap_data.reindex(days_order).fillna(0)
-        st.dataframe(heatmap_data.style.background_gradient(cmap="YlGnBu"), width="stretch")
+        try:
+            st.dataframe(heatmap_data.style.background_gradient(cmap="YlGnBu"), width="stretch")
+        except Exception:
+            # Fallback if matplotlib/gradient fails
+            st.dataframe(heatmap_data, width="stretch")
     else: st.info("Charts will appear here once more bookings are made!")
-    
+
     st.divider()
     st.subheader("🔍 Booking Lookup")
     if villas_active:
