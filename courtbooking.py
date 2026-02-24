@@ -85,12 +85,14 @@ def check_device_lock(current_villa, current_sub):
     # Search for this IP in the logs
     response = run_query(
         supabase.table("logs")
-        .select("details")
+        .select("event_type, details")
         .ilike("details", f"%⟦ID:{ip}%")
         .order("timestamp", desc=True)
-        .limit(20)
+        .limit(50)
     )
     for log in response.data:
+        if log['event_type'] == "Lock Reset":
+            break
         details = log['details']
         if " - Villa " in details:
             # Extract villa info: "Mira 1 - Villa 123"
@@ -333,7 +335,7 @@ if st.query_params.get("view") == "full":
 # --- MAIN APP ---
 st.subheader("🎾 Book that Court ...")    
 st.caption("An Un-Official & Community Driven Booking Solution.")
-st.info("Double check your Villa details before using for the First time. The app stores the data and allows access limited to that Villa.")    
+st.info("With over 500 active users, there were 6 instances of double booking when 2 villas booked the same court at the same time. The booking is made more robust. Check to see if any of your booking were affected in the double booking. The older of the 2 is retained and later one,deleted.")    
 
 try:
     _process_background_tasks()
@@ -392,6 +394,7 @@ if not st.session_state.authenticated:
             owner = check_device_lock(villa_input, sub_community_input)
             if owner:
                 st.error(f"🚫 Access Denied: This device/network is already registered to **{owner}**. Switching villas is not permitted.")
+                add_log("Access Denied", f"Registration blocked: Already locked to {owner}")
             else:
                 current_choice = f"{sub_community_input}-{villa_input}"
                 st_javascript(f"localStorage.setItem('court_villa_lock', '{current_choice}');")
@@ -451,8 +454,10 @@ with tab1:
                 
                 if active_count >= 6:
                     st.error("Limit Reached (Max 6 active)")
+                    add_log("Access Denied", f"{sub_community} Villa {villa} reached active booking limit (6)")
                 elif daily_count >= 2:
                     st.error("Daily Limit Reached (Max 2 per day)")
+                    add_log("Access Denied", f"{sub_community} Villa {villa} reached daily limit (2) for {selected_date}")
                 else:
                     start_h = int(q_time.split(":")[0])
                     if is_slot_booked(q_court, selected_date, start_h):
@@ -524,8 +529,10 @@ with tab2:
             st.error("Please select an available time slot.")
         elif active_count >= 6: 
             st.error("🚫 Overall limit reached. You cannot have more than 6 active bookings total.")
+            add_log("Access Denied", f"{sub_community} Villa {villa} reached active booking limit (6)")
         elif daily_count >= 2:
             st.error(f"🚫 Daily limit reached. You cannot have more than 2 bookings on {date_choice}.")
+            add_log("Access Denied", f"{sub_community} Villa {villa} reached daily limit (2) for {date_choice}")
         else:
             start_h = int(time_choice.split(":")[0])
             # Final check to prevent double booking if two users are on the same page
@@ -637,6 +644,13 @@ with tab3:
                     st.success(f"Successfully cancelled booking {id_display}")
                     time.sleep(1.5); st.rerun()
                 st.markdown('<div style="margin-bottom: 25px;"></div>', unsafe_allow_html=True)
+        
+        st.divider()
+        if st.button("🚪 Logout / Change Villa", use_container_width=True):
+            st_javascript("localStorage.removeItem('court_villa_lock');")
+            for key in list(st.session_state.keys()):
+                del st.session_state[key]
+            st.rerun()
 
 with tab4:
     st.subheader("Community Activity Log (Last 14 Days)")
@@ -645,15 +659,63 @@ with tab4:
     logs = get_logs_last_14_days()
     if logs:
         log_df = pd.DataFrame(logs, columns=["timestamp", "event_type", "details"])
-        # Clean ID markers from details for display
-        log_df['details'] = log_df['details'].str.replace(r"^⟦ID:.*?⟧ ", "", regex=True)
-        log_df['timestamp'] = pd.to_datetime(log_df['timestamp'], format='ISO8601').dt.strftime('%b %d, %H:%M')
-        def style_rows(row):
-            styles = [''] * len(row)
-            if row.event_type == "Booking Created": styles[1] = 'background-color: #d4edda; color: #155724; font-weight: bold;'
-            elif row.event_type in ["Booking Deleted", "Booking Cancelled"]: styles[1] = 'background-color: #f8d7da; color: #721c24; font-weight: bold;'
-            return styles
-        st.dataframe(log_df.style.apply(style_rows, axis=1), hide_index=True, width="stretch")
+        
+        # Admin access logic
+        admin_mode = False
+        with st.expander("🛠️ Admin Access"):
+            admin_key = st.text_input("Enter Admin Key", type="password")
+            # For security, ideally use st.secrets["ADMIN_PASSWORD"]
+            # Using a fallback for demonstration if not set
+            correct_key = st.secrets.get("ADMIN_PASSWORD", "courtadmin123")
+            if admin_key == correct_key:
+                admin_mode = True
+                st.success("Admin Mode Active")
+            elif admin_key:
+                st.error("Invalid Key")
+
+        if admin_mode:
+            st.markdown("### 🔐 Master Access Log")
+            # For admin, we show the full ID
+            master_df = log_df.copy()
+            master_df['ID'] = master_df['details'].str.extract(r"⟦ID:(.*?)⟧")
+            master_df['details'] = master_df['details'].str.replace(r"^⟦ID:.*?⟧ ", "", regex=True)
+            
+            # Reset tool
+            st.markdown("--- ")
+            st.markdown("#### 🔓 Reset Device Lock")
+            reset_ip = st.text_input("Enter IP to Reset (copy from Master Log above)")
+            if st.button("Reset Lock for this IP"):
+                if reset_ip:
+                    # In addition to the session state log, we log a special 'Lock Reset' event
+                    # We need to include the ID in the details so check_device_lock finds it
+                    reset_details = f"⟦ID:{reset_ip}|reset⟧ Lock reset for device by admin"
+                    try:
+                        supabase.table("logs").insert({
+                            "timestamp": get_utc_plus_4().isoformat(),
+                            "event_type": "Lock Reset",
+                            "details": reset_details
+                        }).execute()
+                        st.success(f"✅ Lock reset command logged for IP: {reset_ip}")
+                        time.sleep(1)
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"Failed to reset: {e}")
+                else:
+                    st.warning("Please enter an IP")
+
+            st.dataframe(master_df, hide_index=True, width="stretch")
+        else:
+            # Standard view
+            display_df = log_df.copy()
+            display_df['details'] = display_df['details'].str.replace(r"^⟦ID:.*?⟧ ", "", regex=True)
+            display_df['timestamp'] = pd.to_datetime(display_df['timestamp'], format='ISO8601').dt.strftime('%b %d, %H:%M')
+            def style_rows(row):
+                styles = [''] * len(row)
+                if row.event_type == "Booking Created": styles[1] = 'background-color: #d4edda; color: #155724; font-weight: bold;'
+                elif row.event_type in ["Booking Deleted", "Booking Cancelled"]: styles[1] = 'background-color: #f8d7da; color: #721c24; font-weight: bold;'
+                elif row.event_type == "Access Denied": styles[1] = 'background-color: #ffcc00; color: black; font-weight: bold;'
+                return styles
+            st.dataframe(display_df.style.apply(style_rows, axis=1), hide_index=True, width="stretch")
     else: st.info("No activity.")
 
 st.divider()
