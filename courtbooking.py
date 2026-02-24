@@ -335,7 +335,7 @@ if st.query_params.get("view") == "full":
 # --- MAIN APP ---
 st.subheader("🎾 Book that Court ...")    
 st.caption("An Un-Official & Community Driven Booking Solution.")
-st.info("With over 500 active users, there were 6 instances of double booking when 2 villas booked the same court at the same time. The booking is made more robust. Check to see if any of your booking were affected in the double booking. The older of the 2 is retained and later one,deleted.")    
+st.info("App stores Villa details along with device id and ip address to allow access only 1 villa's booking.")    
 
 try:
     _process_background_tasks()
