@@ -333,7 +333,7 @@ if st.query_params.get("view") == "full":
 # --- MAIN APP ---
 st.subheader("🎾 Book that Court ...")    
 st.caption("An Un-Official & Community Driven Booking Solution.")
-#st.info("Like Ra's al Ghul in the League... , to restore balance, the app remembers you and your villa number :-)")    
+st.info("Double check your Villa details before using for the First time. The app stores the data and allows access limited to that Villa.")    
 
 try:
     _process_background_tasks()
