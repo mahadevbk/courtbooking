@@ -677,7 +677,7 @@ with tab4:
             admin_key = st.text_input("Enter Admin Key", type="password")
             # For security, ideally use st.secrets["ADMIN_PASSWORD"]
             # Using a fallback for demonstration if not set
-            correct_key = st.secrets.get("ADMIN_PASSWORD", "courtadmin123")
+            correct_key = st.secrets.get("ADMIN_PASSWORD")
             if admin_key == correct_key:
                 admin_mode = True
                 st.success("Admin Mode Active")
