@@ -79,7 +79,7 @@ def add_log(event_type, details):
         pass 
 
 def check_device_lock(current_villa, current_sub):
-    \"\"\"Checks if current IP/FP is already associated with a different villa in logs.\"\"\"
+    """Checks if current IP/FP is already associated with a different villa in logs."""
     ip = st.session_state.get('client_ip')
     fp = st.session_state.get('client_fp')
     
@@ -121,32 +121,32 @@ def check_device_lock(current_villa, current_sub):
         if not (is_ip_match or is_fp_match):
             continue
 
-        if event == \"Lock Reset\":
+        if event == "Lock Reset":
             # Admin reset found for this device/network
             break
             
         try:
-            msg = details.split(\"⟧\", 1)[-1].strip()
+            msg = details.split("⟧", 1)[-1].strip()
             log_sub, log_villa = None, None
             
             # Normalize: Remove common prefixes
-            for p in [\"New device/IP lock for \", \"Registration blocked for Villa (\", \"Access Denied: \", \"Booking Created: \"]:
+            for p in ["New device/IP lock for ", "Registration blocked for Villa (", "Access Denied: ", "Booking Created: "]:
                 if msg.startswith(p):
                     msg = msg[len(p):].strip()
 
-            # Parse villa info: \"Mira 1 - Villa 101\" or \"Mira 1 Villa 101\"
-            if \" - Villa \" in msg:
-                parts = msg.split(\" - Villa \")
+            # Parse villa info: "Mira 1 - Villa 101" or "Mira 1 Villa 101"
+            if " - Villa " in msg:
+                parts = msg.split(" - Villa ")
                 log_sub = parts[0].strip()
-                log_villa = parts[1].split(\" \")[0].strip().rstrip(\")\")
-            elif \" Villa \" in msg:
-                parts = msg.split(\" Villa \")
+                log_villa = parts[1].split(" ")[0].strip().rstrip(")")
+            elif " Villa " in msg:
+                parts = msg.split(" Villa ")
                 log_sub = parts[0].strip()
-                log_villa = parts[1].split(\" \")[0].strip()
+                log_villa = parts[1].split(" ")[0].strip()
             
             if log_sub in sub_community_list and log_villa:
                 if log_villa != current_villa or log_sub != current_sub:
-                    return f\"{log_sub} - {log_villa}\"
+                    return f"{log_sub} - {log_villa}"
         except: continue
     return None
 
@@ -433,26 +433,26 @@ if not st.session_state.authenticated:
     with col2:
         villa_input = st.text_input("Enter Villa Number").strip().upper()
 
-    if st.button(\"Register & Login\", type=\"primary\", use_container_width=True):
+    if st.button("Register & Login", type="primary", use_container_width=True):
         if not sub_community_input or not villa_input:
-            st.error(\"Please select a sub-community and enter your villa number.\")
+            st.error("Please select a sub-community and enter your villa number.")
         else:
             # Check if IP/FP are actually loaded
             ip = st.session_state.get('client_ip')
             if not ip or ip == 0:
-                st.warning(\"⚠️ Still verifying your connection security. Please wait a moment and try again.\")
+                st.warning("⚠️ Still verifying your connection security. Please wait a moment and try again.")
             else:
                 # Check for existing logs with this IP/FP if available
                 owner = check_device_lock(villa_input, sub_community_input)
                 if owner:
-                    st.error(f\"🚫 Access Denied: This network/device is already associated with **{owner}**. Switching villas is not permitted.\")
-                    add_log(\"Access Denied\", f\"Registration blocked for Villa ({sub_community_input} - {villa_input}): Already locked to {owner}\")
+                    st.error(f"🚫 Access Denied: This network/device is already associated with **{owner}**. Switching villas is not permitted.")
+                    add_log("Access Denied", f"Registration blocked for Villa ({sub_community_input} - {villa_input}): Already locked to {owner}")
                 else:
-                    current_choice = f\"{sub_community_input}-{villa_input}\"
-                    st_javascript(f\"localStorage.setItem('court_villa_lock', '{current_choice}');\")
+                    current_choice = f"{sub_community_input}-{villa_input}"
+                    st_javascript(f"localStorage.setItem('court_villa_lock', '{current_choice}');")
                     st.session_state.sub_community, st.session_state.villa = sub_community_input, villa_input
                     st.session_state.authenticated = True
-                    add_log(\"Device Registered\", f\"New device/IP lock for {sub_community_input} - Villa {villa_input}\")
+                    add_log("Device Registered", f"New device/IP lock for {sub_community_input} - Villa {villa_input}")
                     st.rerun()
     
     # Still show a subtle loading state if everything is still 0
