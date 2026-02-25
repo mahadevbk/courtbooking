@@ -114,11 +114,30 @@ def check_device_lock(current_villa, current_sub):
         event = log['event_type']
         details = log['details']
         
+        # Parse log's IP and FP from details
+        log_ip, log_fp = None, None
+        if "⟦ID:" in details and "⟧" in details:
+            try:
+                id_part = details.split("⟦ID:", 1)[1].split("⟧", 1)[0]
+                if "|" in id_part:
+                    log_ip, log_fp = id_part.split("|", 1)
+            except: pass
+
         # Check if this log is within the relevant time window for IP or FP
-        is_ip_match = ip and f"⟦ID:{ip}|" in details and ts >= ip_cutoff
-        is_fp_match = fp and f"|{fp}⟧" in details and ts >= fp_cutoff
+        is_ip_match = ip and log_ip == ip and ts >= ip_cutoff
+        is_fp_match = fp and log_fp == fp and ts >= fp_cutoff
         
-        if not (is_ip_match or is_fp_match):
+        # Decide if this log constitutes a lock
+        is_lock = False
+        if is_fp_match:
+            is_lock = True
+        elif is_ip_match:
+            # Same IP. If both have valid fingerprints and they differ, it's a different device.
+            if fp and log_fp and log_fp != fp and log_fp not in ['unknown', 'detecting', '0']:
+                continue # Different device on same network - ignore this log
+            is_lock = True
+        
+        if not is_lock:
             continue
 
         if event == "Lock Reset":
@@ -406,7 +425,7 @@ if not st.session_state.authenticated:
     # Get signals individually to prevent total hang
     stored_lock = st_javascript("localStorage.getItem('court_villa_lock') || 'no_lock';")
     client_ip = st_javascript("fetch('https://api.ipify.org').then(r => r.text()).catch(() => 'unknown');")
-    client_fp = st_javascript("btoa(navigator.userAgent + screen.width + 'x' + screen.height);")
+    client_fp = st_javascript("btoa(navigator.userAgent + screen.width + 'x' + screen.height + navigator.language + (navigator.hardwareConcurrency || ''));")
     
     # Store in session state if they arrived
     if client_ip and client_ip != 0: st.session_state.client_ip = client_ip
@@ -439,7 +458,8 @@ if not st.session_state.authenticated:
         else:
             # Check if IP/FP are actually loaded
             ip = st.session_state.get('client_ip')
-            if not ip or ip == 0:
+            fp = st.session_state.get('client_fp')
+            if not ip or ip == 0 or not fp or fp == 0:
                 st.warning("⚠️ Still verifying your connection security. Please wait a moment and try again.")
             else:
                 # Check for existing logs with this IP/FP if available
@@ -729,7 +749,9 @@ with tab4:
             st.markdown("### 🔐 Master Access Log")
             # For admin, we show the full ID
             master_df = log_df.copy()
-            master_df['ID'] = master_df['details'].str.extract(r"⟦ID:(.*?)⟧")
+            # Extract IP and Fingerprint
+            master_df['IP'] = master_df['details'].str.extract(r"⟦ID:(.*?)\|")
+            master_df['DeviceID'] = master_df['details'].str.extract(r"\|(.*?)⟧").fillna("unknown").str[:8]
             master_df['details'] = master_df['details'].str.replace(r"^⟦ID:.*?⟧ ", "", regex=True)
             
             # Reset tool
