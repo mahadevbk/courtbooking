@@ -335,8 +335,7 @@ if st.query_params.get("view") == "full":
 # --- MAIN APP ---
 st.subheader("🎾 Book that Court ...")    
 st.caption("An Un-Official & Community Driven Booking Solution.")
-#st.info("""Ramadan hours are 7 AM to 12 AM. \n To ensure fair access, each booking is restricted to one villa per device and IP address.""")    
-st.info("Ramadan hours are 7 AM to 12 AM.  \nTo ensure fair access, each booking is restricted to one villa per device and IP address.")
+st.info("Ramadan hours updated to 7 AM to 12 AM.  \nTo ensure fair access, booking is restricted to one villa per device and IP address.")
 try:
     _process_background_tasks()
     villas_active = get_villas_with_active_bookings()
