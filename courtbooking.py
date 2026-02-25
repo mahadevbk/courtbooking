@@ -97,9 +97,16 @@ def check_device_lock(current_villa, current_sub):
         if " - Villa " in details:
             # Extract villa info: "Mira 1 - Villa 123"
             try:
-                parts = details.split("⟧ ")[1].split(" - Villa ")
-                log_sub = parts[0]
-                log_villa = parts[1].split(" ")[0]
+                # Extract the message part after the ID tag
+                msg = details.split("⟧ ", 1)[1]
+                # Strip the common prefix used in registration logs
+                prefix = "New device/IP lock for "
+                if msg.startswith(prefix):
+                    msg = msg[len(prefix):]
+                
+                parts = msg.split(" - Villa ")
+                log_sub = parts[0].strip()
+                log_villa = parts[1].split(" ")[0].strip()
                 if log_villa != current_villa or log_sub != current_sub:
                     return f"{log_sub} - {log_villa}"
             except: continue
@@ -335,7 +342,8 @@ if st.query_params.get("view") == "full":
 # --- MAIN APP ---
 st.subheader("🎾 Book that Court ...")    
 st.caption("An Un-Official & Community Driven Booking Solution.")
-st.info("Ramadan hours updated to 7 AM to 12 AM.  \nTo ensure fair access, booking is restricted to one villa per device and IP address.")
+st.info("Ramadan Timings 7AM to 12AM slots. App stores Villa details along with device id and ip address to allow access only 1 villa's booking.")    
+
 try:
     _process_background_tasks()
     villas_active = get_villas_with_active_bookings()
