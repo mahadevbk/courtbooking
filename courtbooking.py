@@ -394,7 +394,7 @@ if not st.session_state.authenticated:
             owner = check_device_lock(villa_input, sub_community_input)
             if owner:
                 st.error(f"🚫 Access Denied: This device/network is already registered to **{owner}**. Switching villas is not permitted.")
-                add_log("Access Denied", f"Registration blocked for Villa (details): Already locked to {owner}")
+                add_log("Access Denied", f"Registration blocked for Villa ({sub_community_input} - {villa_input}): Already locked to {owner}")
             else:
                 current_choice = f"{sub_community_input}-{villa_input}"
                 st_javascript(f"localStorage.setItem('court_villa_lock', '{current_choice}');")
