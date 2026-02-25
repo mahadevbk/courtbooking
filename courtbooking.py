@@ -64,7 +64,9 @@ def add_log(event_type, details):
     timestamp = get_utc_plus_4().isoformat()
     # Get signals from session state
     ip = st.session_state.get('client_ip', 'unknown')
+    if ip == 0: ip = 'detecting'
     fp = st.session_state.get('client_fp', 'unknown')
+    if fp == 0: fp = 'detecting'
     # Store ID in a searchable format hidden from the log viewer
     extended_details = f"⟦ID:{ip}|{fp}⟧ {details}"
     try:
@@ -77,42 +79,75 @@ def add_log(event_type, details):
         pass 
 
 def check_device_lock(current_villa, current_sub):
-    """Checks if current IP/FP is already associated with a different villa in logs."""
+    \"\"\"Checks if current IP/FP is already associated with a different villa in logs.\"\"\"
     ip = st.session_state.get('client_ip')
     fp = st.session_state.get('client_fp')
-    if not ip or ip == 'unknown': return None
     
-    # Search for this IP in the logs
+    # Sanitize 0 or unknown from st_javascript
+    if ip == 0 or ip == 'unknown': ip = None
+    if fp == 0 or fp == 'unknown': fp = None
+    
+    if not ip and not fp: return None
+    
+    now = get_utc_plus_4()
+    # IP lock is limited to 24 hours due to dynamic IP reassignment
+    ip_cutoff = (now - timedelta(hours=24)).isoformat()
+    # Fingerprint lock is more persistent (90 days)
+    fp_cutoff = (now - timedelta(days=90)).isoformat()
+
+    filters = []
+    if ip: filters.append(f"details.ilike.%⟦ID:{ip}|%")
+    if fp: filters.append(f"details.ilike.%|{fp}⟧%")
+    
+    if not filters: return None
+    
     response = run_query(
         supabase.table("logs")
-        .select("event_type, details")
-        .ilike("details", f"%⟦ID:{ip}%")
+        .select("timestamp, event_type, details")
+        .or_(",".join(filters))
         .order("timestamp", desc=True)
-        .limit(50)
+        .limit(200)
     )
+    
     for log in response.data:
-        if log['event_type'] == "Lock Reset":
-            break
+        ts = log['timestamp']
+        event = log['event_type']
         details = log['details']
-        if " - Villa " in details:
-            # Extract villa info: "Mira 1 - Villa 123"
-            try:
-                # Extract the message part after the ID tag
-                msg = details.split("⟧", 1)[-1].strip()
-                
-                # Strip known prefixes that might precede the sub-community name
-                prefix = "New device/IP lock for "
-                if msg.startswith(prefix):
-                    msg = msg[len(prefix):].strip()
-                
-                if " - Villa " in msg:
-                    parts = msg.split(" - Villa ")
-                    log_sub = parts[0].strip()
-                    log_villa = parts[1].split(" ")[0].strip()
-                    
-                    if log_villa != current_villa or log_sub != current_sub:
-                        return f"{log_sub} - {log_villa}"
-            except: continue
+        
+        # Check if this log is within the relevant time window for IP or FP
+        is_ip_match = ip and f"⟦ID:{ip}|" in details and ts >= ip_cutoff
+        is_fp_match = fp and f"|{fp}⟧" in details and ts >= fp_cutoff
+        
+        if not (is_ip_match or is_fp_match):
+            continue
+
+        if event == \"Lock Reset\":
+            # Admin reset found for this device/network
+            break
+            
+        try:
+            msg = details.split(\"⟧\", 1)[-1].strip()
+            log_sub, log_villa = None, None
+            
+            # Normalize: Remove common prefixes
+            for p in [\"New device/IP lock for \", \"Registration blocked for Villa (\", \"Access Denied: \", \"Booking Created: \"]:
+                if msg.startswith(p):
+                    msg = msg[len(p):].strip()
+
+            # Parse villa info: \"Mira 1 - Villa 101\" or \"Mira 1 Villa 101\"
+            if \" - Villa \" in msg:
+                parts = msg.split(\" - Villa \")
+                log_sub = parts[0].strip()
+                log_villa = parts[1].split(\" \")[0].strip().rstrip(\")\")
+            elif \" Villa \" in msg:
+                parts = msg.split(\" Villa \")
+                log_sub = parts[0].strip()
+                log_villa = parts[1].split(\" \")[0].strip()
+            
+            if log_sub in sub_community_list and log_villa:
+                if log_villa != current_villa or log_sub != current_sub:
+                    return f\"{log_sub} - {log_villa}\"
+        except: continue
     return None
 
 def get_bookings_for_day_with_details(date_str):
@@ -345,8 +380,7 @@ if st.query_params.get("view") == "full":
 # --- MAIN APP ---
 st.subheader("🎾 Book that Court ...")    
 st.caption("An Un-Official & Community Driven Booking Solution.")
-#st.info("Ramadan Timings 7AM to 12AM slots. App stores Villa details along with device id and ip address to allow access only 1 villa's booking.")
-st.info("Ramadan, timings updated to 7 AM to 12 AM.  \nTo ensure fair access, each booking is restricted to one villa per device and IP address.")
+st.info("Ramadan Timings 7AM to 12AM slots. App stores Villa details along with device id and ip address to allow access only 1 villa's booking.")    
 
 try:
     _process_background_tasks()
@@ -399,20 +433,27 @@ if not st.session_state.authenticated:
     with col2:
         villa_input = st.text_input("Enter Villa Number").strip().upper()
 
-    if st.button("Register & Login", type="primary", use_container_width=True):
-        if sub_community_input and villa_input:
-            # Check for existing logs with this IP/FP if available
-            owner = check_device_lock(villa_input, sub_community_input)
-            if owner:
-                st.error(f"🚫 Access Denied: This device/network is already registered to **{owner}**. Switching villas is not permitted.")
-                add_log("Access Denied", f"Registration blocked for Villa ({sub_community_input} - {villa_input}): Already locked to {owner}")
+    if st.button(\"Register & Login\", type=\"primary\", use_container_width=True):
+        if not sub_community_input or not villa_input:
+            st.error(\"Please select a sub-community and enter your villa number.\")
+        else:
+            # Check if IP/FP are actually loaded
+            ip = st.session_state.get('client_ip')
+            if not ip or ip == 0:
+                st.warning(\"⚠️ Still verifying your connection security. Please wait a moment and try again.\")
             else:
-                current_choice = f"{sub_community_input}-{villa_input}"
-                st_javascript(f"localStorage.setItem('court_villa_lock', '{current_choice}');")
-                st.session_state.sub_community, st.session_state.villa = sub_community_input, villa_input
-                st.session_state.authenticated = True
-                add_log("Device Registered", f"New device/IP lock for {sub_community_input} - Villa {villa_input}")
-                st.rerun()
+                # Check for existing logs with this IP/FP if available
+                owner = check_device_lock(villa_input, sub_community_input)
+                if owner:
+                    st.error(f\"🚫 Access Denied: This network/device is already associated with **{owner}**. Switching villas is not permitted.\")
+                    add_log(\"Access Denied\", f\"Registration blocked for Villa ({sub_community_input} - {villa_input}): Already locked to {owner}\")
+                else:
+                    current_choice = f\"{sub_community_input}-{villa_input}\"
+                    st_javascript(f\"localStorage.setItem('court_villa_lock', '{current_choice}');\")
+                    st.session_state.sub_community, st.session_state.villa = sub_community_input, villa_input
+                    st.session_state.authenticated = True
+                    add_log(\"Device Registered\", f\"New device/IP lock for {sub_community_input} - Villa {villa_input}\")
+                    st.rerun()
     
     # Still show a subtle loading state if everything is still 0
     if stored_lock == 0:
@@ -677,7 +718,7 @@ with tab4:
             admin_key = st.text_input("Enter Admin Key", type="password")
             # For security, ideally use st.secrets["ADMIN_PASSWORD"]
             # Using a fallback for demonstration if not set
-            correct_key = st.secrets.get("ADMIN_PASSWORD")
+            correct_key = st.secrets.get("ADMIN_PASSWORD", "courtadmin123")
             if admin_key == correct_key:
                 admin_mode = True
                 st.success("Admin Mode Active")
