@@ -98,17 +98,20 @@ def check_device_lock(current_villa, current_sub):
             # Extract villa info: "Mira 1 - Villa 123"
             try:
                 # Extract the message part after the ID tag
-                msg = details.split("⟧ ", 1)[1]
-                # Strip the common prefix used in registration logs
+                msg = details.split("⟧", 1)[-1].strip()
+                
+                # Strip known prefixes that might precede the sub-community name
                 prefix = "New device/IP lock for "
                 if msg.startswith(prefix):
-                    msg = msg[len(prefix):]
+                    msg = msg[len(prefix):].strip()
                 
-                parts = msg.split(" - Villa ")
-                log_sub = parts[0].strip()
-                log_villa = parts[1].split(" ")[0].strip()
-                if log_villa != current_villa or log_sub != current_sub:
-                    return f"{log_sub} - {log_villa}"
+                if " - Villa " in msg:
+                    parts = msg.split(" - Villa ")
+                    log_sub = parts[0].strip()
+                    log_villa = parts[1].split(" ")[0].strip()
+                    
+                    if log_villa != current_villa or log_sub != current_sub:
+                        return f"{log_sub} - {log_villa}"
             except: continue
     return None
 
