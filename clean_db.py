@@ -117,8 +117,8 @@ def clean_db(supabase, courts):
                 search_order = shuffled_preferred + other_courts
                 
                 for court in search_order:
-                    if not is_slot_in_past(date_str, 17) and not is_slot_booked(supabase, court, date_str, 17) and \
-                       not is_slot_in_past(date_str, 18) and not is_slot_booked(supabase, court, date_str, 18):
+                    if not is_slot_in_past(date_str, 19) and not is_slot_booked(supabase, court, date_str, 19) and \
+                       not is_slot_in_past(date_str, 20) and not is_slot_booked(supabase, court, date_str, 20):
                         try:
                             run_query(supabase, supabase.table("bookings").insert([
                                 {"villa": v_num, "sub_community": "Mira 1", "court": court, "date": date_str, "start_hour": 17},
