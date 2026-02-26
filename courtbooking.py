@@ -419,7 +419,7 @@ if not st.session_state.authenticated:
     if client_fp and client_fp != 0: st.session_state.client_fp = client_fp
 
     # 1. Primary Lock (localStorage) - Fast Path
-    if stored_lock and stored_lock != 0 and stored_lock != "no_lock":
+    if stored_lock and stored_lock != 0 and stored_lock != "no_lock" and not st.session_state.get('logging_out'):
         try:
             locked_sub, locked_villa = stored_lock.split("-")
             st.session_state.sub_community, st.session_state.villa = locked_sub, locked_villa
@@ -459,6 +459,7 @@ if not st.session_state.authenticated:
                     st_javascript(f"localStorage.setItem('court_villa_lock', '{current_choice}');")
                     st.session_state.sub_community, st.session_state.villa = sub_community_input, villa_input
                     st.session_state.authenticated = True
+                    st.session_state.logging_out = False # Clear flag on successful login
                     add_log("Device Registered", f"New device/IP lock for {sub_community_input} - Villa {villa_input}")
                     st.rerun()
     
@@ -467,6 +468,7 @@ if not st.session_state.authenticated:
         st_javascript("localStorage.removeItem('court_villa_lock');")
         for key in list(st.session_state.keys()):
             del st.session_state[key]
+        st.session_state.logging_out = True # Set flag to prevent auto-login loop
         st.rerun()
     
     # Still show a subtle loading state if everything is still 0
@@ -577,6 +579,7 @@ with tab1:
         st_javascript("localStorage.removeItem('court_villa_lock');")
         for key in list(st.session_state.keys()):
             del st.session_state[key]
+        st.session_state.logging_out = True # Set flag to prevent auto-login loop
         st.rerun()
 
 with tab2:
@@ -723,6 +726,7 @@ with tab3:
             st_javascript("localStorage.removeItem('court_villa_lock');")
             for key in list(st.session_state.keys()):
                 del st.session_state[key]
+            st.session_state.logging_out = True # Set flag to prevent auto-login loop
             st.rerun()
 
 with tab4:
