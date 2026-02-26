@@ -404,18 +404,7 @@ if not st.session_state.authenticated:
     stored_lock = st_javascript("localStorage.getItem('court_villa_lock') || 'no_lock';")
     client_ip = st_javascript("fetch('https://api.ipify.org').then(r => r.text()).catch(() => 'unknown');")
     # Improved Fingerprint: added more entropy
-    client_fp = st_javascript("""
-        btoa([
-            Intl.DateTimeFormat().resolvedOptions().timeZone,
-            screen.width + 'x' + screen.height,
-            navigator.hardwareConcurrency || '',
-            navigator.deviceMemory || '',
-            navigator.maxTouchPoints || '',
-            navigator.platform,
-            navigator.language,
-            navigator.userAgent
-        ].join('|'));
-    """)
+    client_fp = st_javascript("btoa([Intl.DateTimeFormat().resolvedOptions().timeZone, screen.width + 'x' + screen.height, navigator.hardwareConcurrency || '', navigator.deviceMemory || '', navigator.maxTouchPoints || '', navigator.platform, navigator.language, navigator.userAgent].join('|'));")
     
     # Store in session state if they arrived
     if client_ip and client_ip != 0: st.session_state.client_ip = client_ip
@@ -451,7 +440,10 @@ if not st.session_state.authenticated:
             ip = st.session_state.get('client_ip')
             fp = st.session_state.get('client_fp')
             if not ip or ip == 0 or not fp or fp == 0:
-                st.warning("⚠️ Still verifying your connection security. Please wait a moment and try again.")
+                missing = []
+                if not ip or ip == 0: missing.append("IP")
+                if not fp or fp == 0: missing.append("Device Fingerprint")
+                st.warning(f"⚠️ Still verifying your connection security ({', '.join(missing)}). Please wait a moment and try again. If stuck, try refreshing the page.")
             else:
                 # Check for existing logs with this IP/FP if available
                 owner = check_device_lock(villa_input, sub_community_input)
@@ -471,8 +463,10 @@ if not st.session_state.authenticated:
     st.write("")
     if st.button("🚪 Logout / Reset Device", use_container_width=True, key="reg_logout"):
         st_javascript("localStorage.removeItem('court_villa_lock');")
-        for key in list(st.session_state.keys()):
-            del st.session_state[key]
+        # Only clear auth-related keys, keep client_ip/fp if they exist
+        for key in ["authenticated", "sub_community", "villa"]:
+            if key in st.session_state:
+                del st.session_state[key]
         st.query_params["logout"] = "1"
         st.rerun()
     
@@ -582,8 +576,9 @@ with tab1:
     st.divider()
     if st.button("🚪 Logout / Change Villa", use_container_width=True, key="tab1_logout"):
         st_javascript("localStorage.removeItem('court_villa_lock');")
-        for key in list(st.session_state.keys()):
-            del st.session_state[key]
+        for key in ["authenticated", "sub_community", "villa"]:
+            if key in st.session_state:
+                del st.session_state[key]
         st.query_params["logout"] = "1"
         st.rerun()
 
@@ -729,8 +724,9 @@ with tab3:
         st.divider()
         if st.button("🚪 Logout / Change Villa", use_container_width=True):
             st_javascript("localStorage.removeItem('court_villa_lock');")
-            for key in list(st.session_state.keys()):
-                del st.session_state[key]
+            for key in ["authenticated", "sub_community", "villa"]:
+                if key in st.session_state:
+                    del st.session_state[key]
             st.query_params["logout"] = "1"
             st.rerun()
 
