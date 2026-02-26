@@ -368,7 +368,7 @@ if st.query_params.get("view") == "full":
 # --- MAIN APP ---
 st.subheader("🎾 Book that Court ...")    
 st.caption("An Un-Official & Community Driven Booking Solution.")
-st.info("Ramadan Timings 7AM to 12AM slots. App stores Villa details along with device id and ip address to allow access only 1 villa's booking.")    
+st.info("Ramadan Timings ; Slots updated,  from 7AM to 12AM.")    
 
 try:
     _process_background_tasks()
