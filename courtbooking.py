@@ -368,7 +368,7 @@ if st.query_params.get("view") == "full":
 # --- MAIN APP ---
 st.subheader("🎾 Book that Court ...")    
 st.caption("An Un-Official & Community Driven Booking Solution.")
-st.info("Ramadan Timings ; Slots updated,  from 7AM to 12AM.")    
+st.info("Ramadan Timings 7AM to 12AM slots. App stores Villa details along with device id and ip address to allow access only 1 villa's booking.")    
 
 try:
     _process_background_tasks()
@@ -719,8 +719,8 @@ with tab4:
             # For admin, we show the full ID
             master_df = log_df.copy()
             # Extract IP and Fingerprint
-            master_df['IP'] = master_df['details'].str.extract(r"⟦ID:(.*?)\|")
-            master_df['DeviceID'] = master_df['details'].str.extract(r"\|(.*?)⟧").fillna("unknown").str[:8]
+            master_df['IP'] = master_df['details'].str.extract(r"⟦ID:(.*?)\|", expand=False)
+            master_df['DeviceID'] = master_df['details'].str.extract(r"\|(.*?)⟧", expand=False).fillna("unknown").str[:8]
             master_df['details'] = master_df['details'].str.replace(r"^⟦ID:.*?⟧ ", "", regex=True)
             
             # Reset tool
