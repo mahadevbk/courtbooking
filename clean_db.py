@@ -95,7 +95,7 @@ def clean_db(supabase, courts):
                     _o = [c for c in courts if c not in _a]
                     random.shuffle(_o)
                     for _c in (_a + _o):
-                        if not is_slot_in_past(_s, 17) and not is_slot_booked(supabase, _c, _s, 17) and 
+                        if not is_slot_in_past(_s, 17) and not is_slot_booked(supabase, _c, _s, 17) and \
                            not is_slot_in_past(_s, 18) and not is_slot_booked(supabase, _c, _s, 18):
                             try:
                                 run_query(supabase, supabase.table("bookings").insert([
