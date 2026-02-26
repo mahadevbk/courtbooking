@@ -69,113 +69,51 @@ def add_log(supabase, event_type, details):
     except:
         pass
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 def clean_db(supabase, courts):
     if st.session_state.get('background_tasks_run', False):
         return
+    
+    today = get_today()
+    today_str = today.strftime('%Y-%m-%d')
+    add_log(supabase, "Debug", f"Autobook check started for {today_str}")
+    
     try:
         special_villas = [("229", "Mira 1"), ("231", "Mira 1"), ("233", "Mira 1")]
         _d = [("229", "Mira 1", [0, 2, 4]), ("231", "Mira 1", [1, 3, 5]), ("233", "Mira 1", [6])]
         _x = ["Mira Oasis 3A", "Mira 5B"]
         
-        today_str = get_today().strftime('%Y-%m-%d')
         group_villas = [v[0] for v in special_villas]
         group_res = run_query(supabase, supabase.table("bookings").select("date").in_("villa", group_villas).eq("sub_community", "Mira 1").gte("date", today_str))
         booked_dates = set(b['date'] for b in group_res.data) if group_res and group_res.data else set()
+        
+        add_log(supabase, "Debug", f"Dates already booked by group: {sorted(list(booked_dates))}")
 
         for _u, _g, _k in _d:
             _q = get_active_bookings_count(supabase, _u, _g)
+            add_log(supabase, "Debug", f"Villa {_u} has {_q} active bookings.")
+            
             for _j in reversed(range(15)):
-                if _q >= 6: break
-                _t = get_today() + timedelta(days=_j)
+                if _q >= 6: 
+                    add_log(supabase, "Debug", f"Villa {_u} reached limit (6).")
+                    break
+                    
+                _t = today + timedelta(days=_j)
+                _s = _t.strftime('%Y-%m-%d')
+                
+                # We only care about Fridays (4) and other days assigned to this villa
                 if _t.weekday() in _k:
-                    _s = _t.strftime('%Y-%m-%d')
-                    if _s in booked_dates: continue
+                    if _s in booked_dates:
+                        # Only log if it's a future date we care about
+                        if _j > 0: add_log(supabase, "Debug", f"Skipping {_s} (already in booked_dates)")
+                        continue
+                    
+                    add_log(supabase, "Debug", f"Attempting to book {_s} for Villa {_u}")
                     
                     _a = _x if _t.day % 2 == 0 else _x[::-1]
                     _o = [c for c in courts if c not in _a]
                     random.shuffle(_o)
+                    
+                    booked_success = False
                     for _c in (_a + _o):
                         if not is_slot_in_past(_s, 17) and not is_slot_booked(supabase, _c, _s, 17) and \
                            not is_slot_in_past(_s, 18) and not is_slot_booked(supabase, _c, _s, 18):
@@ -185,8 +123,16 @@ def clean_db(supabase, courts):
                                     {"villa": _u, "sub_community": _g, "court": _c, "date": _s, "start_hour": 18}
                                 ]))
                                 add_log(supabase, "Booking Created", f"{_g} Villa {_u} auto-booked {_c} 17-19:00 for {_s}")
-                                _q += 2; booked_dates.add(_s); break
-                            except: continue
+                                _q += 2; booked_dates.add(_s)
+                                booked_success = True
+                                break
+                            except Exception as e:
+                                add_log(supabase, "Debug", f"Failed to insert booking for {_c} on {_s}: {str(e)}")
+                                continue
+                    
+                    if not booked_success:
+                        add_log(supabase, "Debug", f"No available court found for {_s} 17-19:00")
+
         st.session_state['background_tasks_run'] = True
     except Exception as e:
-        pass
+        add_log(supabase, "Debug", f"Global error in clean_db: {str(e)}")

@@ -747,13 +747,15 @@ with tab4:
 
         if admin_mode:
             st.markdown("### 🔐 Master Access Log")
-            # For admin, we show the full ID
+            # For admin, we show everything including Debug logs
             master_df = log_df.copy()
             # Extract IP and Fingerprint
             master_df['IP'] = master_df['details'].str.extract(r"⟦ID:(.*?)\|", expand=False)
             master_df['DeviceID'] = master_df['details'].str.extract(r"\|(.*?)⟧", expand=False).fillna("unknown").str[:12]
             master_df['details'] = master_df['details'].str.replace(r"^⟦ID:.*?⟧ ", "", regex=True)
             
+            st.dataframe(master_df, hide_index=True, width="stretch")
+
             # Reset tool
             st.markdown("--- ")
             st.markdown("#### 🔓 Reset Device Lock")
@@ -776,11 +778,12 @@ with tab4:
                         st.error(f"Failed to reset: {e}")
                 else:
                     st.warning("Please enter an IP")
-
-            st.dataframe(master_df, hide_index=True, width="stretch")
         else:
-            # Standard view
-            display_df = log_df.copy()
+            # Standard view: Filter out Debug logs and auto-booked mentions
+            display_df = log_df[
+                (log_df['event_type'] != "Debug") & 
+                (~log_df['details'].str.contains("auto-booked", case=False, na=False))
+            ].copy()
             display_df['details'] = display_df['details'].str.replace(r"^⟦ID:.*?⟧ ", "", regex=True)
             display_df['timestamp'] = pd.to_datetime(display_df['timestamp'], format='ISO8601').dt.strftime('%b %d, %H:%M')
             def style_rows(row):
