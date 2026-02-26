@@ -125,7 +125,13 @@ def check_device_lock(current_villa, current_sub):
 
         # Check if this log is within the relevant time window for IP or FP
         is_ip_match = ip and log_ip == ip and ts >= ip_cutoff
-        is_fp_match = fp and log_fp == fp and ts >= fp_cutoff
+        
+        # Valid fingerprint check (not generic or unknown)
+        invalid_fps = [None, 'unknown', 'detecting', '0', '']
+        has_valid_fp = fp not in invalid_fps
+        has_valid_log_fp = log_fp not in invalid_fps
+        
+        is_fp_match = has_valid_fp and has_valid_log_fp and log_fp == fp and ts >= fp_cutoff
         
         # Decide if this log constitutes a lock
         is_lock = False
@@ -133,7 +139,7 @@ def check_device_lock(current_villa, current_sub):
             is_lock = True
         elif is_ip_match:
             # Same IP. If both have valid fingerprints and they differ, it's a different device.
-            if fp and log_fp and log_fp != fp and log_fp not in ['unknown', 'detecting', '0']:
+            if has_valid_fp and has_valid_log_fp and log_fp != fp:
                 continue # Different device on same network - ignore this log
             is_lock = True
         
@@ -394,7 +400,19 @@ if not st.session_state.authenticated:
     # Get signals individually to prevent total hang
     stored_lock = st_javascript("localStorage.getItem('court_villa_lock') || 'no_lock';")
     client_ip = st_javascript("fetch('https://api.ipify.org').then(r => r.text()).catch(() => 'unknown');")
-    client_fp = st_javascript("btoa(navigator.userAgent + screen.width + 'x' + screen.height + navigator.language + (navigator.hardwareConcurrency || ''));")
+    # Improved Fingerprint: added more entropy (pixelDepth, maxTouchPoints, timezone, etc.)
+    client_fp = st_javascript("""
+        btoa([
+            Intl.DateTimeFormat().resolvedOptions().timeZone,
+            screen.width + 'x' + screen.height,
+            navigator.hardwareConcurrency || '',
+            navigator.deviceMemory || '',
+            navigator.maxTouchPoints || '',
+            navigator.platform,
+            navigator.language,
+            navigator.userAgent
+        ].join('|'));
+    """)
     
     # Store in session state if they arrived
     if client_ip and client_ip != 0: st.session_state.client_ip = client_ip
@@ -443,6 +461,13 @@ if not st.session_state.authenticated:
                     st.session_state.authenticated = True
                     add_log("Device Registered", f"New device/IP lock for {sub_community_input} - Villa {villa_input}")
                     st.rerun()
+    
+    st.write("")
+    if st.button("🚪 Logout / Reset Device", use_container_width=True, key="reg_logout"):
+        st_javascript("localStorage.removeItem('court_villa_lock');")
+        for key in list(st.session_state.keys()):
+            del st.session_state[key]
+        st.rerun()
     
     # Still show a subtle loading state if everything is still 0
     if stored_lock == 0:
@@ -546,6 +571,13 @@ with tab1:
             active_list = get_active_bookings_for_villa_display(look_villa)
             if active_list: st.selectbox("Active bookings for this villa:", options=active_list)
             else: st.write("No active bookings found for this villa.")
+
+    st.divider()
+    if st.button("🚪 Logout / Change Villa", use_container_width=True, key="tab1_logout"):
+        st_javascript("localStorage.removeItem('court_villa_lock');")
+        for key in list(st.session_state.keys()):
+            del st.session_state[key]
+        st.rerun()
 
 with tab2:
     st.subheader("Book a New Slot")
@@ -720,7 +752,7 @@ with tab4:
             master_df = log_df.copy()
             # Extract IP and Fingerprint
             master_df['IP'] = master_df['details'].str.extract(r"⟦ID:(.*?)\|", expand=False)
-            master_df['DeviceID'] = master_df['details'].str.extract(r"\|(.*?)⟧", expand=False).fillna("unknown").str[:8]
+            master_df['DeviceID'] = master_df['details'].str.extract(r"\|(.*?)⟧", expand=False).fillna("unknown").str[:12]
             master_df['details'] = master_df['details'].str.replace(r"^⟦ID:.*?⟧ ", "", regex=True)
             
             # Reset tool
