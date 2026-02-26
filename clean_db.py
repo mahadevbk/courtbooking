@@ -74,21 +74,21 @@ def clean_db(supabase, courts):
         return
     
     try:
-        # Group configuration
+        # Define the group of villas
         special_villas = [("229", "Mira 1"), ("231", "Mira 1"), ("233", "Mira 1")]
-        # (Villa, Community, Assigned Weekdays)
-        # Weekdays: 0=Mon, 2=Wed, 4=Fri, 1=Tue, 3=Thu, 5=Sat, 6=Sun
-        assignments = [
-            ("229", "Mira 1", [0, 2, 4]), 
-            ("231", "Mira 1", [1, 3, 5]), 
-            ("233", "Mira 1", [6])
-        ]
-        preferred_courts = ["Mira Oasis 3A", "Mira 5B"]
         
+        # Mapping for primary responsibility
+        assignments = {
+            0: "229", 2: "229", 4: "229", # Mon, Wed, Fri
+            1: "231", 3: "231", 5: "231", # Tue, Thu, Sat
+            6: "233"                      # Sun
+        }
+        
+        preferred_courts = ["Mira Oasis 3A", "Mira 5B"]
         today = get_today()
         today_str = today.strftime('%Y-%m-%d')
         
-        # 1. Fetch ALL bookings for this group to manage the shared calendar
+        # 1. Fetch group status
         group_villas = [v[0] for v in special_villas]
         group_res = run_query(supabase, 
             supabase.table("bookings").select("date")
@@ -98,55 +98,51 @@ def clean_db(supabase, courts):
         )
         booked_dates = set(b['date'] for b in group_res.data) if group_res and group_res.data else set()
 
-        # 2. Iterate through the next 14 days STARTING FROM THE FUTURE
-        # This ensures Friday Mar 13 is prioritized over earlier dates if slots are tight
+        # 2. Iterate through future dates (Furthest First)
         for j in reversed(range(15)):
             target_date = today + timedelta(days=j)
             date_str = target_date.strftime('%Y-%m-%d')
             
-            # If the date is already booked by ANY villa in the group, move to next day
             if date_str in booked_dates:
                 continue
-                
-            # Find which villa is responsible for this weekday
-            responsible_villa = None
-            for villa_id, comm, weekdays in assignments:
-                if target_date.weekday() in weekdays:
-                    responsible_villa = (villa_id, comm)
-                    break
             
-            if not responsible_villa:
-                continue
-                
-            v_num, v_comm = responsible_villa
+            # Identify primary and secondary candidates
+            primary_v = assignments.get(target_date.weekday())
+            # Order villas: Primary first, then the rest shuffled
+            others = [v[0] for v in special_villas if v[0] != primary_v]
+            random.shuffle(others)
+            candidates = ([primary_v] if primary_v else []) + others
             
-            # Check if THIS specific villa has space (Limit 6)
-            current_count = get_active_bookings_count(supabase, v_num, v_comm)
-            if current_count >= 6:
-                continue # This villa is full, skip this day
+            booked_success = False
+            for v_num in candidates:
+                # Check if this villa has space
+                current_count = get_active_bookings_count(supabase, v_num, "Mira 1")
+                if current_count >= 6:
+                    continue 
                 
-            # Attempt to book
-            # Alternate court preference based on day to vary locations
-            shuffled_preferred = preferred_courts if target_date.day % 2 == 0 else preferred_courts[::-1]
-            other_courts = [c for c in courts if c not in shuffled_preferred]
-            random.shuffle(other_courts)
-            search_order = shuffled_preferred + other_courts
-            
-            for court in search_order:
-                # Check 17:00 and 18:00 (5pm-7pm)
-                if not is_slot_in_past(date_str, 17) and not is_slot_booked(supabase, court, date_str, 17) and \
-                   not is_slot_in_past(date_str, 18) and not is_slot_booked(supabase, court, date_str, 18):
-                    try:
-                        run_query(supabase, supabase.table("bookings").insert([
-                            {"villa": v_num, "sub_community": v_comm, "court": court, "date": date_str, "start_hour": 17},
-                            {"villa": v_num, "sub_community": v_comm, "court": court, "date": date_str, "start_hour": 18}
-                        ]))
-                        add_log(supabase, "Booking Created", f"{v_comm} Villa {v_num} auto-booked {court} 17-19:00 for {date_str}")
-                        booked_dates.add(date_str)
-                        break # Successfully booked this day, move to next day in loop
-                    except:
-                        continue
-        
+                # Check court availability for 17:00-19:00
+                shuffled_preferred = preferred_courts if target_date.day % 2 == 0 else preferred_courts[::-1]
+                other_courts = [c for c in courts if c not in shuffled_preferred]
+                random.shuffle(other_courts)
+                search_order = shuffled_preferred + other_courts
+                
+                for court in search_order:
+                    if not is_slot_in_past(date_str, 17) and not is_slot_booked(supabase, court, date_str, 17) and \
+                       not is_slot_in_past(date_str, 18) and not is_slot_booked(supabase, court, date_str, 18):
+                        try:
+                            run_query(supabase, supabase.table("bookings").insert([
+                                {"villa": v_num, "sub_community": "Mira 1", "court": court, "date": date_str, "start_hour": 17},
+                                {"villa": v_num, "sub_community": "Mira 1", "court": court, "date": date_str, "start_hour": 18}
+                            ]))
+                            add_log(supabase, "Booking Created", f"Mira 1 Villa {v_num} auto-booked {court} 17-19:00 for {date_str}")
+                            booked_dates.add(date_str)
+                            booked_success = True
+                            break
+                        except: continue
+                
+                if booked_success:
+                    break # Day handled, move to next day in reversed range
+
         st.session_state['background_tasks_run'] = True
         
     except Exception:
