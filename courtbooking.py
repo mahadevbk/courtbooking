@@ -397,10 +397,13 @@ if 'authenticated' not in st.session_state:
 
 # --- DEVICE LOCK LOGIC ---
 if not st.session_state.authenticated:
+    # Use query params to detect manual logout - this overrides the localStorage check
+    logout_mode = st.query_params.get("logout") == "1"
+    
     # Get signals individually to prevent total hang
     stored_lock = st_javascript("localStorage.getItem('court_villa_lock') || 'no_lock';")
     client_ip = st_javascript("fetch('https://api.ipify.org').then(r => r.text()).catch(() => 'unknown');")
-    # Improved Fingerprint: added more entropy (pixelDepth, maxTouchPoints, timezone, etc.)
+    # Improved Fingerprint: added more entropy
     client_fp = st_javascript("""
         btoa([
             Intl.DateTimeFormat().resolvedOptions().timeZone,
@@ -419,7 +422,8 @@ if not st.session_state.authenticated:
     if client_fp and client_fp != 0: st.session_state.client_fp = client_fp
 
     # 1. Primary Lock (localStorage) - Fast Path
-    if stored_lock and stored_lock != 0 and stored_lock != "no_lock" and not st.session_state.get('logging_out'):
+    # We only auto-login if logout_mode is NOT active
+    if not logout_mode and stored_lock and stored_lock != 0 and stored_lock != "no_lock":
         try:
             locked_sub, locked_villa = stored_lock.split("-")
             st.session_state.sub_community, st.session_state.villa = locked_sub, locked_villa
@@ -459,7 +463,8 @@ if not st.session_state.authenticated:
                     st_javascript(f"localStorage.setItem('court_villa_lock', '{current_choice}');")
                     st.session_state.sub_community, st.session_state.villa = sub_community_input, villa_input
                     st.session_state.authenticated = True
-                    st.session_state.logging_out = False # Clear flag on successful login
+                    # Clear query params to remove ?logout=1 if it exists
+                    st.query_params.clear()
                     add_log("Device Registered", f"New device/IP lock for {sub_community_input} - Villa {villa_input}")
                     st.rerun()
     
@@ -468,7 +473,7 @@ if not st.session_state.authenticated:
         st_javascript("localStorage.removeItem('court_villa_lock');")
         for key in list(st.session_state.keys()):
             del st.session_state[key]
-        st.session_state.logging_out = True # Set flag to prevent auto-login loop
+        st.query_params["logout"] = "1"
         st.rerun()
     
     # Still show a subtle loading state if everything is still 0
@@ -579,7 +584,7 @@ with tab1:
         st_javascript("localStorage.removeItem('court_villa_lock');")
         for key in list(st.session_state.keys()):
             del st.session_state[key]
-        st.session_state.logging_out = True # Set flag to prevent auto-login loop
+        st.query_params["logout"] = "1"
         st.rerun()
 
 with tab2:
@@ -726,7 +731,7 @@ with tab3:
             st_javascript("localStorage.removeItem('court_villa_lock');")
             for key in list(st.session_state.keys()):
                 del st.session_state[key]
-            st.session_state.logging_out = True # Set flag to prevent auto-login loop
+            st.query_params["logout"] = "1"
             st.rerun()
 
 with tab4:
