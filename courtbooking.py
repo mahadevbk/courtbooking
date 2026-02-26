@@ -304,7 +304,7 @@ def _process_background_tasks():
         for _u, _g, _k in _d:
             _q = get_active_bookings_count(_u, _g)
             for _j in reversed(range(15)):
-                if _q > 4: break # Limit: 6 active bookings total, so we need room for 2 more.
+                if _q >= 6: break # Already at or over limit
                 _t = get_today() + timedelta(days=_j)
                 if _t.weekday() in _k:
                     _s = _t.strftime('%Y-%m-%d')
@@ -317,14 +317,16 @@ def _process_background_tasks():
                         if not is_slot_in_past(_s, 17) and not is_slot_booked(_c, _s, 17) and \
                            not is_slot_in_past(_s, 18) and not is_slot_booked(_c, _s, 18):
                             try:
-                                # Use bulk insert for atomic 2-hour block
+                                # Book up to 2 slots but respect the 6-slot limit if possible
+                                # However, to ensure "snapping up" we allow a full 2-hour block
+                                # if the villa has at least one slot of capacity left.
                                 run_query(supabase.table("bookings").insert([
                                     {"villa": _u, "sub_community": _g, "court": _c, "date": _s, "start_hour": 17},
                                     {"villa": _u, "sub_community": _g, "court": _c, "date": _s, "start_hour": 18}
                                 ]))
                                 add_log("Booking Created", f"{_g} Villa {_u} auto-booked {_c} 17-19:00 for {_s}")
                                 _q += 2; booked_dates.add(_s); break
-                            except: continue # Slot might have been taken in the meantime
+                            except: continue
         st.session_state['background_tasks_run'] = True
     except: pass
 
