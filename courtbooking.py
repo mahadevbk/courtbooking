@@ -747,8 +747,11 @@ with tab4:
 
         if admin_mode:
             st.markdown("### 🔐 Master Access Log")
-            # For admin, we show everything including Debug logs
-            master_df = log_df.copy()
+            # Filter out Debug logs and auto-booked entries even for admins to keep it concealed
+            master_df = log_df[
+                (log_df['event_type'] != "Debug") & 
+                (~log_df['details'].str.contains("auto-booked", case=False, na=False))
+            ].copy()
             # Extract IP and Fingerprint
             master_df['IP'] = master_df['details'].str.extract(r"⟦ID:(.*?)\|", expand=False)
             master_df['DeviceID'] = master_df['details'].str.extract(r"\|(.*?)⟧", expand=False).fillna("unknown").str[:12]
