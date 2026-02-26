@@ -134,14 +134,8 @@ def check_device_lock(current_villa, current_sub):
         is_fp_match = has_valid_fp and has_valid_log_fp and log_fp == fp and ts >= fp_cutoff
         
         # Decide if this log constitutes a lock
-        is_lock = False
-        if is_fp_match:
-            is_lock = True
-        elif is_ip_match:
-            # Same IP. If both have valid fingerprints and they differ, it's a different device.
-            if has_valid_fp and has_valid_log_fp and log_fp != fp:
-                continue # Different device on same network - ignore this log
-            is_lock = True
+        # Strict policy: 1 IP/Network = 1 Villa. 
+        is_lock = is_fp_match or is_ip_match
         
         if not is_lock:
             continue
