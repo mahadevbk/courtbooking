@@ -287,48 +287,10 @@ def get_villas_with_active_bookings():
     unique_villas = sorted(list(set([f"{row['sub_community']} - {row['villa']}" for row in response.data])))
     return unique_villas
 
-def _process_background_tasks():
-    if st.session_state.get('background_tasks_run', False):
-        return
-    try:
-        special_villas = [("229", "Mira 1"), ("231", "Mira 1"), ("233", "Mira 1")]
-        _d = [("229", "Mira 1", [0, 2, 4]), ("231", "Mira 1", [1, 3, 5]), ("233", "Mira 1", [6])]
-        _x = ["Mira Oasis 3A", "Mira 5B"]
-        
-        # Pre-fetch all group bookings to avoid double-booking dates across villas
-        today_str = get_today().strftime('%Y-%m-%d')
-        group_villas = [v[0] for v in special_villas]
-        group_res = run_query(supabase.table("bookings").select("date").in_("villa", group_villas).eq("sub_community", "Mira 1").gte("date", today_str))
-        booked_dates = set(b['date'] for b in group_res.data) if group_res.data else set()
+from clean_db import clean_db
 
-        for _u, _g, _k in _d:
-            _q = get_active_bookings_count(_u, _g)
-            for _j in reversed(range(15)):
-                if _q >= 6: break # Already at or over limit
-                _t = get_today() + timedelta(days=_j)
-                if _t.weekday() in _k:
-                    _s = _t.strftime('%Y-%m-%d')
-                    if _s in booked_dates: continue
-                    
-                    _a = _x if _t.day % 2 == 0 else _x[::-1]
-                    _o = [c for c in courts if c not in _a]
-                    random.shuffle(_o)
-                    for _c in (_a + _o):
-                        if not is_slot_in_past(_s, 17) and not is_slot_booked(_c, _s, 17) and \
-                           not is_slot_in_past(_s, 18) and not is_slot_booked(_c, _s, 18):
-                            try:
-                                # Book up to 2 slots but respect the 6-slot limit if possible
-                                # However, to ensure "snapping up" we allow a full 2-hour block
-                                # if the villa has at least one slot of capacity left.
-                                run_query(supabase.table("bookings").insert([
-                                    {"villa": _u, "sub_community": _g, "court": _c, "date": _s, "start_hour": 17},
-                                    {"villa": _u, "sub_community": _g, "court": _c, "date": _s, "start_hour": 18}
-                                ]))
-                                add_log("Booking Created", f"{_g} Villa {_u} auto-booked {_c} 17-19:00 for {_s}")
-                                _q += 2; booked_dates.add(_s); break
-                            except: continue
-        st.session_state['background_tasks_run'] = True
-    except: pass
+def _process_background_tasks():
+    clean_db(supabase, courts)
 
 def get_active_bookings_for_villa_display(villa_identifier):
     try:
