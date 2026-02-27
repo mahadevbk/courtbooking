@@ -432,10 +432,15 @@ if not st.session_state.authenticated:
     if client_ip and client_ip != 0: st.session_state.client_ip = client_ip
     if client_fp and client_fp != 0: st.session_state.client_fp = client_fp
 
-    # 1. Global Reset Enforcement: If a reset happened after this device last "checked in", force clear
-    if last_reset_seen != 0 and global_reset_ts > str(last_reset_seen):
-        st_javascript(f"localStorage.removeItem('court_villa_lock'); localStorage.setItem('court_last_reset_seen', '{global_reset_ts}');")
-        st.rerun()
+    # 1. Global Reset Enforcement: Prevent loops using session_state guard
+    if 'last_reset_triggered' not in st.session_state:
+        st.session_state.last_reset_triggered = None
+        
+    if last_reset_seen and last_reset_seen != 0:
+        if str(global_reset_ts) > str(last_reset_seen) and st.session_state.last_reset_triggered != global_reset_ts:
+            st.session_state.last_reset_triggered = global_reset_ts
+            st_javascript(f"localStorage.removeItem('court_villa_lock'); localStorage.setItem('court_last_reset_seen', '{global_reset_ts}');")
+            st.rerun()
 
     # 2. Primary Lock (localStorage) - Fast Path
     # We only auto-login if logout_mode is NOT active
@@ -481,6 +486,7 @@ if not st.session_state.authenticated:
                     current_choice = f"{sub_community_input}-{villa_input}"
                     # Save both the lock and the current reset timestamp to acknowledge the reset
                     st_javascript(f"localStorage.setItem('court_villa_lock', '{current_choice}'); localStorage.setItem('court_last_reset_seen', '{global_reset_ts}');")
+                    st.session_state.last_reset_triggered = global_reset_ts
                     st.session_state.sub_community, st.session_state.villa = sub_community_input, villa_input
                     st.session_state.authenticated = True
                     # Clear query params to remove ?logout=1 if it exists
