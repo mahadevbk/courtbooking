@@ -62,6 +62,10 @@ def run_query(query_method):
 
 def add_log(event_type, details):
     timestamp = get_utc_plus_4().isoformat()
+    # If fingerprint is available in session state, append it to details for locking
+    fp = st.session_state.get('client_fp')
+    if fp and fp != 0 and fp != 'unknown':
+        details = f"⟦FP:{fp}⟧ {details}"
     try:
         supabase.table("logs").insert({
             "timestamp": timestamp,
@@ -70,6 +74,67 @@ def add_log(event_type, details):
         }).execute()
     except:
         pass 
+
+def get_global_reset_ts():
+    """Returns the timestamp of the latest Global Reset event."""
+    try:
+        response = supabase.table("logs").select("timestamp").eq("event_type", "Global Reset").order("timestamp", desc=True).limit(1).execute()
+        if response.data:
+            return response.data[0]['timestamp']
+    except:
+        pass
+    return "1970-01-01T00:00:00"
+
+def check_device_lock(current_villa, current_sub):
+    """Checks if current fingerprint is already associated with a different villa in logs."""
+    fp = st.session_state.get('client_fp')
+    
+    if not fp or fp == 0 or fp == 'unknown': return None
+    
+    now = get_utc_plus_4()
+    global_reset = get_global_reset_ts()
+    # Fingerprint lock is persistent (90 days)
+    fp_cutoff = max((now - timedelta(days=90)).isoformat(), global_reset)
+
+    response = run_query(
+        supabase.table("logs")
+        .select("timestamp, event_type, details")
+        .ilike("details", f"%⟦FP:{fp}⟧%")
+        .order("timestamp", desc=True)
+        .limit(100)
+    )
+    
+    for log in response.data:
+        ts = log['timestamp']
+        event = log['event_type']
+        details = log['details']
+        
+        if ts < fp_cutoff: continue
+        if event == "Global Reset": break
+        if event == "Lock Reset" and f"⟦FP:{fp}⟧" in details: break
+            
+        try:
+            # Extract villa info from details
+            msg = details.split("⟧", 1)[-1].strip()
+            log_sub, log_villa = None, None
+            
+            # Common patterns in logs
+            if " Villa " in msg:
+                # e.g. "Mira 1 Villa 101 booked..." or "New login for Mira 1 - Villa 101"
+                if " - Villa " in msg:
+                    parts = msg.split(" - Villa ")
+                    log_sub = parts[0].split("for ")[-1].strip()
+                    log_villa = parts[1].split(" ")[0].strip()
+                else:
+                    parts = msg.split(" Villa ")
+                    log_sub = parts[0].split("for ")[-1].strip()
+                    log_villa = parts[1].split(" ")[0].strip()
+            
+            if log_sub in sub_community_list and log_villa:
+                if log_villa != current_villa or log_sub != current_sub:
+                    return f"{log_sub} - {log_villa}"
+        except: continue
+    return None
 
 def get_bookings_for_day_with_details(date_str):
     response = run_query(supabase.table("bookings").select("court, start_hour, sub_community, villa").eq("date", date_str))
@@ -307,11 +372,25 @@ if not st.session_state.authenticated:
     # Use query params to detect manual logout
     logout_mode = st.query_params.get("logout") == "1"
     
-    # Still keep localStorage for a persistent session across refreshes, 
-    # but without the "locked" enforcement.
+    # Get fingerprint and existing lock
     stored_lock = st_javascript("localStorage.getItem('court_villa_lock') || 'no_lock';")
+    last_reset_seen = st_javascript("localStorage.getItem('court_last_reset_seen') || '1970-01-01T00:00:00';")
+    # Improved Fingerprint
+    client_fp = st_javascript("btoa([Intl.DateTimeFormat().resolvedOptions().timeZone, screen.width + 'x' + screen.height, navigator.hardwareConcurrency || '', navigator.deviceMemory || '', navigator.maxTouchPoints || '', navigator.platform, navigator.language, navigator.userAgent].join('|'));")
     
-    # 1. Primary Auto-Login (localStorage)
+    # Fetch latest global reset timestamp from DB
+    global_reset_ts = get_global_reset_ts()
+
+    # Store in session state if arrived
+    if client_fp and client_fp != 0: st.session_state.client_fp = client_fp
+
+    # 1. Global Reset Enforcement
+    if last_reset_seen and last_reset_seen != 0:
+        if str(global_reset_ts) > str(last_reset_seen):
+            st_javascript(f"localStorage.removeItem('court_villa_lock'); localStorage.setItem('court_last_reset_seen', '{global_reset_ts}');")
+            st.rerun()
+
+    # 2. Primary Auto-Login (localStorage)
     if not logout_mode and stored_lock and stored_lock != 0 and stored_lock != "no_lock":
         try:
             locked_sub, locked_villa = stored_lock.split("-")
@@ -322,9 +401,9 @@ if not st.session_state.authenticated:
             st_javascript("localStorage.removeItem('court_villa_lock');")
             st.rerun()
 
-    # 2. Registration Form
+    # 3. Registration Form
     st.subheader("Villa Login")
-    st.info("Enter your villa details to begin booking.")
+    st.info("First-time login will lock this device to your villa.")
     
     col1, col2 = st.columns(2)
     with col1:
@@ -341,14 +420,25 @@ if not st.session_state.authenticated:
             else:
                 st.error("Please select a sub-community and enter your villa number.")
         else:
-            current_choice = f"{sub_community_input}-{villa_input}"
-            st_javascript(f"localStorage.setItem('court_villa_lock', '{current_choice}');")
-            st.session_state.sub_community, st.session_state.villa = sub_community_input, villa_input
-            st.session_state.authenticated = True
-            # Clear query params to remove ?logout=1 if it exists
-            st.query_params.clear()
-            add_log("Device Registered", f"New login for {sub_community_input} - Villa {villa_input}")
-            st.rerun()
+            # Check if FP is loaded
+            fp = st.session_state.get('client_fp')
+            if not fp or fp == 0 or fp == 'unknown':
+                st.warning("⚠️ Verifying device security. Please wait a moment and try again.")
+            else:
+                # Check for existing lock in logs
+                owner = check_device_lock(villa_input, sub_community_input)
+                if owner:
+                    st.error(f"🚫 Access Denied: This device is already associated with **{owner}**. Switching villas is not permitted.")
+                    add_log("Access Denied", f"Login blocked for Villa ({sub_community_input} - {villa_input}): Already locked to {owner}")
+                else:
+                    current_choice = f"{sub_community_input}-{villa_input}"
+                    st_javascript(f"localStorage.setItem('court_villa_lock', '{current_choice}'); localStorage.setItem('court_last_reset_seen', '{global_reset_ts}');")
+                    st.session_state.sub_community, st.session_state.villa = sub_community_input, villa_input
+                    st.session_state.authenticated = True
+                    # Clear query params to remove ?logout=1 if it exists
+                    st.query_params.clear()
+                    add_log("Device Registered", f"New login for {sub_community_input} - Villa {villa_input}")
+                    st.rerun()
     
     st.write("")
     if st.button("🚪 Reset / Change Villa", use_container_width=True, key="reg_logout"):
@@ -625,6 +715,37 @@ with tab4:
             
         st.dataframe(display_df.style.apply(style_rows, axis=1), hide_index=True, width="stretch")
     else: st.info("No activity.")
+
+    st.divider()
+    st.subheader("🛠️ Admin Tools")
+    admin_pass = st.text_input("Admin Password", type="password")
+    if admin_pass == st.secrets.get("ADMIN_PASSWORD", "admin123"):
+        st.success("Admin Access Granted")
+        st.markdown("### Device Lock Management")
+        
+        # Option 1: Global Reset
+        if st.button("⚠️ Global Reset (Unlocks ALL devices)", type="secondary"):
+            add_log("Global Reset", "Admin triggered a system-wide device unlock.")
+            st.success("Global reset logged! Users will be unlocked upon their next refresh.")
+            time.sleep(2)
+            st.rerun()
+            
+        st.divider()
+        # Option 2: Reset specific device (this device)
+        curr_fp = st.session_state.get('client_fp')
+        if curr_fp:
+            st.write(f"Current Device Fingerprint: `{curr_fp[:10]}...`")
+            if st.button("🔓 Reset THIS Device Lock"):
+                add_log("Lock Reset", f"Admin reset lock for device fingerprint.")
+                # We also need to clear local storage to be sure
+                st_javascript("localStorage.removeItem('court_villa_lock');")
+                st.success("This device has been unlocked.")
+                time.sleep(2)
+                st.rerun()
+        else:
+            st.warning("Fingerprint not detected yet. Please wait.")
+    elif admin_pass:
+        st.error("Incorrect Password")
 
 st.divider()
 st.subheader("💾 Data Backup")
