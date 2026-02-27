@@ -57,14 +57,11 @@ def is_slot_in_past(date_str, start_hour):
 
 def add_log(supabase, event_type, details):
     timestamp = get_utc_plus_4().isoformat()
-    ip = st.session_state.get('client_ip', 'unknown')
-    fp = st.session_state.get('client_fp', 'unknown')
-    extended_details = f"⟦ID:{ip}|{fp}⟧ {details}"
     try:
         supabase.table("logs").insert({
             "timestamp": timestamp,
             "event_type": event_type,
-            "details": extended_details
+            "details": details
         }).execute()
     except:
         pass
