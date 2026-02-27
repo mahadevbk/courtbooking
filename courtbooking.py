@@ -420,15 +420,24 @@ if not st.session_state.authenticated:
     
     # Get signals individually to prevent total hang
     stored_lock = st_javascript("localStorage.getItem('court_villa_lock') || 'no_lock';")
+    last_reset_seen = st_javascript("localStorage.getItem('court_last_reset_seen') || '1970-01-01T00:00:00';")
     client_ip = st_javascript("fetch('https://api.ipify.org').then(r => r.text()).catch(() => 'unknown');")
     # Improved Fingerprint: added more entropy
     client_fp = st_javascript("btoa([Intl.DateTimeFormat().resolvedOptions().timeZone, screen.width + 'x' + screen.height, navigator.hardwareConcurrency || '', navigator.deviceMemory || '', navigator.maxTouchPoints || '', navigator.platform, navigator.language, navigator.userAgent].join('|'));")
     
+    # Fetch latest global reset timestamp from DB
+    global_reset_ts = get_global_reset_ts()
+
     # Store in session state if they arrived
     if client_ip and client_ip != 0: st.session_state.client_ip = client_ip
     if client_fp and client_fp != 0: st.session_state.client_fp = client_fp
 
-    # 1. Primary Lock (localStorage) - Fast Path
+    # 1. Global Reset Enforcement: If a reset happened after this device last "checked in", force clear
+    if last_reset_seen != 0 and global_reset_ts > str(last_reset_seen):
+        st_javascript(f"localStorage.removeItem('court_villa_lock'); localStorage.setItem('court_last_reset_seen', '{global_reset_ts}');")
+        st.rerun()
+
+    # 2. Primary Lock (localStorage) - Fast Path
     # We only auto-login if logout_mode is NOT active
     if not logout_mode and stored_lock and stored_lock != 0 and stored_lock != "no_lock":
         try:
@@ -440,7 +449,7 @@ if not st.session_state.authenticated:
             st_javascript("localStorage.removeItem('court_villa_lock');")
             st.rerun()
 
-    # 2. Registration Form
+    # 3. Registration Form
     st.subheader("Device Registration")
     st.info("First-time login will lock this device to your villa.")
     
@@ -470,7 +479,8 @@ if not st.session_state.authenticated:
                     add_log("Access Denied", f"Registration blocked for Villa ({sub_community_input} - {villa_input}): Already locked to {owner}")
                 else:
                     current_choice = f"{sub_community_input}-{villa_input}"
-                    st_javascript(f"localStorage.setItem('court_villa_lock', '{current_choice}');")
+                    # Save both the lock and the current reset timestamp to acknowledge the reset
+                    st_javascript(f"localStorage.setItem('court_villa_lock', '{current_choice}'); localStorage.setItem('court_last_reset_seen', '{global_reset_ts}');")
                     st.session_state.sub_community, st.session_state.villa = sub_community_input, villa_input
                     st.session_state.authenticated = True
                     # Clear query params to remove ?logout=1 if it exists
