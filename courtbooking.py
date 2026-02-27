@@ -62,110 +62,14 @@ def run_query(query_method):
 
 def add_log(event_type, details):
     timestamp = get_utc_plus_4().isoformat()
-    # Get signals from session state
-    ip = st.session_state.get('client_ip', 'unknown')
-    if ip == 0: ip = 'detecting'
-    fp = st.session_state.get('client_fp', 'unknown')
-    if fp == 0: fp = 'detecting'
-    did = st.session_state.get('device_id', 'unknown')
-    if did == 0: did = 'detecting'
-    
-    # Store ID in a searchable format hidden from the log viewer
-    # Format: ⟦ID:ip|fp|did⟧
-    extended_details = f"⟦ID:{ip}|{fp}|{did}⟧ {details}"
     try:
         supabase.table("logs").insert({
             "timestamp": timestamp,
             "event_type": event_type,
-            "details": extended_details
+            "details": details
         }).execute()
     except:
         pass 
-
-def get_global_reset_ts():
-    """Returns the timestamp of the latest Global Reset event."""
-    try:
-        response = supabase.table("logs").select("timestamp").eq("event_type", "Global Reset").order("timestamp", desc=True).limit(1).execute()
-        if response.data:
-            return response.data[0]['timestamp']
-    except:
-        pass
-    return "1970-01-01T00:00:00"
-
-def check_device_lock(current_villa, current_sub):
-    """Checks if current DeviceID is already associated with a different villa."""
-    did = st.session_state.get('device_id')
-    
-    # Sanitize signals from st_javascript
-    if did == 0 or did == 'unknown' or did == 'null': did = None
-    
-    if not did: return None
-    
-    now = get_utc_plus_4()
-    global_reset = get_global_reset_ts()
-
-    # DeviceID (UUID) lock is the only primary security signal (90 days)
-    did_cutoff = max((now - timedelta(days=90)).isoformat(), global_reset)
-
-    # Search for this Device ID in logs
-    response = run_query(
-        supabase.table("logs")
-        .select("timestamp, event_type, details")
-        .ilike("details", f"%|{did}⟧%")
-        .order("timestamp", desc=True)
-        .limit(100)
-    )
-    
-    for log in response.data:
-        ts = log['timestamp']
-        event = log['event_type']
-        details = log['details']
-        
-        # Parse log's DID from details (Format: ⟦ID:ip|fp|did⟧)
-        log_did = None
-        if "⟦ID:" in details and "⟧" in details:
-            try:
-                id_part = details.split("⟦ID:", 1)[1].split("⟧", 1)[0]
-                parts = id_part.split("|")
-                if len(parts) >= 3:
-                    log_did = parts[2]
-            except: pass
-
-        if event == "Lock Reset":
-            if log_did == did:
-                # Admin reset found for this specific device
-                break
-            continue
-
-        # Check if this log constitutes a lock for this Device ID
-        is_lock = (log_did == did and ts >= did_cutoff)
-        
-        if not is_lock:
-            continue
-
-        try:
-            msg = details.split("⟧", 1)[-1].strip()
-            log_sub, log_villa = None, None
-            
-            # Normalize and parse villa info
-            for p in ["New device/IP lock for ", "Registration blocked for Villa (", "Access Denied: ", "Booking Created: "]:
-                if msg.startswith(p):
-                    msg = msg[len(p):].strip()
-
-            if " - Villa " in msg:
-                parts = msg.split(" - Villa ")
-                log_sub = parts[0].strip()
-                log_villa = parts[1].split(" ")[0].strip().rstrip(")")
-            elif " Villa " in msg:
-                parts = msg.split(" Villa ")
-                log_sub = parts[0].strip()
-                log_villa = parts[1].split(" ")[0].strip()
-            
-            if log_sub in sub_community_list and log_villa:
-                if log_villa != current_villa or log_sub != current_sub:
-                    return f"{log_sub} - {log_villa}"
-        except: continue
-    return None
 
 def get_bookings_for_day_with_details(date_str):
     response = run_query(supabase.table("bookings").select("court, start_hour, sub_community, villa").eq("date", date_str))
@@ -377,7 +281,7 @@ if st.query_params.get("view") == "full":
 # --- MAIN APP ---
 st.subheader("🎾 Book that Court ...")    
 st.caption("An Un-Official & Community Driven Booking Solution.")
-st.info("Ramadan Timings 7AM to 12AM slots. App stores Villa details along with device id and ip address to allow access only 1 villa's booking.")    
+st.info("Ramadan Timings 7AM to 12AM slots.")    
 
 try:
     _process_background_tasks()
@@ -398,41 +302,16 @@ except Exception:
 if 'authenticated' not in st.session_state:
     st.session_state.authenticated = False
 
-# --- DEVICE LOCK LOGIC ---
+# --- AUTHENTICATION LOGIC ---
 if not st.session_state.authenticated:
-    # Use query params to detect manual logout - this overrides the localStorage check
+    # Use query params to detect manual logout
     logout_mode = st.query_params.get("logout") == "1"
     
-    # Get signals individually to prevent total hang
+    # Still keep localStorage for a persistent session across refreshes, 
+    # but without the "locked" enforcement.
     stored_lock = st_javascript("localStorage.getItem('court_villa_lock') || 'no_lock';")
-    last_reset_seen = st_javascript("localStorage.getItem('court_last_reset_seen') || '1970-01-01T00:00:00';")
     
-    # Unique Device ID (UUID) - Primary Lock
-    device_id = st_javascript("let d = localStorage.getItem('court_device_id'); if(!d || d === '0' || d === 'null'){ d = btoa(Math.random().toString(36).substring(2, 15) + Math.random().toString(36).substring(2, 15)); localStorage.setItem('court_device_id', d); } d;")
-    
-    client_ip = st_javascript("fetch('https://api.ipify.org').then(r => r.text()).catch(() => 'unknown');")
-    client_fp = st_javascript("btoa([Intl.DateTimeFormat().resolvedOptions().timeZone, screen.width + 'x' + screen.height, navigator.hardwareConcurrency || '', navigator.deviceMemory || '', navigator.maxTouchPoints || '', navigator.platform, navigator.language, navigator.userAgent].join('|'));")
-    
-    # Fetch latest global reset timestamp from DB
-    global_reset_ts = get_global_reset_ts()
-
-    # Store in session state if they arrived
-    if client_ip and client_ip != 0: st.session_state.client_ip = client_ip
-    if client_fp and client_fp != 0: st.session_state.client_fp = client_fp
-    if device_id and device_id != 0: st.session_state.device_id = device_id
-
-    # 1. Global Reset Enforcement: Prevent loops using session_state guard
-    if 'last_reset_triggered' not in st.session_state:
-        st.session_state.last_reset_triggered = None
-        
-    if last_reset_seen and last_reset_seen != 0:
-        if str(global_reset_ts) > str(last_reset_seen) and st.session_state.last_reset_triggered != global_reset_ts:
-            st.session_state.last_reset_triggered = global_reset_ts
-            st_javascript(f"localStorage.removeItem('court_villa_lock'); localStorage.setItem('court_last_reset_seen', '{global_reset_ts}');")
-            st.rerun()
-
-    # 2. Primary Lock (localStorage) - Fast Path
-    # We only auto-login if logout_mode is NOT active
+    # 1. Primary Auto-Login (localStorage)
     if not logout_mode and stored_lock and stored_lock != 0 and stored_lock != "no_lock":
         try:
             locked_sub, locked_villa = stored_lock.split("-")
@@ -443,9 +322,9 @@ if not st.session_state.authenticated:
             st_javascript("localStorage.removeItem('court_villa_lock');")
             st.rerun()
 
-    # 3. Registration Form
-    st.subheader("Device Registration")
-    st.info("First-time login will lock this device to your villa. Your neighbor's activity on the same Wi-Fi will NOT block you.")
+    # 2. Registration Form
+    st.subheader("Villa Login")
+    st.info("Enter your villa details to begin booking.")
     
     col1, col2 = st.columns(2)
     with col1:
@@ -455,43 +334,26 @@ if not st.session_state.authenticated:
         villa_input_raw = st.text_input("Enter Villa Number").strip()
         villa_input = "".join(filter(str.isdigit, villa_input_raw))
 
-    if st.button("Register & Login", type="primary", use_container_width=True):
+    if st.button("Login", type="primary", use_container_width=True):
         if not sub_community_input or not villa_input:
             if villa_input_raw and not villa_input:
                 st.error("Please enter a numeric villa number (e.g. 255).")
             else:
                 st.error("Please select a sub-community and enter your villa number.")
         else:
-            # Check if Secure ID is actually loaded (Primary Lock)
-            did = st.session_state.get('device_id')
-            
-            if not did or did == 0 or did == 'null':
-                st.warning("⚠️ Verifying device security... Please wait a moment and try again. If stuck, ensure cookies are enabled.")
-            else:
-                # Check for existing logs with this ID
-                owner = check_device_lock(villa_input, sub_community_input)
-                if owner:
-                    st.error(f"🚫 Access Denied: This device is already associated with **{owner}**. Switching villas is not permitted.")
-                    add_log("Access Denied", f"Registration blocked for Villa ({sub_community_input} - {villa_input}): Already locked to {owner}")
-                else:
-                    current_choice = f"{sub_community_input}-{villa_input}"
-                    # Save both the lock and the current reset timestamp to acknowledge the reset
-                    st_javascript(f"localStorage.setItem('court_villa_lock', '{current_choice}'); localStorage.setItem('court_last_reset_seen', '{global_reset_ts}');")
-                    st.session_state.last_reset_triggered = global_reset_ts
-                    st.session_state.sub_community, st.session_state.villa = sub_community_input, villa_input
-                    st.session_state.authenticated = True
-                    # Clear query params to remove ?logout=1 if it exists
-                    st.query_params.clear()
-                    add_log("Device Registered", f"New device lock for {sub_community_input} - Villa {villa_input}")
-                    st.rerun()
+            current_choice = f"{sub_community_input}-{villa_input}"
+            st_javascript(f"localStorage.setItem('court_villa_lock', '{current_choice}');")
+            st.session_state.sub_community, st.session_state.villa = sub_community_input, villa_input
+            st.session_state.authenticated = True
+            # Clear query params to remove ?logout=1 if it exists
+            st.query_params.clear()
+            add_log("Device Registered", f"New login for {sub_community_input} - Villa {villa_input}")
+            st.rerun()
     
     st.write("")
-    if st.button("🚪 Logout / Reset Device", use_container_width=True, key="reg_logout"):
+    if st.button("🚪 Reset / Change Villa", use_container_width=True, key="reg_logout"):
         logout_action()
     
-    # Still show a subtle loading state if everything is still 0
-    if stored_lock == 0:
-        st.caption("🔒 Verifying device security...")
     st.stop()
 
 sub_community, villa = st.session_state.sub_community, st.session_state.villa
@@ -747,87 +609,21 @@ with tab4:
     if logs:
         log_df = pd.DataFrame(logs, columns=["timestamp", "event_type", "details"])
         
-        # Admin access logic
-        admin_mode = False
-        with st.expander("🛠️ Admin Access"):
-            admin_key = st.text_input("Enter Admin Key", type="password")
-            # For security, ideally use st.secrets["ADMIN_PASSWORD"]
-            # Using a fallback for demonstration if not set
-            correct_key = st.secrets.get("ADMIN_PASSWORD", "courtadmin123")
-            if admin_key == correct_key:
-                admin_mode = True
-                st.success("Admin Mode Active")
-            elif admin_key:
-                st.error("Invalid Key")
-
-        if admin_mode:
-            st.markdown("### 🔐 Master Access Log")
-            # Filter out Debug logs and auto-booked entries even for admins to keep it concealed
-            master_df = log_df[
-                (log_df['event_type'] != "Debug") & 
-                (~log_df['details'].str.contains("auto-booked", case=False, na=False))
-            ].copy()
-            # Extract IP and Fingerprint
-            master_df['IP'] = master_df['details'].str.extract(r"⟦ID:(.*?)\|", expand=False)
-            master_df['DeviceID'] = master_df['details'].str.extract(r"\|(.*?)⟧", expand=False).fillna("unknown").str[:12]
-            master_df['details'] = master_df['details'].str.replace(r"^⟦ID:.*?⟧ ", "", regex=True)
+        # Standard view: Filter out Debug logs and auto-booked mentions
+        display_df = log_df[
+            (log_df['event_type'] != "Debug") & 
+            (~log_df['details'].str.contains("auto-booked", case=False, na=False))
+        ].copy()
+        display_df['timestamp'] = pd.to_datetime(display_df['timestamp'], format='ISO8601').dt.strftime('%b %d, %H:%M')
+        
+        def style_rows(row):
+            styles = [''] * len(row)
+            if row.event_type == "Booking Created": styles[1] = 'background-color: #d4edda; color: #155724; font-weight: bold;'
+            elif row.event_type in ["Booking Deleted", "Booking Cancelled"]: styles[1] = 'background-color: #f8d7da; color: #721c24; font-weight: bold;'
+            elif row.event_type == "Access Denied": styles[1] = 'background-color: #ffcc00; color: black; font-weight: bold;'
+            return styles
             
-            st.dataframe(master_df, hide_index=True, width="stretch")
-
-            # Reset tool
-            st.markdown("--- ")
-            st.markdown("#### 🔓 Reset Device Lock")
-            st.caption("Resets the lock for any device using the specified IP address. Use this if a user is blocked from registering.")
-            reset_ip = st.text_input("Enter IP to Reset (copy from Master Log above)").strip()
-            if st.button("Execute Lock Reset"):
-                if reset_ip:
-                    # Log a special 'Lock Reset' event for this IP
-                    reset_details = f"⟦ID:{reset_ip}|reset⟧ Lock reset for device by admin"
-                    try:
-                        supabase.table("logs").insert({
-                            "timestamp": get_utc_plus_4().isoformat(),
-                            "event_type": "Lock Reset",
-                            "details": reset_details
-                        }).execute()
-                        st.success(f"✅ Lock reset command logged for IP: {reset_ip}. The user should now be able to register.")
-                        time.sleep(1.5)
-                        st.rerun()
-                    except Exception as e:
-                        st.error(f"Failed to reset: {e}")
-                else:
-                    st.warning("Please enter a valid IP address from the log.")
-            
-            # Global Reset Tool
-            st.markdown("--- ")
-            st.markdown("#### 🚩 GLOBAL Security Reset")
-            st.warning("⚠️ WARNING: This will immediately allow ALL devices to register a different villa, effectively wiping all current security locks for the entire community.")
-            if st.button("🔥 Perform GLOBAL Security Reset", type="primary", use_container_width=True):
-                try:
-                    supabase.table("logs").insert({
-                        "timestamp": get_utc_plus_4().isoformat(),
-                        "event_type": "Global Reset",
-                        "details": "🚨 ADMIN ACTION: GLOBAL SECURITY RESET PERFORMED. All previous device locks invalidated."
-                    }).execute()
-                    st.success("✅ Global Security Reset successful. All device locks are now cleared.")
-                    time.sleep(2)
-                    st.rerun()
-                except Exception as e:
-                    st.error(f"Failed to perform global reset: {e}")
-        else:
-            # Standard view: Filter out Debug logs and auto-booked mentions
-            display_df = log_df[
-                (log_df['event_type'] != "Debug") & 
-                (~log_df['details'].str.contains("auto-booked", case=False, na=False))
-            ].copy()
-            display_df['details'] = display_df['details'].str.replace(r"^⟦ID:.*?⟧ ", "", regex=True)
-            display_df['timestamp'] = pd.to_datetime(display_df['timestamp'], format='ISO8601').dt.strftime('%b %d, %H:%M')
-            def style_rows(row):
-                styles = [''] * len(row)
-                if row.event_type == "Booking Created": styles[1] = 'background-color: #d4edda; color: #155724; font-weight: bold;'
-                elif row.event_type in ["Booking Deleted", "Booking Cancelled"]: styles[1] = 'background-color: #f8d7da; color: #721c24; font-weight: bold;'
-                elif row.event_type == "Access Denied": styles[1] = 'background-color: #ffcc00; color: black; font-weight: bold;'
-                return styles
-            st.dataframe(display_df.style.apply(style_rows, axis=1), hide_index=True, width="stretch")
+        st.dataframe(display_df.style.apply(style_rows, axis=1), hide_index=True, width="stretch")
     else: st.info("No activity.")
 
 st.divider()
