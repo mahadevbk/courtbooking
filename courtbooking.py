@@ -706,6 +706,10 @@ with tab4:
     st.subheader("Community Activity Log (Last 14 Days)")
     st.caption("Timezone: UTC+4")
     
+    # Check for admin status via session state (from the password field at the bottom)
+    admin_pass_val = st.session_state.get("log_admin_pass", "")
+    is_admin = admin_pass_val == st.secrets.get("ADMIN_PASSWORD", "admin123")
+
     logs = get_logs_last_14_days()
     if logs:
         log_df = pd.DataFrame(logs, columns=["timestamp", "event_type", "details"])
@@ -715,10 +719,6 @@ with tab4:
             (log_df['event_type'] != "Debug") & 
             (~log_df['details'].str.contains("auto-booked", case=False, na=False))
         ].copy()
-        
-        # Admin Password Check for enhanced view
-        admin_pass = st.text_input("Admin Password", type="password", key="log_admin_pass")
-        is_admin = admin_pass == st.secrets.get("ADMIN_PASSWORD", "admin123")
         
         if is_admin:
             # In admin mode, let's extract Fingerprints into their own column for easy copying
@@ -744,6 +744,8 @@ with tab4:
 
     st.divider()
     st.subheader("🛠️ Admin Tools")
+    admin_pass = st.text_input("Admin Password", type="password", key="log_admin_pass")
+    
     if is_admin:
         st.success("Admin Access Granted")
         st.markdown("### Device Lock Management")
