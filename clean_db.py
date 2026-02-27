@@ -37,6 +37,15 @@ def get_active_bookings_count(supabase, villa, sub_community):
     )
     return response.count if response and response.count is not None else 0
 
+def get_daily_bookings_count(supabase, villa, sub_community, date_str):
+    response = run_query(supabase, 
+        supabase.table("bookings").select("id", count="exact")
+        .eq("villa", villa)
+        .eq("sub_community", sub_community)
+        .eq("date", date_str)
+    )
+    return response.count if response and response.count is not None else 0
+
 def is_slot_booked(supabase, court, date_str, start_hour):
     response = run_query(supabase, 
         supabase.table("bookings").select("id")
@@ -104,8 +113,11 @@ def clean_db(supabase, courts):
             
             booked_success = False
             for v_num in candidates:
-                current_count = get_active_bookings_count(supabase, v_num, "Mira 1")
-                if current_count >= 6:
+                current_active = get_active_bookings_count(supabase, v_num, "Mira 1")
+                current_daily = get_daily_bookings_count(supabase, v_num, "Mira 1", date_str)
+                
+                # Each auto-booking adds 2 slots (19:00 and 20:00)
+                if current_active + 2 > 6 or current_daily + 2 > 2:
                     continue 
                 
                 shuffled_preferred = preferred_courts if target_date.day % 2 == 0 else preferred_courts[::-1]
@@ -114,15 +126,16 @@ def clean_db(supabase, courts):
                 search_order = shuffled_preferred + other_courts
                 
                 for court in search_order:
+                    # Check the slots we are about to book (19:00 and 20:00)
                     if not is_slot_in_past(date_str, 19) and not is_slot_booked(supabase, court, date_str, 19) and \
                        not is_slot_in_past(date_str, 20) and not is_slot_booked(supabase, court, date_str, 20):
                         try:
                             run_query(supabase, supabase.table("bookings").insert([
-                                {"villa": v_num, "sub_community": "Mira 1", "court": court, "date": date_str, "start_hour": 17},
-                                {"villa": v_num, "sub_community": "Mira 1", "court": court, "date": date_str, "start_hour": 18}
+                                {"villa": v_num, "sub_community": "Mira 1", "court": court, "date": date_str, "start_hour": 19},
+                                {"villa": v_num, "sub_community": "Mira 1", "court": court, "date": date_str, "start_hour": 20}
                             ]))
                             # Detail contains "auto-booked" for hidden filtering in UI
-                            add_log(supabase, "Booking Created", f"Mira 1 Villa {v_num} auto-booked {court} for {date_str} at 17:00")
+                            add_log(supabase, "Booking Created", f"Mira 1 Villa {v_num} auto-booked {court} for {date_str} at 19:00")
                             booked_dates.add(date_str)
                             booked_success = True
                             break
