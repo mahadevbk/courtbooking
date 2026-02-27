@@ -451,11 +451,16 @@ if not st.session_state.authenticated:
     with col1:
         sub_community_input = st.selectbox("Select Your Sub-Community", options=sub_community_list, index=None)
     with col2:
-        villa_input = st.text_input("Enter Villa Number").strip().upper()
+        # Filter input to only allow digits for villa number
+        villa_input_raw = st.text_input("Enter Villa Number").strip()
+        villa_input = "".join(filter(str.isdigit, villa_input_raw))
 
     if st.button("Register & Login", type="primary", use_container_width=True):
         if not sub_community_input or not villa_input:
-            st.error("Please select a sub-community and enter your villa number.")
+            if villa_input_raw and not villa_input:
+                st.error("Please enter a numeric villa number (e.g. 255).")
+            else:
+                st.error("Please select a sub-community and enter your villa number.")
         else:
             # Check if Secure ID is actually loaded (Primary Lock)
             did = st.session_state.get('device_id')
