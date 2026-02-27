@@ -373,25 +373,36 @@ if not st.session_state.authenticated:
     logout_mode = st.query_params.get("logout") == "1"
     
     # Get fingerprint and existing lock
+    # Note: st_javascript returns 0 or None while loading
     stored_lock = st_javascript("localStorage.getItem('court_villa_lock') || 'no_lock';")
     last_reset_seen = st_javascript("localStorage.getItem('court_last_reset_seen') || '1970-01-01T00:00:00';")
     # Improved Fingerprint
     client_fp = st_javascript("btoa([Intl.DateTimeFormat().resolvedOptions().timeZone, screen.width + 'x' + screen.height, navigator.hardwareConcurrency || '', navigator.deviceMemory || '', navigator.maxTouchPoints || '', navigator.platform, navigator.language, navigator.userAgent].join('|'));")
     
+    # Wait for signals to stabilize (prevent loop while st_javascript is 0)
+    if stored_lock == 0 or last_reset_seen == 0 or client_fp == 0:
+        st.markdown("### 🔒 Security Check...")
+        st.info("Verifying device identity. Please wait...")
+        st.stop()
+
     # Fetch latest global reset timestamp from DB
     global_reset_ts = get_global_reset_ts()
 
-    # Store in session state if arrived
+    # Store in session state
     if client_fp and client_fp != 0: st.session_state.client_fp = client_fp
 
-    # 1. Global Reset Enforcement
-    if last_reset_seen and last_reset_seen != 0:
-        if str(global_reset_ts) > str(last_reset_seen):
+    # 1. Global Reset Enforcement (with session guard to prevent loops)
+    if 'last_reset_triggered' not in st.session_state:
+        st.session_state.last_reset_triggered = None
+
+    if last_reset_seen and last_reset_seen != 'no_lock':
+        if str(global_reset_ts) > str(last_reset_seen) and st.session_state.last_reset_triggered != global_reset_ts:
+            st.session_state.last_reset_triggered = global_reset_ts
             st_javascript(f"localStorage.removeItem('court_villa_lock'); localStorage.setItem('court_last_reset_seen', '{global_reset_ts}');")
             st.rerun()
 
     # 2. Primary Auto-Login (localStorage)
-    if not logout_mode and stored_lock and stored_lock != 0 and stored_lock != "no_lock":
+    if not logout_mode and stored_lock and stored_lock != "no_lock":
         try:
             locked_sub, locked_villa = stored_lock.split("-")
             st.session_state.sub_community, st.session_state.villa = locked_sub, locked_villa
