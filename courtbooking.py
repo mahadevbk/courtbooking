@@ -67,8 +67,12 @@ def add_log(event_type, details):
     if ip == 0: ip = 'detecting'
     fp = st.session_state.get('client_fp', 'unknown')
     if fp == 0: fp = 'detecting'
+    did = st.session_state.get('device_id', 'unknown')
+    if did == 0: did = 'detecting'
+    
     # Store ID in a searchable format hidden from the log viewer
-    extended_details = f"⟦ID:{ip}|{fp}⟧ {details}"
+    # Format: ⟦ID:ip|fp|did⟧
+    extended_details = f"⟦ID:{ip}|{fp}|{did}⟧ {details}"
     try:
         supabase.table("logs").insert({
             "timestamp": timestamp,
@@ -89,27 +93,32 @@ def get_global_reset_ts():
     return "1970-01-01T00:00:00"
 
 def check_device_lock(current_villa, current_sub):
-    """Checks if current IP/FP is already associated with a different villa in logs."""
+    """Checks if current DeviceID or IP/FP is already associated with a different villa."""
     ip = st.session_state.get('client_ip')
     fp = st.session_state.get('client_fp')
+    did = st.session_state.get('device_id')
     
     # Sanitize 0 or unknown from st_javascript
     if ip == 0 or ip == 'unknown': ip = None
     if fp == 0 or fp == 'unknown': fp = None
+    if did == 0 or did == 'unknown': did = None
     
-    if not ip and not fp: return None
+    if not ip and not fp and not did: return None
     
     now = get_utc_plus_4()
     global_reset = get_global_reset_ts()
 
-    # IP lock is limited to 24 hours due to dynamic IP reassignment
-    ip_cutoff = max((now - timedelta(hours=24)).isoformat(), global_reset)
-    # Fingerprint lock is more persistent (90 days)
+    # DeviceID (UUID) lock is the most reliable (90 days)
+    did_cutoff = max((now - timedelta(days=90)).isoformat(), global_reset)
+    # Fingerprint lock is fallback (90 days)
     fp_cutoff = max((now - timedelta(days=90)).isoformat(), global_reset)
+    # IP lock is limited to 24 hours (Used only as hint, not primary lock)
+    ip_cutoff = max((now - timedelta(hours=24)).isoformat(), global_reset)
 
     filters = []
+    if did: filters.append(f"details.ilike.%|{did}⟧%")
+    elif fp: filters.append(f"details.ilike.%|{fp}|%")
     if ip: filters.append(f"details.ilike.%⟦ID:{ip}|%")
-    if fp: filters.append(f"details.ilike.%|{fp}⟧%")
     
     if not filters: return None
     
@@ -126,35 +135,41 @@ def check_device_lock(current_villa, current_sub):
         event = log['event_type']
         details = log['details']
         
-        # Parse log's IP and FP from details
-        log_ip, log_fp = None, None
+        # Parse log's IP, FP, and DID from details
+        log_ip, log_fp, log_did = None, None, None
         if "⟦ID:" in details and "⟧" in details:
             try:
                 id_part = details.split("⟦ID:", 1)[1].split("⟧", 1)[0]
-                if "|" in id_part:
-                    log_ip, log_fp = id_part.split("|", 1)
+                parts = id_part.split("|")
+                if len(parts) >= 2:
+                    log_ip = parts[0]
+                    log_fp = parts[1]
+                if len(parts) >= 3:
+                    log_did = parts[2]
             except: pass
 
-        # Check if this log is within the relevant time window for IP or FP
+        # Check matches
+        is_did_match = did and log_did == did and ts >= did_cutoff
+        is_fp_match = fp and log_fp == fp and ts >= fp_cutoff
         is_ip_match = ip and log_ip == ip and ts >= ip_cutoff
         
-        # Valid fingerprint check (not generic or unknown)
-        invalid_fps = [None, 'unknown', 'detecting', '0', '']
-        has_valid_fp = fp not in invalid_fps
-        has_valid_log_fp = log_fp not in invalid_fps
-        
-        is_fp_match = has_valid_fp and has_valid_log_fp and log_fp == fp and ts >= fp_cutoff
-        
         if event == "Lock Reset":
-            if is_ip_match or is_fp_match:
-                # Admin reset found for this device or network - stop looking further
+            if is_did_match or is_fp_match or is_ip_match:
+                # Admin reset found for this device or network
                 break
             continue
 
-        # Decide if this log constitutes a lock
-        # UPDATED POLICY: Rely primarily on Device Fingerprint. 
-        # IP-based locking is disabled to avoid blocking neighbors sharing community Wi-Fi / CGNAT.
-        is_lock = is_fp_match
+        # Valid signal check
+        invalid_ids = [None, 'unknown', 'detecting', '0', '']
+        
+        # PRIMARY LOCK: Device ID (UUID)
+        # If the browser has a unique UUID, we rely on that.
+        is_lock = (did not in invalid_ids and log_did == did and ts >= did_cutoff)
+        
+        # SECONDARY LOCK: Fingerprint + IP (only if UUID is missing)
+        # To avoid blocking neighbors, we only lock on FP if it matches AND the IP also matches.
+        if not is_lock and did in invalid_ids:
+            is_lock = (fp not in invalid_ids and log_fp == fp and ts >= fp_cutoff and is_ip_match)
         
         if not is_lock:
             continue
@@ -423,8 +438,11 @@ if not st.session_state.authenticated:
     # Get signals individually to prevent total hang
     stored_lock = st_javascript("localStorage.getItem('court_villa_lock') || 'no_lock';")
     last_reset_seen = st_javascript("localStorage.getItem('court_last_reset_seen') || '1970-01-01T00:00:00';")
+    
+    # Unique Device ID (UUID) - Primary Lock
+    device_id = st_javascript("let d = localStorage.getItem('court_device_id'); if(!d || d === '0' || d === 'null'){ d = btoa(Math.random().toString(36).substring(2, 15) + Math.random().toString(36).substring(2, 15)); localStorage.setItem('court_device_id', d); } d;")
+    
     client_ip = st_javascript("fetch('https://api.ipify.org').then(r => r.text()).catch(() => 'unknown');")
-    # Improved Fingerprint: added more entropy
     client_fp = st_javascript("btoa([Intl.DateTimeFormat().resolvedOptions().timeZone, screen.width + 'x' + screen.height, navigator.hardwareConcurrency || '', navigator.deviceMemory || '', navigator.maxTouchPoints || '', navigator.platform, navigator.language, navigator.userAgent].join('|'));")
     
     # Fetch latest global reset timestamp from DB
@@ -433,6 +451,7 @@ if not st.session_state.authenticated:
     # Store in session state if they arrived
     if client_ip and client_ip != 0: st.session_state.client_ip = client_ip
     if client_fp and client_fp != 0: st.session_state.client_fp = client_fp
+    if device_id and device_id != 0: st.session_state.device_id = device_id
 
     # 1. Global Reset Enforcement: Prevent loops using session_state guard
     if 'last_reset_triggered' not in st.session_state:
@@ -458,7 +477,7 @@ if not st.session_state.authenticated:
 
     # 3. Registration Form
     st.subheader("Device Registration")
-    st.info("First-time login will lock this device to your villa.")
+    st.info("First-time login will lock this device to your villa. Your neighbor's activity on the same Wi-Fi will NOT block you.")
     
     col1, col2 = st.columns(2)
     with col1:
@@ -470,16 +489,19 @@ if not st.session_state.authenticated:
         if not sub_community_input or not villa_input:
             st.error("Please select a sub-community and enter your villa number.")
         else:
-            # Check if IP/FP are actually loaded
+            # Check if signals are actually loaded
             ip = st.session_state.get('client_ip')
             fp = st.session_state.get('client_fp')
-            if not ip or ip == 0 or not fp or fp == 0:
+            did = st.session_state.get('device_id')
+            
+            if not ip or ip == 0 or not fp or fp == 0 or not did or did == 0:
                 missing = []
                 if not ip or ip == 0: missing.append("IP")
-                if not fp or fp == 0: missing.append("Device Fingerprint")
-                st.warning(f"⚠️ Still verifying your connection security ({', '.join(missing)}). Please wait a moment and try again. If stuck, try refreshing the page.")
+                if not fp or fp == 0: missing.append("Fingerprint")
+                if not did or did == 0: missing.append("Secure ID")
+                st.warning(f"⚠️ Verifying connection ({', '.join(missing)})... Please wait a moment and try again.")
             else:
-                # Check for existing logs with this IP/FP if available
+                # Check for existing logs with this ID
                 owner = check_device_lock(villa_input, sub_community_input)
                 if owner:
                     st.error(f"🚫 Access Denied: This network/device is already associated with **{owner}**. Switching villas is not permitted.")
