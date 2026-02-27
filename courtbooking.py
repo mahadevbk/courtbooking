@@ -26,7 +26,15 @@ sub_community_list = [
 ]
 
 courts = ["Mira 2", "Mira 4", "Mira 5A", "Mira 5B", "Mira Oasis 1", "Mira Oasis 2", "Mira Oasis 3A", "Mira Oasis 3B", "Mira Oasis 3C"]
-start_hours = list(range(7, 24))
+
+def get_start_hours_for_date(date_str):
+    """Returns the list of start hours for a given date.
+    Before or on 2026-03-22: 7 AM to 12 AM (start hours 7 to 23).
+    After 2026-03-22: 7 AM to 10 PM (start hours 7 to 21).
+    """
+    if date_str <= "2026-03-22":
+        return list(range(7, 24))
+    return list(range(7, 22))
 
 # --- HELPER FUNCTIONS ---
 
@@ -288,7 +296,7 @@ def get_available_hours(court, date_str):
     response = run_query(supabase.table("bookings").select("start_hour").eq("court", court).eq("date", date_str))
     booked_hours = [row['start_hour'] for row in response.data]
     available = []
-    for h in start_hours:
+    for h in get_start_hours_for_date(date_str):
         if h not in booked_hours and not is_slot_in_past(date_str, h):
             available.append(h)
     return available
@@ -327,7 +335,7 @@ if st.query_params.get("view") == "full":
         st.subheader(f"{d_str} ({d.strftime('%A')})")
         bookings_with_details = get_bookings_for_day_with_details(d_str)
         data = {}
-        for h in start_hours:
+        for h in get_start_hours_for_date(d_str):
             label = f"{h:02d}:00 - {h+1:02d}:00"
             row = []
             for court in courts:
@@ -346,7 +354,12 @@ if st.query_params.get("view") == "full":
 # --- MAIN APP ---
 st.subheader("🎾 Book that Court ...")    
 st.caption("An Un-Official & Community Driven Booking Solution.")
-st.info("Ramadan Timings 7AM to 12AM slots.")    
+
+today_str_check = get_today().strftime('%Y-%m-%d')
+if today_str_check <= "2026-03-22":
+    st.info("Ramadan Timings 7AM to 12AM slots.")
+else:
+    st.info("Standard Timings 7AM to 10PM slots.")
 
 try:
     _process_background_tasks()
@@ -470,7 +483,7 @@ with tab1:
     selected_date = selected_date_full.split(" (")[0]
     bookings_with_details = get_bookings_for_day_with_details(selected_date)
     data = {}
-    for h in start_hours:
+    for h in get_start_hours_for_date(selected_date):
         label = f"{h:02d}:00 - {h+1:02d}:00"
         row = []
         for court in courts:
@@ -562,10 +575,19 @@ with tab1:
 
 with tab2:
     st.subheader("Book a New Slot")
-    st.info("App allows 6 Active bookings spanning 14 days, A maximum of 2 active bookings per day.")
+    
     date_options = [f"{d.strftime('%Y-%m-%d')} ({d.strftime('%A')})" for d in get_next_14_days()]
     selected_date_full = st.selectbox("Date:", date_options)
     date_choice = selected_date_full.split(" (")[0]
+    
+    # Dynamic timing info for the selected date
+    if date_choice <= "2026-03-22":
+        timing_msg = "7AM to 12AM slots."
+    else:
+        timing_msg = "7AM to 10PM slots."
+    
+    st.info(f"App allows 6 Active bookings spanning 14 days, A maximum of 2 active bookings per day. Current date choice timing: **{timing_msg}**")
+    
     court_choice = st.selectbox("Court:", courts)
     free_hours = get_available_hours(court_choice, date_choice)
     if not free_hours:
