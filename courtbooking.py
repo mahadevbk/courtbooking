@@ -78,6 +78,16 @@ def add_log(event_type, details):
     except:
         pass 
 
+def get_global_reset_ts():
+    """Returns the timestamp of the latest Global Reset event."""
+    try:
+        response = supabase.table("logs").select("timestamp").eq("event_type", "Global Reset").order("timestamp", desc=True).limit(1).execute()
+        if response.data:
+            return response.data[0]['timestamp']
+    except:
+        pass
+    return "1970-01-01T00:00:00"
+
 def check_device_lock(current_villa, current_sub):
     """Checks if current IP/FP is already associated with a different villa in logs."""
     ip = st.session_state.get('client_ip')
@@ -90,10 +100,12 @@ def check_device_lock(current_villa, current_sub):
     if not ip and not fp: return None
     
     now = get_utc_plus_4()
+    global_reset = get_global_reset_ts()
+
     # IP lock is limited to 24 hours due to dynamic IP reassignment
-    ip_cutoff = (now - timedelta(hours=24)).isoformat()
+    ip_cutoff = max((now - timedelta(hours=24)).isoformat(), global_reset)
     # Fingerprint lock is more persistent (90 days)
-    fp_cutoff = (now - timedelta(days=90)).isoformat()
+    fp_cutoff = max((now - timedelta(days=90)).isoformat(), global_reset)
 
     filters = []
     if ip: filters.append(f"details.ilike.%⟦ID:{ip}|%")
@@ -134,8 +146,9 @@ def check_device_lock(current_villa, current_sub):
         is_fp_match = has_valid_fp and has_valid_log_fp and log_fp == fp and ts >= fp_cutoff
         
         # Decide if this log constitutes a lock
-        # Strict policy: 1 IP/Network = 1 Villa. 
-        is_lock = is_fp_match or is_ip_match
+        # UPDATED POLICY: Rely primarily on Device Fingerprint. 
+        # IP-based locking is disabled to avoid blocking neighbors sharing community Wi-Fi / CGNAT.
+        is_lock = is_fp_match
         
         if not is_lock:
             continue
@@ -326,6 +339,17 @@ def get_available_hours(court, date_str):
             available.append(h)
     return available
 
+def logout_action():
+    """Centrally handles logout, clears session and localStorage."""
+    # Use JS to clear localStorage and force a clean reload (removes query params)
+    st_javascript("localStorage.removeItem('court_villa_lock'); setTimeout(() => { window.location.href = window.location.origin + window.location.pathname; }, 300);")
+    for key in ["authenticated", "sub_community", "villa"]:
+        if key in st.session_state:
+            del st.session_state[key]
+    st.info("Logging out and clearing device lock... Please wait.")
+    time.sleep(0.8)
+    st.rerun()
+
 # --- UI STYLING ---
 st.markdown("""
 <link href="https://fonts.googleapis.com/css2?family=Audiowide&display=swap" rel="stylesheet">
@@ -456,13 +480,7 @@ if not st.session_state.authenticated:
     
     st.write("")
     if st.button("🚪 Logout / Reset Device", use_container_width=True, key="reg_logout"):
-        st_javascript("localStorage.removeItem('court_villa_lock');")
-        # Only clear auth-related keys, keep client_ip/fp if they exist
-        for key in ["authenticated", "sub_community", "villa"]:
-            if key in st.session_state:
-                del st.session_state[key]
-        st.query_params["logout"] = "1"
-        st.rerun()
+        logout_action()
     
     # Still show a subtle loading state if everything is still 0
     if stored_lock == 0:
@@ -569,12 +587,7 @@ with tab1:
 
     st.divider()
     if st.button("🚪 Logout / Change Villa", use_container_width=True, key="tab1_logout"):
-        st_javascript("localStorage.removeItem('court_villa_lock');")
-        for key in ["authenticated", "sub_community", "villa"]:
-            if key in st.session_state:
-                del st.session_state[key]
-        st.query_params["logout"] = "1"
-        st.rerun()
+        logout_action()
 
 with tab2:
     st.subheader("Book a New Slot")
@@ -717,12 +730,7 @@ with tab3:
         
         st.divider()
         if st.button("🚪 Logout / Change Villa", use_container_width=True):
-            st_javascript("localStorage.removeItem('court_villa_lock');")
-            for key in ["authenticated", "sub_community", "villa"]:
-                if key in st.session_state:
-                    del st.session_state[key]
-            st.query_params["logout"] = "1"
-            st.rerun()
+            logout_action()
 
 with tab4:
     st.subheader("Community Activity Log (Last 14 Days)")
@@ -781,6 +789,23 @@ with tab4:
                         st.error(f"Failed to reset: {e}")
                 else:
                     st.warning("Please enter an IP")
+            
+            # Global Reset Tool
+            st.markdown("--- ")
+            st.markdown("#### 🚩 GLOBAL Security Reset")
+            st.warning("⚠️ WARNING: This will immediately allow ALL devices to register a different villa, effectively wiping all current security locks for the entire community.")
+            if st.button("🔥 Perform GLOBAL Security Reset", type="primary", use_container_width=True):
+                try:
+                    supabase.table("logs").insert({
+                        "timestamp": get_utc_plus_4().isoformat(),
+                        "event_type": "Global Reset",
+                        "details": "🚨 ADMIN ACTION: GLOBAL SECURITY RESET PERFORMED. All previous device locks invalidated."
+                    }).execute()
+                    st.success("✅ Global Security Reset successful. All device locks are now cleared.")
+                    time.sleep(2)
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"Failed to perform global reset: {e}")
         else:
             # Standard view: Filter out Debug logs and auto-booked mentions
             display_df = log_df[
