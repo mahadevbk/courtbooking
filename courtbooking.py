@@ -440,6 +440,7 @@ if not st.session_state.authenticated:
                 owner = check_device_lock(villa_input, sub_community_input)
                 if owner:
                     st.error(f"🚫 Access Denied: This device is already associated with **{owner}**. Switching villas is not permitted.")
+                    st.info(f"🆔 **Your Device ID:** `{fp}`\n\nPlease send this ID to the administrator to request a lock reset.")
                     add_log("Access Denied", f"Login blocked for Villa ({sub_community_input} - {villa_input}): Already locked to {owner}")
                 else:
                     current_choice = f"{sub_community_input}-{villa_input}"
@@ -741,6 +742,13 @@ with tab4:
             
         st.dataframe(display_df[cols].style.apply(style_rows, axis=1), hide_index=True, width="stretch")
     else: st.info("No activity.")
+
+    # Show Device ID to ALL users
+    st.divider()
+    curr_fp = st.session_state.get('client_fp')
+    if curr_fp:
+        st.info(f"🆔 **Your Device ID:** `{curr_fp}`")
+        st.caption("If you're unable to switch villas, copy this ID and send it to the admin for a manual reset.")
 
     st.divider()
     st.subheader("🛠️ Admin Tools")
