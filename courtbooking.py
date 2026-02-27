@@ -167,30 +167,6 @@ def check_device_lock(current_villa, current_sub):
         except: continue
     return None
 
-            msg = details.split("⟧", 1)[-1].strip()
-            log_sub, log_villa = None, None
-            
-            # Normalize: Remove common prefixes
-            for p in ["New device/IP lock for ", "Registration blocked for Villa (", "Access Denied: ", "Booking Created: "]:
-                if msg.startswith(p):
-                    msg = msg[len(p):].strip()
-
-            # Parse villa info: "Mira 1 - Villa 101" or "Mira 1 Villa 101"
-            if " - Villa " in msg:
-                parts = msg.split(" - Villa ")
-                log_sub = parts[0].strip()
-                log_villa = parts[1].split(" ")[0].strip().rstrip(")")
-            elif " Villa " in msg:
-                parts = msg.split(" Villa ")
-                log_sub = parts[0].strip()
-                log_villa = parts[1].split(" ")[0].strip()
-            
-            if log_sub in sub_community_list and log_villa:
-                if log_villa != current_villa or log_sub != current_sub:
-                    return f"{log_sub} - {log_villa}"
-        except: continue
-    return None
-
 def get_bookings_for_day_with_details(date_str):
     response = run_query(supabase.table("bookings").select("court, start_hour, sub_community, villa").eq("date", date_str))
     return {(row['court'], row['start_hour']): f"{row['sub_community']} - {row['villa']}" for row in response.data}
