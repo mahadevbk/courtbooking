@@ -145,6 +145,12 @@ def check_device_lock(current_villa, current_sub):
         
         is_fp_match = has_valid_fp and has_valid_log_fp and log_fp == fp and ts >= fp_cutoff
         
+        if event == "Lock Reset":
+            if is_ip_match or is_fp_match:
+                # Admin reset found for this device or network - stop looking further
+                break
+            continue
+
         # Decide if this log constitutes a lock
         # UPDATED POLICY: Rely primarily on Device Fingerprint. 
         # IP-based locking is disabled to avoid blocking neighbors sharing community Wi-Fi / CGNAT.
@@ -153,10 +159,6 @@ def check_device_lock(current_villa, current_sub):
         if not is_lock:
             continue
 
-        if event == "Lock Reset":
-            # Admin reset found for this device/network
-            break
-            
         try:
             msg = details.split("⟧", 1)[-1].strip()
             log_sub, log_villa = None, None
@@ -786,11 +788,11 @@ with tab4:
             # Reset tool
             st.markdown("--- ")
             st.markdown("#### 🔓 Reset Device Lock")
-            reset_ip = st.text_input("Enter IP to Reset (copy from Master Log above)")
-            if st.button("Reset Lock for this IP"):
+            st.caption("Resets the lock for any device using the specified IP address. Use this if a user is blocked from registering.")
+            reset_ip = st.text_input("Enter IP to Reset (copy from Master Log above)").strip()
+            if st.button("Execute Lock Reset"):
                 if reset_ip:
-                    # In addition to the session state log, we log a special 'Lock Reset' event
-                    # We need to include the ID in the details so check_device_lock finds it
+                    # Log a special 'Lock Reset' event for this IP
                     reset_details = f"⟦ID:{reset_ip}|reset⟧ Lock reset for device by admin"
                     try:
                         supabase.table("logs").insert({
@@ -798,13 +800,13 @@ with tab4:
                             "event_type": "Lock Reset",
                             "details": reset_details
                         }).execute()
-                        st.success(f"✅ Lock reset command logged for IP: {reset_ip}")
-                        time.sleep(1)
+                        st.success(f"✅ Lock reset command logged for IP: {reset_ip}. The user should now be able to register.")
+                        time.sleep(1.5)
                         st.rerun()
                     except Exception as e:
                         st.error(f"Failed to reset: {e}")
                 else:
-                    st.warning("Please enter an IP")
+                    st.warning("Please enter a valid IP address from the log.")
             
             # Global Reset Tool
             st.markdown("--- ")
