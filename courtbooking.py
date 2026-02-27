@@ -440,7 +440,7 @@ if not st.session_state.authenticated:
                 owner = check_device_lock(villa_input, sub_community_input)
                 if owner:
                     st.error(f"🚫 Access Denied: This device is already associated with **{owner}**. Switching villas is not permitted.")
-                    st.info(f"🆔 **Your Device ID:** `{fp}`\n\nPlease send this ID to the administrator to request a lock reset.")
+                    st.info(f"🆔 **Your Device ID:** `{fp}`\n\nIf you think this is an error, copy this Device ID and send it to dev for a device reset.")
                     add_log("Access Denied", f"Login blocked for Villa ({sub_community_input} - {villa_input}): Already locked to {owner}")
                 else:
                     current_choice = f"{sub_community_input}-{villa_input}"
