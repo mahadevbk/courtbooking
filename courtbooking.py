@@ -704,6 +704,21 @@ with tab4:
             (log_df['event_type'] != "Debug") & 
             (~log_df['details'].str.contains("auto-booked", case=False, na=False))
         ].copy()
+        
+        # Admin Password Check for enhanced view
+        admin_pass = st.text_input("Admin Password", type="password", key="log_admin_pass")
+        is_admin = admin_pass == st.secrets.get("ADMIN_PASSWORD", "admin123")
+        
+        if is_admin:
+            # In admin mode, let's extract Fingerprints into their own column for easy copying
+            display_df['Fingerprint'] = display_df['details'].str.extract(r'⟦FP:(.*?)⟧')
+            display_df['details'] = display_df['details'].str.replace(r'⟦FP:.*?⟧ ', '', regex=True)
+            cols = ['timestamp', 'event_type', 'Fingerprint', 'details']
+        else:
+            # In user mode, hide the fingerprint codes for cleaner UI
+            display_df['details'] = display_df['details'].str.replace(r'⟦FP:.*?⟧ ', '', regex=True)
+            cols = ['timestamp', 'event_type', 'details']
+
         display_df['timestamp'] = pd.to_datetime(display_df['timestamp'], format='ISO8601').dt.strftime('%b %d, %H:%M')
         
         def style_rows(row):
@@ -713,13 +728,12 @@ with tab4:
             elif row.event_type == "Access Denied": styles[1] = 'background-color: #ffcc00; color: black; font-weight: bold;'
             return styles
             
-        st.dataframe(display_df.style.apply(style_rows, axis=1), hide_index=True, width="stretch")
+        st.dataframe(display_df[cols].style.apply(style_rows, axis=1), hide_index=True, width="stretch")
     else: st.info("No activity.")
 
     st.divider()
     st.subheader("🛠️ Admin Tools")
-    admin_pass = st.text_input("Admin Password", type="password")
-    if admin_pass == st.secrets.get("ADMIN_PASSWORD", "admin123"):
+    if is_admin:
         st.success("Admin Access Granted")
         st.markdown("### Device Lock Management")
         
@@ -731,19 +745,31 @@ with tab4:
             st.rerun()
             
         st.divider()
-        # Option 2: Reset specific device (this device)
+        # Option 2: Reset specific device
+        col_res1, col_res2 = st.columns([3, 1])
+        with col_res1:
+            target_fp = st.text_input("Target Fingerprint to Reset", placeholder="Paste fingerprint from log here...")
+        with col_res2:
+            st.write(""); st.write("")
+            if st.button("🔓 Reset FP"):
+                if target_fp:
+                    add_log("Lock Reset", f"Admin reset lock for ⟦FP:{target_fp}⟧")
+                    st.success(f"Lock reset for {target_fp[:10]}...")
+                    time.sleep(2)
+                    st.rerun()
+                else:
+                    st.error("Enter a fingerprint")
+
+        # Option 3: Reset THIS device
         curr_fp = st.session_state.get('client_fp')
         if curr_fp:
-            st.write(f"Current Device Fingerprint: `{curr_fp[:10]}...`")
-            if st.button("🔓 Reset THIS Device Lock"):
-                add_log("Lock Reset", f"Admin reset lock for device fingerprint.")
-                # We also need to clear local storage to be sure
+            st.write(f"Your Device Fingerprint: `{curr_fp}`")
+            if st.button("🔓 Reset MY Device Lock"):
+                add_log("Lock Reset", f"Admin reset lock for ⟦FP:{curr_fp}⟧")
                 st_javascript("localStorage.removeItem('court_villa_lock');")
-                st.success("This device has been unlocked.")
+                st.success("Your device has been unlocked.")
                 time.sleep(2)
                 st.rerun()
-        else:
-            st.warning("Fingerprint not detected yet. Please wait.")
     elif admin_pass:
         st.error("Incorrect Password")
 
