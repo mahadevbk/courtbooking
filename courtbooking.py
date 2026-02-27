@@ -93,41 +93,27 @@ def get_global_reset_ts():
     return "1970-01-01T00:00:00"
 
 def check_device_lock(current_villa, current_sub):
-    """Checks if current DeviceID or IP/FP is already associated with a different villa."""
-    ip = st.session_state.get('client_ip')
-    fp = st.session_state.get('client_fp')
+    """Checks if current DeviceID is already associated with a different villa."""
     did = st.session_state.get('device_id')
     
-    # Sanitize 0 or unknown from st_javascript
-    if ip == 0 or ip == 'unknown': ip = None
-    if fp == 0 or fp == 'unknown': fp = None
-    if did == 0 or did == 'unknown': did = None
+    # Sanitize signals from st_javascript
+    if did == 0 or did == 'unknown' or did == 'null': did = None
     
-    if not ip and not fp and not did: return None
+    if not did: return None
     
     now = get_utc_plus_4()
     global_reset = get_global_reset_ts()
 
-    # DeviceID (UUID) lock is the most reliable (90 days)
+    # DeviceID (UUID) lock is the only primary security signal (90 days)
     did_cutoff = max((now - timedelta(days=90)).isoformat(), global_reset)
-    # Fingerprint lock is fallback (90 days)
-    fp_cutoff = max((now - timedelta(days=90)).isoformat(), global_reset)
-    # IP lock is limited to 24 hours (Used only as hint, not primary lock)
-    ip_cutoff = max((now - timedelta(hours=24)).isoformat(), global_reset)
 
-    filters = []
-    if did: filters.append(f"details.ilike.%|{did}⟧%")
-    elif fp: filters.append(f"details.ilike.%|{fp}|%")
-    if ip: filters.append(f"details.ilike.%⟦ID:{ip}|%")
-    
-    if not filters: return None
-    
+    # Search for this Device ID in logs
     response = run_query(
         supabase.table("logs")
         .select("timestamp, event_type, details")
-        .or_(",".join(filters))
+        .ilike("details", f"%|{did}⟧%")
         .order("timestamp", desc=True)
-        .limit(200)
+        .limit(100)
     )
     
     for log in response.data:
@@ -135,46 +121,52 @@ def check_device_lock(current_villa, current_sub):
         event = log['event_type']
         details = log['details']
         
-        # Parse log's IP, FP, and DID from details
-        log_ip, log_fp, log_did = None, None, None
+        # Parse log's DID from details (Format: ⟦ID:ip|fp|did⟧)
+        log_did = None
         if "⟦ID:" in details and "⟧" in details:
             try:
                 id_part = details.split("⟦ID:", 1)[1].split("⟧", 1)[0]
                 parts = id_part.split("|")
-                if len(parts) >= 2:
-                    log_ip = parts[0]
-                    log_fp = parts[1]
                 if len(parts) >= 3:
                     log_did = parts[2]
             except: pass
 
-        # Check matches
-        is_did_match = did and log_did == did and ts >= did_cutoff
-        is_fp_match = fp and log_fp == fp and ts >= fp_cutoff
-        is_ip_match = ip and log_ip == ip and ts >= ip_cutoff
-        
         if event == "Lock Reset":
-            if is_did_match or is_fp_match or is_ip_match:
-                # Admin reset found for this device or network
+            if log_did == did:
+                # Admin reset found for this specific device
                 break
             continue
 
-        # Valid signal check
-        invalid_ids = [None, 'unknown', 'detecting', '0', '']
-        
-        # PRIMARY LOCK: Device ID (UUID)
-        # If the browser has a unique UUID, we rely on that.
-        is_lock = (did not in invalid_ids and log_did == did and ts >= did_cutoff)
-        
-        # SECONDARY LOCK: Fingerprint + IP (only if UUID is missing)
-        # To avoid blocking neighbors, we only lock on FP if it matches AND the IP also matches.
-        if not is_lock and did in invalid_ids:
-            is_lock = (fp not in invalid_ids and log_fp == fp and ts >= fp_cutoff and is_ip_match)
+        # Check if this log constitutes a lock for this Device ID
+        is_lock = (log_did == did and ts >= did_cutoff)
         
         if not is_lock:
             continue
 
         try:
+            msg = details.split("⟧", 1)[-1].strip()
+            log_sub, log_villa = None, None
+            
+            # Normalize and parse villa info
+            for p in ["New device/IP lock for ", "Registration blocked for Villa (", "Access Denied: ", "Booking Created: "]:
+                if msg.startswith(p):
+                    msg = msg[len(p):].strip()
+
+            if " - Villa " in msg:
+                parts = msg.split(" - Villa ")
+                log_sub = parts[0].strip()
+                log_villa = parts[1].split(" ")[0].strip().rstrip(")")
+            elif " Villa " in msg:
+                parts = msg.split(" Villa ")
+                log_sub = parts[0].strip()
+                log_villa = parts[1].split(" ")[0].strip()
+            
+            if log_sub in sub_community_list and log_villa:
+                if log_villa != current_villa or log_sub != current_sub:
+                    return f"{log_sub} - {log_villa}"
+        except: continue
+    return None
+
             msg = details.split("⟧", 1)[-1].strip()
             log_sub, log_villa = None, None
             
@@ -358,13 +350,13 @@ def get_available_hours(court, date_str):
 
 def logout_action():
     """Centrally handles logout, clears session and localStorage."""
-    # Use JS to clear localStorage and force a clean reload (removes query params)
-    st_javascript("localStorage.removeItem('court_villa_lock'); setTimeout(() => { window.location.href = window.location.origin + window.location.pathname; }, 300);")
+    # Use JS to clear localStorage and force a clean reload with a logout flag
+    st_javascript("localStorage.removeItem('court_villa_lock'); setTimeout(() => { window.location.href = window.location.origin + window.location.pathname + '?logout=1'; }, 300);")
     for key in ["authenticated", "sub_community", "villa"]:
         if key in st.session_state:
             del st.session_state[key]
-    st.info("Logging out and clearing device lock... Please wait.")
-    time.sleep(0.8)
+    st.info("Logging out... Please wait.")
+    time.sleep(1.2)
     st.rerun()
 
 # --- UI STYLING ---
@@ -489,22 +481,16 @@ if not st.session_state.authenticated:
         if not sub_community_input or not villa_input:
             st.error("Please select a sub-community and enter your villa number.")
         else:
-            # Check if signals are actually loaded
-            ip = st.session_state.get('client_ip')
-            fp = st.session_state.get('client_fp')
+            # Check if Secure ID is actually loaded (Primary Lock)
             did = st.session_state.get('device_id')
             
-            if not ip or ip == 0 or not fp or fp == 0 or not did or did == 0:
-                missing = []
-                if not ip or ip == 0: missing.append("IP")
-                if not fp or fp == 0: missing.append("Fingerprint")
-                if not did or did == 0: missing.append("Secure ID")
-                st.warning(f"⚠️ Verifying connection ({', '.join(missing)})... Please wait a moment and try again.")
+            if not did or did == 0 or did == 'null':
+                st.warning("⚠️ Verifying device security... Please wait a moment and try again. If stuck, ensure cookies are enabled.")
             else:
                 # Check for existing logs with this ID
                 owner = check_device_lock(villa_input, sub_community_input)
                 if owner:
-                    st.error(f"🚫 Access Denied: This network/device is already associated with **{owner}**. Switching villas is not permitted.")
+                    st.error(f"🚫 Access Denied: This device is already associated with **{owner}**. Switching villas is not permitted.")
                     add_log("Access Denied", f"Registration blocked for Villa ({sub_community_input} - {villa_input}): Already locked to {owner}")
                 else:
                     current_choice = f"{sub_community_input}-{villa_input}"
@@ -515,7 +501,7 @@ if not st.session_state.authenticated:
                     st.session_state.authenticated = True
                     # Clear query params to remove ?logout=1 if it exists
                     st.query_params.clear()
-                    add_log("Device Registered", f"New device/IP lock for {sub_community_input} - Villa {villa_input}")
+                    add_log("Device Registered", f"New device lock for {sub_community_input} - Villa {villa_input}")
                     st.rerun()
     
     st.write("")
