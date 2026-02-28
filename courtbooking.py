@@ -262,6 +262,22 @@ def get_villas_with_active_bookings():
     unique_villas = sorted(list(set([f"{row['sub_community']} - {row['villa']}" for row in response.data])))
     return unique_villas
 
+def get_all_villas_with_any_bookings():
+    response = run_query(supabase.table("bookings").select("villa, sub_community"))
+    if not response.data: return []
+    unique_villas = sorted(list(set([f"{row['sub_community']} - {row['villa']}" for row in response.data])))
+    return unique_villas
+
+def get_bookings_for_villa(villa, sub_community):
+    response = run_query(
+        supabase.table("bookings").select("id, court, date, start_hour")\
+        .eq("villa", villa)\
+        .eq("sub_community", sub_community)\
+        .order("date", desc=True)\
+        .order("start_hour", desc=True)
+    )
+    return response.data
+
 from clean_db import clean_db
 
 def _process_background_tasks():
@@ -778,6 +794,61 @@ with tab4:
     
     if is_admin:
         st.success("Admin Access Granted")
+        st.markdown("### 🏘️ Villa Booking Management")
+        
+        all_villas = get_all_villas_with_any_bookings()
+        selected_villa = st.selectbox("Select Villa to Manage", options=["-- Select --"] + all_villas, key="admin_manage_villa")
+        
+        if selected_villa != "-- Select --":
+            try:
+                sub_comm, villa_num = selected_villa.split(" - ")
+                bookings = get_bookings_for_villa(villa_num, sub_comm)
+                if bookings:
+                    # Create a copy with a "Delete" column
+                    df_bookings = pd.DataFrame(bookings)
+                    # For UI display: Format the date and time
+                    df_bookings['Time'] = df_bookings['start_hour'].apply(lambda x: f"{x:02d}:00")
+                    # Prepare for selection
+                    df_bookings.insert(0, "Select", False)
+                    
+                    st.write(f"Showing bookings for **{selected_villa}**:")
+                    
+                    # Use data_editor for selection
+                    edited_df = st.data_editor(
+                        df_bookings[["Select", "id", "date", "Time", "court"]],
+                        column_config={
+                            "Select": st.column_config.CheckboxColumn(
+                                "Delete?",
+                                help="Select to delete",
+                                default=False,
+                            ),
+                            "id": "ID",
+                            "date": "Date",
+                            "Time": "Time",
+                            "court": "Court"
+                        },
+                        disabled=["id", "date", "Time", "court"],
+                        hide_index=True,
+                        key="admin_booking_editor"
+                    )
+                    
+                    if st.button("Delete Selected Bookings", type="primary"):
+                        to_delete = edited_df[edited_df["Select"] == True]
+                        if not to_delete.empty:
+                            with st.spinner(f"Deleting {len(to_delete)} bookings..."):
+                                for _, row in to_delete.iterrows():
+                                    delete_booking(row['id'], villa_num, sub_comm)
+                            st.success(f"Successfully deleted {len(to_delete)} bookings for {selected_villa}.")
+                            time.sleep(1.5)
+                            st.rerun()
+                        else:
+                            st.warning("Please select at least one booking to delete.")
+                else:
+                    st.info(f"No bookings found for {selected_villa}.")
+            except Exception as e:
+                st.error(f"Error loading bookings: {str(e)}")
+
+        st.divider()
         st.markdown("### Device Lock Management")
         
         # Option 1: Global Reset
