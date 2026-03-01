@@ -62,10 +62,7 @@ def run_query(query_method):
         except Exception as e:
             if attempt == max_retries - 1:
                 st.error(f"⚠️ Connection Error: {str(e)}")
-                class DummyResponse:
-                    data = []
-                    count = 0
-                return DummyResponse()
+                return None
             time.sleep((0.5 * (2 ** attempt)) + random.uniform(0, 0.2))
 
 def add_log(event_type, details):
@@ -168,22 +165,29 @@ def color_cell(val):
 def get_active_bookings_count(villa, sub_community):
     today_str = get_today().strftime('%Y-%m-%d')
     now_hour = get_utc_plus_4().hour
-    response = run_query(
-        supabase.table("bookings").select("id", count="exact")\
-        .eq("villa", villa)\
-        .eq("sub_community", sub_community)\
-        .or_(f"date.gt.{today_str},and(date.eq.{today_str},start_hour.gte.{now_hour})")
-    )
-    return response.count if response.count is not None else 0
+    
+    query = supabase.table("bookings").select("id", count="exact")
+    if sub_community == "Mira 1" and villa in ["229", "231", "233"]:
+        query = query.in_("villa", ["229", "231", "233"]).eq("sub_community", "Mira 1")
+    else:
+        query = query.eq("villa", villa).eq("sub_community", sub_community)
+    
+    response = run_query(query.or_(f"date.gt.{today_str},and(date.eq.{today_str},start_hour.gte.{now_hour})"))
+    if response is None or response.count is None:
+        return 99
+    return response.count
 
 def get_daily_bookings_count(villa, sub_community, date_str):
-    response = run_query(
-        supabase.table("bookings").select("id", count="exact")\
-        .eq("villa", villa)\
-        .eq("sub_community", sub_community)\
-        .eq("date", date_str)
-    )
-    return response.count if response.count is not None else 0
+    query = supabase.table("bookings").select("id", count="exact")
+    if sub_community == "Mira 1" and villa in ["229", "231", "233"]:
+        query = query.in_("villa", ["229", "231", "233"]).eq("sub_community", "Mira 1")
+    else:
+        query = query.eq("villa", villa).eq("sub_community", sub_community)
+    
+    response = run_query(query.eq("date", date_str))
+    if response is None or response.count is None:
+        return 99
+    return response.count
 
 def is_slot_booked(court, date_str, start_hour):
     response = run_query(
