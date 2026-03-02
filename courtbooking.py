@@ -411,8 +411,9 @@ if not st.session_state.authenticated:
     # Note: st_javascript returns 0 or None while loading
     stored_lock = st_javascript("localStorage.getItem('court_villa_lock') || 'no_lock';")
     last_reset_seen = st_javascript("localStorage.getItem('court_last_reset_seen') || '1970-01-01T00:00:00';")
-    # Improved Fingerprint
-    client_fp = st_javascript("btoa([Intl.DateTimeFormat().resolvedOptions().timeZone, screen.width + 'x' + screen.height, navigator.hardwareConcurrency || '', navigator.deviceMemory || '', navigator.maxTouchPoints || '', navigator.platform, navigator.language, navigator.userAgent].join('|'));")
+    # Improved Fingerprint (Persistent Unique ID + Hardware)
+    # Fixes collisions for iPhone 14/Safari users who share identical hardware specs
+    client_fp = st_javascript("(function(){var d=localStorage.getItem('court_device_uuid');if(!d){d='D-'+Math.random().toString(36).substring(2,11)+'-'+Date.now();localStorage.setItem('court_device_uuid',d);}var h=btoa([Intl.DateTimeFormat().resolvedOptions().timeZone,screen.width+'x'+screen.height,navigator.hardwareConcurrency||'',navigator.deviceMemory||'',navigator.maxTouchPoints||'',navigator.platform,navigator.language,navigator.userAgent].join('|'));return d+':'+h;})()")
     
     # Wait for signals to stabilize (prevent loop while st_javascript is 0)
     if stored_lock == 0 or last_reset_seen == 0 or client_fp == 0:
