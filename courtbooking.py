@@ -379,9 +379,9 @@ st.caption("An Un-Official & Community Driven Booking Solution.")
 
 today_str_check = get_today().strftime('%Y-%m-%d')
 if today_str_check <= "2026-03-22":
-    st.info("Ramadan Timings 7AM to 12AM slots.")
+    st.info("Ramadan Timings 7AM to 12AM slots. If you are logged into the wrong Villa, log out and re  register to your correct Villa.")
 else:
-    st.info("Standard Timings 7AM to 10PM slots.")
+    st.info("Standard Timings 7AM to 10PM slots. If you are logged into the wrong Villa, log out and re  register to your correct Villa.")
 
 try:
     _process_background_tasks()
