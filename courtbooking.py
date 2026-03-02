@@ -282,10 +282,12 @@ def get_bookings_for_villa(villa, sub_community):
     )
     return response.data
 
-from clean_db import clean_db
-
 def _process_background_tasks():
-    clean_db(supabase, courts)
+    try:
+        from database_cleanup import run_db_cleanup
+        run_db_cleanup(supabase, courts)
+    except Exception:
+        pass
 
 def get_active_bookings_for_villa_display(villa_identifier):
     try:
