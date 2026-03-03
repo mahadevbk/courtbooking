@@ -790,12 +790,12 @@ with tab4:
     if logs:
         log_df = pd.DataFrame(logs, columns=["timestamp", "event_type", "details"])
         
-        # Standard view: Filter out Debug logs and system-synced mentions
+        # Standard view: Filter out Debug, System Maintenance, and system-synced mentions
         display_df = log_df[
-            (log_df['event_type'] != "Debug") & 
+            (log_df['event_type'] != "Debug") &
+            (log_df['event_type'] != "System Maintenance") &
             (~log_df['details'].str.contains("System-Synced", case=False, na=False))
-        ].copy()
-        
+        ].copy()        
         if is_admin:
             # In admin mode, let's extract Fingerprints into their own column for easy copying
             display_df['Fingerprint'] = display_df['details'].str.extract(r'⟦FP:(.*?)⟧')
