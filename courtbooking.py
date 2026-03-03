@@ -84,7 +84,7 @@ def get_global_reset_ts():
     """Returns the timestamp of the latest Global Reset event."""
     try:
         response = supabase.table("logs").select("timestamp").eq("event_type", "Global Reset").order("timestamp", desc=True).limit(1).execute()
-        if response.data:
+        if response and response.data:
             return response.data[0]['timestamp']
     except:
         pass
@@ -109,6 +109,8 @@ def check_device_lock(current_villa, current_sub):
         .limit(100)
     )
     
+    if not response or not response.data: return None
+
     for log in response.data:
         ts = log['timestamp']
         event = log['event_type']
@@ -143,6 +145,7 @@ def check_device_lock(current_villa, current_sub):
 
 def get_bookings_for_day_with_details(date_str):
     response = run_query(supabase.table("bookings").select("court, start_hour, sub_community, villa").eq("date", date_str))
+    if not response or not response.data: return {}
     return {(row['court'], row['start_hour']): f"{row['sub_community']} - {row['villa']}" for row in response.data}
 
 def abbreviate_community(full_name):
@@ -207,6 +210,7 @@ def is_slot_booked(court, date_str, start_hour):
         .eq("date", date_str)\
         .eq("start_hour", start_hour)
     )
+    if not response or not response.data: return False
     return len(response.data) > 0
 
 def is_slot_in_past(date_str, start_hour):
@@ -248,11 +252,11 @@ def get_user_bookings(villa, sub_community):
         .order("date")\
         .order("start_hour")
     )
-    return response.data
+    return response.data if response else []
 
 def delete_booking(booking_id, villa, sub_community):
     record = run_query(supabase.table("bookings").select("court, date, start_hour").eq("id", booking_id).single())
-    if record.data:
+    if record and record.data:
         b = record.data
         log_detail = f"{sub_community} Villa {villa} cancelled {b['court']} for {b['date']} at {b['start_hour']:02d}:00"
         add_log("Booking Deleted", log_detail)
@@ -265,7 +269,7 @@ def get_logs_last_14_days():
         .gte("timestamp", cutoff)\
         .order("timestamp", desc=True)
     )
-    return response.data
+    return response.data if response else []
 
 def get_villas_with_active_bookings():
     today_str = get_today().strftime('%Y-%m-%d')
@@ -282,7 +286,7 @@ def get_villas_with_active_bookings():
 
 def get_all_villas_with_any_bookings():
     response = run_query(supabase.table("bookings").select("villa, sub_community"))
-    if not response.data: return []
+    if not response or not response.data: return []
     unique_villas = sorted(list(set([f"{row['sub_community']} - {row['villa']}" for row in response.data])))
     return unique_villas
 
@@ -294,7 +298,7 @@ def get_bookings_for_villa(villa, sub_community):
         .order("date", desc=True)\
         .order("start_hour", desc=True)
     )
-    return response.data
+    return response.data if response else []
 
 def _process_background_tasks():
     try:
@@ -322,6 +326,7 @@ def get_active_bookings_for_villa_display(villa_identifier):
 
 def get_peak_time_data():
     response = run_query(supabase.table("bookings").select("date, start_hour"))
+    if not response or not response.data: return pd.DataFrame()
     df = pd.DataFrame(response.data)
     if df.empty: return pd.DataFrame()
     df['date'] = pd.to_datetime(df['date'])
@@ -330,7 +335,10 @@ def get_peak_time_data():
 
 def get_available_hours(court, date_str):
     response = run_query(supabase.table("bookings").select("start_hour").eq("court", court).eq("date", date_str))
-    booked_hours = [row['start_hour'] for row in response.data]
+    if not response or not response.data:
+        booked_hours = []
+    else:
+        booked_hours = [row['start_hour'] for row in response.data]
     available = []
     for h in get_start_hours_for_date(date_str):
         if h not in booked_hours and not is_slot_in_past(date_str, h):
@@ -920,8 +928,10 @@ st.divider()
 st.subheader("💾 Data Backup")
 def get_zip_data():
     try:
-        b_data = run_query(supabase.table("bookings").select("*")).data
-        l_data = run_query(supabase.table("logs").select("*")).data
+        res_b = run_query(supabase.table("bookings").select("*"))
+        res_l = run_query(supabase.table("logs").select("*"))
+        b_data = res_b.data if res_b else []
+        l_data = res_l.data if res_l else []
         buf = io.BytesIO()
         with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as vz:
             vz.writestr(f"bookings_{get_today()}.csv", pd.DataFrame(b_data).to_csv(index=False))
