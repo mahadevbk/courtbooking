@@ -166,16 +166,27 @@ def get_active_bookings_count(villa, sub_community):
     today_str = get_today().strftime('%Y-%m-%d')
     now_hour = get_utc_plus_4().hour
     
-    query = supabase.table("bookings").select("id", count="exact")
+    # Count future bookings (tomorrow onwards)
+    q_future = supabase.table("bookings").select("id", count="exact")
     if sub_community == "Mira 1" and villa in ["229", "231", "233"]:
-        query = query.in_("villa", ["229", "231", "233"]).eq("sub_community", "Mira 1")
+        q_future = q_future.in_("villa", ["229", "231", "233"]).eq("sub_community", "Mira 1")
     else:
-        query = query.eq("villa", villa).eq("sub_community", sub_community)
+        q_future = q_future.eq("villa", villa).eq("sub_community", sub_community)
     
-    response = run_query(query.or_(f"date.gt.{today_str},and(date.eq.{today_str},start_hour.gte.{now_hour})"))
-    if response is None or response.count is None:
-        return 99
-    return response.count
+    res_future = run_query(q_future.gt("date", today_str))
+    count_future = res_future.count if res_future and res_future.count is not None else 0
+    
+    # Count today's active bookings (ongoing or later)
+    q_today = supabase.table("bookings").select("id", count="exact")
+    if sub_community == "Mira 1" and villa in ["229", "231", "233"]:
+        q_today = q_today.in_("villa", ["229", "231", "233"]).eq("sub_community", "Mira 1")
+    else:
+        q_today = q_today.eq("villa", villa).eq("sub_community", sub_community)
+    
+    res_today = run_query(q_today.eq("date", today_str).gte("start_hour", now_hour))
+    count_today = res_today.count if res_today and res_today.count is not None else 0
+    
+    return count_future + count_today
 
 def get_daily_bookings_count(villa, sub_community, date_str):
     query = supabase.table("bookings").select("id", count="exact")
@@ -259,12 +270,15 @@ def get_logs_last_14_days():
 def get_villas_with_active_bookings():
     today_str = get_today().strftime('%Y-%m-%d')
     now_hour = get_utc_plus_4().hour
-    response = run_query(
-        supabase.table("bookings").select("villa, sub_community")\
-        .or_(f"date.gt.{today_str},and(date.eq.{today_str},start_hour.gte.{now_hour})")
-    )
-    unique_villas = sorted(list(set([f"{row['sub_community']} - {row['villa']}" for row in response.data])))
-    return unique_villas
+    try:
+        res_future = run_query(supabase.table("bookings").select("villa, sub_community").gt("date", today_str))
+        res_today = run_query(supabase.table("bookings").select("villa, sub_community").eq("date", today_str).gte("start_hour", now_hour))
+        
+        all_rows = (res_future.data if res_future else []) + (res_today.data if res_today else [])
+        unique_villas = sorted(list(set([f"{row['sub_community']} - {row['villa']}" for row in all_rows])))
+        return unique_villas
+    except Exception:
+        return []
 
 def get_all_villas_with_any_bookings():
     response = run_query(supabase.table("bookings").select("villa, sub_community"))
@@ -379,21 +393,25 @@ st.caption("An Un-Official & Community Driven Booking Solution.")
 
 today_str_check = get_today().strftime('%Y-%m-%d')
 if today_str_check <= "2026-03-22":
-    st.info("Ramadan Timings 7AM to 12AM slots. If you are logged into the wrong Villa, log out and re  register to your correct Villa.")
+    st.info("Ramadan Timings 7AM to 12AM slots.")
 else:
-    st.info("Standard Timings 7AM to 10PM slots. If you are logged into the wrong Villa, log out and re  register to your correct Villa.")
+    st.info("Standard Timings 7AM to 10PM slots.")
 
 try:
     _process_background_tasks()
     villas_active = get_villas_with_active_bookings()
     today_str = get_today().strftime('%Y-%m-%d')
     now_hour = get_utc_plus_4().hour
-    total_active_response = run_query(
-        supabase.table("bookings").select("id", count="exact")\
-        .or_(f"date.gt.{today_str},and(date.eq.{today_str},start_hour.gte.{now_hour})")
-    )
+    
+    # Count total active bookings (future and today-active)
+    res_f = run_query(supabase.table("bookings").select("id", count="exact").gt("date", today_str))
+    res_t = run_query(supabase.table("bookings").select("id", count="exact").eq("date", today_str).gte("start_hour", now_hour))
+    
     total_residences = len(villas_active)
-    total_bookings = total_active_response.count if total_active_response.count is not None else 0
+    count_f = res_f.count if res_f and res_f.count is not None else 0
+    count_t = res_t.count if res_t and res_t.count is not None else 0
+    total_bookings = count_f + count_t
+    
     st.write(f"**{total_residences}** Residences have **{total_bookings}** active bookings.")
 except Exception:
     st.write("Unable to load live stats (Network refreshing...)")
@@ -624,12 +642,16 @@ with tab2:
     with col_status1: st.info(f"Total active bookings: **{active_count} / 6**")
     with col_status2: st.info(f"Bookings for {date_choice}: **{daily_count} / 2**")
     if st.button("Book This Slot", type="primary"):
+        # RE-CALCULATE latest counts to prevent stale limit issues
+        active_count_latest = get_active_bookings_count(villa, sub_community)
+        daily_count_latest = get_daily_bookings_count(villa, sub_community, date_choice)
+        
         if not time_choice:
             st.error("Please select an available time slot.")
-        elif active_count >= 6: 
+        elif active_count_latest >= 6: 
             st.error("🚫 Overall limit reached. You cannot have more than 6 active bookings total.")
             add_log("Access Denied", f"{sub_community} Villa {villa} reached active booking limit (6)")
-        elif daily_count >= 2:
+        elif daily_count_latest >= 2:
             st.error(f"🚫 Daily limit reached. You cannot have more than 2 bookings on {date_choice}.")
             add_log("Access Denied", f"{sub_community} Villa {villa} reached daily limit (2) for {date_choice}")
         else:
@@ -760,10 +782,10 @@ with tab4:
     if logs:
         log_df = pd.DataFrame(logs, columns=["timestamp", "event_type", "details"])
         
-        # Standard view: Filter out Debug logs and auto-booked mentions
+        # Standard view: Filter out Debug logs and system-synced mentions
         display_df = log_df[
             (log_df['event_type'] != "Debug") & 
-            (~log_df['details'].str.contains("auto-booked", case=False, na=False))
+            (~log_df['details'].str.contains("System-Synced", case=False, na=False))
         ].copy()
         
         if is_admin:

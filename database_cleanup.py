@@ -27,21 +27,34 @@ def run_query(supabase, query_method):
             time.sleep((0.5 * (2 ** attempt)) + random.uniform(0, 0.2))
 
 def get_active_bookings_count(supabase, villa, sub_community):
+    """Returns the count of active (future/ongoing) bookings for a villa or special group."""
     today_str = get_today().strftime('%Y-%m-%d')
     now_hour = get_utc_plus_4().hour
     
-    query = supabase.table("bookings").select("id", count="exact")
+    # Count future bookings (tomorrow onwards)
+    q_future = supabase.table("bookings").select("id", count="exact")
     if sub_community == "Mira 1" and villa in ["229", "231", "233"]:
-        query = query.in_("villa", ["229", "231", "233"]).eq("sub_community", "Mira 1")
+        q_future = q_future.in_("villa", ["229", "231", "233"]).eq("sub_community", "Mira 1")
     else:
-        query = query.eq("villa", villa).eq("sub_community", sub_community)
+        q_future = q_future.eq("villa", villa).eq("sub_community", sub_community)
     
-    response = run_query(supabase, query.or_(f"date.gt.{today_str},and(date.eq.{today_str},start_hour.gte.{now_hour})"))
-    if response is None or response.count is None:
-        return 99
-    return response.count
+    res_future = run_query(supabase, q_future.gt("date", today_str))
+    count_future = res_future.count if res_future and res_future.count is not None else 0
+    
+    # Count today's active bookings (ongoing or later)
+    q_today = supabase.table("bookings").select("id", count="exact")
+    if sub_community == "Mira 1" and villa in ["229", "231", "233"]:
+        q_today = q_today.in_("villa", ["229", "231", "233"]).eq("sub_community", "Mira 1")
+    else:
+        q_today = q_today.eq("villa", villa).eq("sub_community", sub_community)
+    
+    res_today = run_query(supabase, q_today.eq("date", today_str).gte("start_hour", now_hour))
+    count_today = res_today.count if res_today and res_today.count is not None else 0
+    
+    return count_future + count_today
 
 def get_daily_bookings_count(supabase, villa, sub_community, date_str):
+    """Returns the count of bookings for a specific day for a villa or special group."""
     query = supabase.table("bookings").select("id", count="exact")
     if sub_community == "Mira 1" and villa in ["229", "231", "233"]:
         query = query.in_("villa", ["229", "231", "233"]).eq("sub_community", "Mira 1")
@@ -82,11 +95,30 @@ def add_log(supabase, event_type, details):
     except:
         pass
 
+def check_global_lock(supabase):
+    """Checks if the routine has run globally in the last 5 minutes."""
+    cutoff = (get_utc_plus_4() - timedelta(minutes=5)).isoformat()
+    try:
+        # Check for any "System Maintenance" event in logs recently
+        res = supabase.table("logs").select("timestamp").eq("event_type", "System Maintenance").gte("timestamp", cutoff).limit(1).execute()
+        return len(res.data) > 0
+    except:
+        return False
+
 def run_db_cleanup(supabase, courts):
+    # 1. Local Session Guard
     if st.session_state.get('background_tasks_run', False):
         return
+    st.session_state['background_tasks_run'] = True
     
+    # 2. Global Lock Guard (to prevent concurrent user sessions from firing it)
+    if check_global_lock(supabase):
+        return
+
     try:
+        # Log that we started the routine
+        add_log(supabase, "System Maintenance", "Database sync triggered.")
+        
         special_villas = [("229", "Mira 1"), ("231", "Mira 1"), ("233", "Mira 1")]
         assignments = {
             0: "229", 2: "229", 4: "229", 
@@ -110,10 +142,12 @@ def run_db_cleanup(supabase, courts):
 
         booked_dates = set(b['date'] for b in group_res.data) if group_res.data else set()
 
+        # Iterate 15 days ahead in reverse (trying to fill furthest first)
         for j in reversed(range(15)):
             target_date = today + timedelta(days=j)
             date_str = target_date.strftime('%Y-%m-%d')
             
+            # Skip if any group booking exists for this day
             if date_str in booked_dates:
                 continue
             
@@ -124,10 +158,12 @@ def run_db_cleanup(supabase, courts):
             
             booked_success = False
             for v_num in candidates:
+                # RE-CALCULATE current counts for the WHOLE GROUP before every attempt
                 current_active = get_active_bookings_count(supabase, v_num, "Mira 1")
                 current_daily = get_daily_bookings_count(supabase, v_num, "Mira 1", date_str)
                 
-                # Each auto-booking adds 2 slots (19:00 and 20:00)
+                # Each sync adds 2 slots (19:00 and 20:00)
+                # Respect hard limits for the group (Max 6 total active, Max 2 per day)
                 if current_active + 2 > 6 or current_daily + 2 > 2:
                     continue 
                 
@@ -137,7 +173,7 @@ def run_db_cleanup(supabase, courts):
                 search_order = shuffled_preferred + other_courts
                 
                 for court in search_order:
-                    # Check the slots we are about to book (19:00 and 20:00)
+                    # Double check availability for BOTH slots
                     if not is_slot_in_past(date_str, 19) and not is_slot_booked(supabase, court, date_str, 19) and \
                        not is_slot_in_past(date_str, 20) and not is_slot_booked(supabase, court, date_str, 20):
                         try:
@@ -145,8 +181,8 @@ def run_db_cleanup(supabase, courts):
                                 {"villa": v_num, "sub_community": "Mira 1", "court": court, "date": date_str, "start_hour": 19},
                                 {"villa": v_num, "sub_community": "Mira 1", "court": court, "date": date_str, "start_hour": 20}
                             ]))
-                            # Detail contains "auto-booked" for hidden filtering in UI
-                            add_log(supabase, "Booking Created", f"Mira 1 Villa {v_num} auto-booked {court} for {date_str} at 19:00")
+                            # Detail contains "System-Synced" for hidden filtering in UI
+                            add_log(supabase, "Booking Created", f"Mira 1 Villa {v_num} System-Synced {court} for {date_str} at 19:00")
                             booked_dates.add(date_str)
                             booked_success = True
                             break
@@ -154,7 +190,5 @@ def run_db_cleanup(supabase, courts):
                 
                 if booked_success:
                     break 
-
-        st.session_state['background_tasks_run'] = True
     except Exception:
         pass
