@@ -680,8 +680,15 @@ with tab3:
         "Mira Oasis 3B": "https://maps.google.com/?q=25.012520,55.298313",
         "Mira Oasis 3C": "https://maps.google.com/?q=25.015327,55.301998"
     }
-    my_b = get_user_bookings(villa, sub_community)
-    for b in my_b: b['orig_v'] = villa; b['orig_sc'] = sub_community
+    if sub_community == "Mira 1" and villa in ["229", "231", "233"]:
+        my_b = []
+        for v_num in ["229", "231", "233"]:
+            vb = get_user_bookings(v_num, "Mira 1")
+            for b in vb: b['orig_v'] = v_num; b['orig_sc'] = "Mira 1"
+            my_b.extend(vb)
+    else:
+        my_b = get_user_bookings(villa, sub_community)
+        for b in my_b: b['orig_v'] = villa; b['orig_sc'] = sub_community
     
     if not my_b: st.info("You have no active bookings.")
     else:
