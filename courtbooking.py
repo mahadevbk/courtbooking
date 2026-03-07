@@ -171,20 +171,14 @@ def get_active_bookings_count(villa, sub_community):
     
     # Count future bookings (tomorrow onwards)
     q_future = supabase.table("bookings").select("id", count="exact")
-    if sub_community == "Mira 1" and villa in ["229", "231", "233"]:
-        q_future = q_future.in_("villa", ["229", "231", "233"]).eq("sub_community", "Mira 1")
-    else:
-        q_future = q_future.eq("villa", villa).eq("sub_community", sub_community)
+    q_future = q_future.eq("villa", villa).eq("sub_community", sub_community)
     
     res_future = run_query(q_future.gt("date", today_str))
     count_future = res_future.count if res_future and res_future.count is not None else 0
     
     # Count today's active bookings (ongoing or later)
     q_today = supabase.table("bookings").select("id", count="exact")
-    if sub_community == "Mira 1" and villa in ["229", "231", "233"]:
-        q_today = q_today.in_("villa", ["229", "231", "233"]).eq("sub_community", "Mira 1")
-    else:
-        q_today = q_today.eq("villa", villa).eq("sub_community", sub_community)
+    q_today = q_today.eq("villa", villa).eq("sub_community", sub_community)
     
     res_today = run_query(q_today.eq("date", today_str).gte("start_hour", now_hour))
     count_today = res_today.count if res_today and res_today.count is not None else 0
@@ -193,10 +187,7 @@ def get_active_bookings_count(villa, sub_community):
 
 def get_daily_bookings_count(villa, sub_community, date_str):
     query = supabase.table("bookings").select("id", count="exact")
-    if sub_community == "Mira 1" and villa in ["229", "231", "233"]:
-        query = query.in_("villa", ["229", "231", "233"]).eq("sub_community", "Mira 1")
-    else:
-        query = query.eq("villa", villa).eq("sub_community", sub_community)
+    query = query.eq("villa", villa).eq("sub_community", sub_community)
     
     response = run_query(query.eq("date", date_str))
     if response is None or response.count is None:
@@ -689,15 +680,8 @@ with tab3:
         "Mira Oasis 3B": "https://maps.google.com/?q=25.012520,55.298313",
         "Mira Oasis 3C": "https://maps.google.com/?q=25.015327,55.301998"
     }
-    if sub_community == "Mira 1" and villa in ["229", "231", "233"]:
-        my_b = []
-        for v_num in ["229", "231", "233"]:
-            vb = get_user_bookings(v_num, "Mira 1")
-            for b in vb: b['orig_v'] = v_num; b['orig_sc'] = "Mira 1"
-            my_b.extend(vb)
-    else:
-        my_b = get_user_bookings(villa, sub_community)
-        for b in my_b: b['orig_v'] = villa; b['orig_sc'] = sub_community
+    my_b = get_user_bookings(villa, sub_community)
+    for b in my_b: b['orig_v'] = villa; b['orig_sc'] = sub_community
     
     if not my_b: st.info("You have no active bookings.")
     else:

@@ -27,26 +27,20 @@ def run_query(supabase, query_method):
             time.sleep((0.5 * (2 ** attempt)) + random.uniform(0, 0.2))
 
 def get_active_bookings_count(supabase, villa, sub_community):
-    """Returns the count of active (future/ongoing) bookings for a villa or special group."""
+    """Returns the count of active (future/ongoing) bookings for a specific villa."""
     today_str = get_today().strftime('%Y-%m-%d')
     now_hour = get_utc_plus_4().hour
     
     # Count future bookings (tomorrow onwards)
     q_future = supabase.table("bookings").select("id", count="exact")
-    if sub_community == "Mira 1" and villa in ["229", "231", "233"]:
-        q_future = q_future.in_("villa", ["229", "231", "233"]).eq("sub_community", "Mira 1")
-    else:
-        q_future = q_future.eq("villa", villa).eq("sub_community", sub_community)
+    q_future = q_future.eq("villa", villa).eq("sub_community", sub_community)
     
     res_future = run_query(supabase, q_future.gt("date", today_str))
     count_future = res_future.count if res_future and res_future.count is not None else 0
     
     # Count today's active bookings (ongoing or later)
     q_today = supabase.table("bookings").select("id", count="exact")
-    if sub_community == "Mira 1" and villa in ["229", "231", "233"]:
-        q_today = q_today.in_("villa", ["229", "231", "233"]).eq("sub_community", "Mira 1")
-    else:
-        q_today = q_today.eq("villa", villa).eq("sub_community", sub_community)
+    q_today = q_today.eq("villa", villa).eq("sub_community", sub_community)
     
     res_today = run_query(supabase, q_today.eq("date", today_str).gte("start_hour", now_hour))
     count_today = res_today.count if res_today and res_today.count is not None else 0
@@ -54,12 +48,9 @@ def get_active_bookings_count(supabase, villa, sub_community):
     return count_future + count_today
 
 def get_daily_bookings_count(supabase, villa, sub_community, date_str):
-    """Returns the count of bookings for a specific day for a villa or special group."""
+    """Returns the count of bookings for a specific day for a specific villa."""
     query = supabase.table("bookings").select("id", count="exact")
-    if sub_community == "Mira 1" and villa in ["229", "231", "233"]:
-        query = query.in_("villa", ["229", "231", "233"]).eq("sub_community", "Mira 1")
-    else:
-        query = query.eq("villa", villa).eq("sub_community", sub_community)
+    query = query.eq("villa", villa).eq("sub_community", sub_community)
     
     response = run_query(supabase, query.eq("date", date_str))
     if response is None or response.count is None:
@@ -120,51 +111,41 @@ def run_db_cleanup(supabase, courts):
         add_log(supabase, "System Maintenance", "Database sync triggered.")
         
         special_villas = [("229", "Mira 1"), ("231", "Mira 1"), ("233", "Mira 1")]
-        assignments = {
-            0: "229", 2: "229", 4: "229", 
-            1: "231", 3: "231", 5: "231", 
-            6: "233"
-        }
         preferred_courts = ["Mira Oasis 3A", "Mira 5B"]
         today = get_today()
         today_str = today.strftime('%Y-%m-%d')
         
-        group_villas = [v[0] for v in special_villas]
+        # Pre-fetch all group bookings to enforce "one per day" rule
+        group_villa_nums = [v[0] for v in special_villas]
         group_res = run_query(supabase, 
             supabase.table("bookings").select("date")
-            .in_("villa", group_villas)
+            .in_("villa", group_villa_nums)
             .eq("sub_community", "Mira 1")
             .gte("date", today_str)
         )
-        
-        if group_res is None:
-            return
-
-        booked_dates = set(b['date'] for b in group_res.data) if group_res.data else set()
+        group_occupied_dates = set(b['date'] for b in group_res.data) if (group_res and group_res.data) else set()
 
         # Iterate 15 days ahead in reverse (trying to fill furthest first)
         for j in reversed(range(15)):
             target_date = today + timedelta(days=j)
             date_str = target_date.strftime('%Y-%m-%d')
             
-            # Skip if any group booking exists for this day
-            if date_str in booked_dates:
+            # CONDITION: No villa from the group should book on the same day
+            if date_str in group_occupied_dates:
                 continue
             
-            primary_v = assignments.get(target_date.weekday())
-            others = [v[0] for v in special_villas if v[0] != primary_v]
-            random.shuffle(others)
-            candidates = ([primary_v] if primary_v else []) + others
+            # Shuffle special villas to give equal chance
+            random_villas = list(special_villas)
+            random.shuffle(random_villas)
             
             booked_success = False
-            for v_num in candidates:
-                # RE-CALCULATE current counts for the WHOLE GROUP before every attempt
-                current_active = get_active_bookings_count(supabase, v_num, "Mira 1")
-                current_daily = get_daily_bookings_count(supabase, v_num, "Mira 1", date_str)
+            for v_num, sub_comm in random_villas:
+                # RE-CALCULATE current counts for the specific villa
+                current_active = get_active_bookings_count(supabase, v_num, sub_comm)
                 
-                # Each sync adds 2 slots (19:00 and 20:00)
-                # Respect hard limits for the group (Max 6 total active, Max 2 per day)
-                if current_active + 2 > 6 or current_daily + 2 > 2:
+                # Respect hard limits for the villa (Max 6 total active, Max 2 per day)
+                # Since we checked group_occupied_dates, villa_daily_count is 0 here
+                if current_active + 2 > 6:
                     continue 
                 
                 shuffled_preferred = preferred_courts if target_date.day % 2 == 0 else preferred_courts[::-1]
@@ -178,17 +159,18 @@ def run_db_cleanup(supabase, courts):
                        not is_slot_in_past(date_str, 20) and not is_slot_booked(supabase, court, date_str, 20):
                         try:
                             run_query(supabase, supabase.table("bookings").insert([
-                                {"villa": v_num, "sub_community": "Mira 1", "court": court, "date": date_str, "start_hour": 19},
-                                {"villa": v_num, "sub_community": "Mira 1", "court": court, "date": date_str, "start_hour": 20}
+                                {"villa": v_num, "sub_community": sub_comm, "court": court, "date": date_str, "start_hour": 19},
+                                {"villa": v_num, "sub_community": sub_comm, "court": court, "date": date_str, "start_hour": 20}
                             ]))
                             # Detail contains "System-Synced" for hidden filtering in UI
-                            add_log(supabase, "Booking Created", f"Mira 1 Villa {v_num} System-Synced {court} for {date_str} at 19:00")
-                            booked_dates.add(date_str)
+                            add_log(supabase, "Booking Created", f"{sub_comm} Villa {v_num} System-Synced {court} for {date_str} at 19:00")
+                            group_occupied_dates.add(date_str)
                             booked_success = True
                             break
                         except: continue
                 
                 if booked_success:
-                    break 
+                    break # Move to the next day once this day is filled for the group
+            
     except Exception:
         pass
