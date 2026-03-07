@@ -555,9 +555,9 @@ with tab1:
                 active_count = get_active_bookings_count(villa, sub_community)
                 daily_count = get_daily_bookings_count(villa, sub_community, selected_date)
                 
-                if active_count >= 6:
-                    st.error("Limit Reached (Max 6 active)")
-                    add_log("Access Denied", f"{sub_community} Villa {villa} reached active booking limit (6)")
+                if active_count >= 10:
+                    st.error("Limit Reached (Max 10 active)")
+                    add_log("Access Denied", f"{sub_community} Villa {villa} reached active booking limit (10)")
                 elif daily_count >= 2:
                     st.error("Daily Limit Reached (Max 2 per day)")
                     add_log("Access Denied", f"{sub_community} Villa {villa} reached daily limit (2) for {selected_date}")
@@ -626,7 +626,7 @@ with tab2:
     else:
         timing_msg = "7AM to 10PM slots."
     
-    st.info(f"App allows 6 Active bookings spanning 14 days, A maximum of 2 active bookings per day. Current date choice timing: **{timing_msg}**")
+    st.info(f"App allows 10 Active bookings spanning 14 days, A maximum of 2 active bookings per day. Current date choice timing: **{timing_msg}**")
     
     court_choice = st.selectbox("Court:", courts)
     free_hours = get_available_hours(court_choice, date_choice)
@@ -638,7 +638,7 @@ with tab2:
     active_count = get_active_bookings_count(villa, sub_community)
     daily_count = get_daily_bookings_count(villa, sub_community, date_choice)
     col_status1, col_status2 = st.columns(2)
-    with col_status1: st.info(f"Total active bookings: **{active_count} / 6**")
+    with col_status1: st.info(f"Total active bookings: **{active_count} / 10**")
     with col_status2: st.info(f"Bookings for {date_choice}: **{daily_count} / 2**")
     if st.button("Book This Slot", type="primary"):
         # RE-CALCULATE latest counts to prevent stale limit issues
@@ -647,9 +647,9 @@ with tab2:
         
         if not time_choice:
             st.error("Please select an available time slot.")
-        elif active_count_latest >= 6: 
-            st.error("🚫 Overall limit reached. You cannot have more than 6 active bookings total.")
-            add_log("Access Denied", f"{sub_community} Villa {villa} reached active booking limit (6)")
+        elif active_count_latest >= 10: 
+            st.error("🚫 Overall limit reached. You cannot have more than 10 active bookings total.")
+            add_log("Access Denied", f"{sub_community} Villa {villa} reached active booking limit (10)")
         elif daily_count_latest >= 2:
             st.error(f"🚫 Daily limit reached. You cannot have more than 2 bookings on {date_choice}.")
             add_log("Access Denied", f"{sub_community} Villa {villa} reached daily limit (2) for {date_choice}")
