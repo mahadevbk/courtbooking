@@ -36,12 +36,54 @@ def check_global_lock(supabase):
         return len(res.data) > 0
     except: return False
 
+def enforce_active_limits(supabase):
+    """Enforces the 6-active-booking limit globally. Keeps the earliest 6 and deletes the rest."""
+    today_str = get_today().strftime('%Y-%m-%d')
+    now_hour = get_utc_plus_4().hour
+    
+    # 1. Fetch all active bookings
+    # A booking is active if date > today OR (date == today AND start_hour >= now_hour)
+    res = run_query(supabase, supabase.table("bookings").select("*").gte("date", today_str))
+    if not res or not res.data: return
+
+    # Filter to truly active ones (handling today's hours)
+    active_bookings = [
+        b for b in res.data 
+        if b['date'] > today_str or int(b['start_hour']) >= now_hour
+    ]
+
+    # 2. Group by villa
+    villa_map = {} # (sub_community, villa) -> [bookings]
+    for b in active_bookings:
+        key = (b['sub_community'], b['villa'])
+        if key not in villa_map: villa_map[key] = []
+        villa_map[key].append(b)
+
+    # 3. Check and prune
+    for (sc, v), bookings in villa_map.items():
+        if len(bookings) > 6:
+            # Sort chronologically: date then start_hour
+            bookings.sort(key=lambda x: (x['date'], int(x['start_hour'])))
+            
+            # Keep first 6, delete the rest
+            excess = bookings[6:]
+            excess_ids = [b['id'] for b in excess]
+            
+            if excess_ids:
+                try:
+                    supabase.table("bookings").delete().in_("id", excess_ids).execute()
+                    add_log(supabase, "Limit Enforcement", f"Deleted {len(excess_ids)} excess bookings for {sc} Villa {v} (Max 6 limit).")
+                except: pass
+
 def run_db_cleanup(supabase, courts):
     if st.session_state.get('background_tasks_run', False): return
     st.session_state['background_tasks_run'] = True
     if check_global_lock(supabase): return
 
     try:
+        # First, enforce limits on existing bookings
+        enforce_active_limits(supabase)
+        
         add_log(supabase, "System Maintenance", "Database sync triggered.")
         special_villas = [("229", "Mira 1"), ("231", "Mira 1"), ("233", "Mira 1")]
         preferred_courts = ["Mira Oasis 3A", "Mira 5B"]
@@ -70,16 +112,22 @@ def run_db_cleanup(supabase, courts):
             if b_sc == "Mira 1" and b_v in group_villa_nums:
                 if b_date > today_str or b_hour >= now_hour:
                     villa_active_slots[b_v] += 1
-                if b_hour >= 19:
-                    group_daily_occupied[b_date] = True
+                
+                # Rule: One villa from the group can book per day (any time).
+                # If ANY booking exists for ANY villa in the group on this day, skip it.
+                group_daily_occupied[b_date] = True
 
         # 2. Chronological fill loop
         for j in range(15):
             target_date = today + timedelta(days=j)
             date_str = target_date.strftime('%Y-%m-%d')
             
-            # Rule: One auto-booking (19:00 block) per day for the entire group
+            # 1. Skip if already occupied
             if group_daily_occupied.get(date_str):
+                continue
+                
+            # 2. Skip today if 19:00 has already passed
+            if date_str == today_str and now_hour >= 19:
                 continue
 
             random_villas = list(special_villas)
@@ -87,15 +135,21 @@ def run_db_cleanup(supabase, courts):
             
             success = False
             for v_num, sub_comm in random_villas:
-                # Per-villa limit increased to 14 slots
-                if villa_active_slots[v_num] + 2 > 14:
+                # Per-villa limit 6 slots
+                if villa_active_slots[v_num] + 2 > 6:
                     continue
 
-                # Shuffle courts to find availability
-                shuffled_courts = list(courts)
-                random.shuffle(shuffled_courts)
+                # Sort courts to prioritize preferred ones
+                sorted_courts = []
+                # First, add available preferred courts
+                for pc in preferred_courts:
+                    if pc in courts: sorted_courts.append(pc)
+                # Then add the rest in random order
+                other_courts = [c for c in courts if c not in preferred_courts]
+                random.shuffle(other_courts)
+                sorted_courts.extend(other_courts)
                 
-                for court in shuffled_courts:
+                for court in sorted_courts:
                     # Check if slot is free for EVERYONE
                     is_19_free = not any(b for b in all_data if b['court'] == court and b['date'] == date_str and b['start_hour'] == 19)
                     is_20_free = not any(b for b in all_data if b['court'] == court and b['date'] == date_str and b['start_hour'] == 20)

@@ -138,6 +138,11 @@ def check_device_lock(current_villa, current_sub):
                     log_villa = parts[1].split(" ")[0].strip()
             
             if log_sub in sub_community_list and log_villa:
+                # Special group exception: Mira 1 villas 229, 231, 233 are interchangeable
+                mira1_group = ["229", "231", "233"]
+                if log_sub == "Mira 1" and current_sub == "Mira 1" and log_villa in mira1_group and current_villa in mira1_group:
+                    continue
+                
                 if log_villa != current_villa or log_sub != current_sub:
                     return f"{log_sub} - {log_villa}"
         except: continue
@@ -169,7 +174,7 @@ def get_active_bookings_count(villa, sub_community):
     today_str = get_today().strftime('%Y-%m-%d')
     now_hour = get_utc_plus_4().hour
     
-    # Count future bookings (tomorrow onwards)
+    # Active bookings are individual per villa (Limit 6)
     q_future = supabase.table("bookings").select("id", count="exact")
     q_future = q_future.eq("villa", villa).eq("sub_community", sub_community)
     
@@ -186,13 +191,29 @@ def get_active_bookings_count(villa, sub_community):
     return count_future + count_today
 
 def get_daily_bookings_count(villa, sub_community, date_str):
-    query = supabase.table("bookings").select("id", count="exact")
-    query = query.eq("villa", villa).eq("sub_community", sub_community)
-    
-    response = run_query(query.eq("date", date_str))
-    if response is None or response.count is None:
-        return 99
-    return response.count
+    mira1_group = ["229", "231", "233"]
+    is_mira1_group = (sub_community == "Mira 1" and villa in mira1_group)
+
+    if is_mira1_group:
+        # Rule: Only ONE villa from the group can book per day.
+        # Check if anyone ELSE in the group has a booking.
+        other_villas = [v for v in mira1_group if v != villa]
+        res_others = run_query(supabase.table("bookings").select("id", count="exact").eq("sub_community", "Mira 1").in_("villa", other_villas).eq("date", date_str))
+        others_count = res_others.count if res_others and res_others.count is not None else 0
+        
+        if others_count > 0:
+            # If someone else booked, this villa's daily limit is effectively exceeded (return 2 or more)
+            return 99 
+        
+        # If no one else booked, check this villa's own daily count (Limit 2)
+        res_self = run_query(supabase.table("bookings").select("id", count="exact").eq("sub_community", "Mira 1").eq("villa", villa).eq("date", date_str))
+        return res_self.count if res_self and res_self.count is not None else 0
+    else:
+        query = supabase.table("bookings").select("id", count="exact")
+        query = query.eq("villa", villa).eq("sub_community", sub_community)
+        response = run_query(query.eq("date", date_str))
+        if response is None or response.count is None: return 99
+        return response.count
 
 def is_slot_booked(court, date_str, start_hour):
     response = run_query(
@@ -555,9 +576,9 @@ with tab1:
                 active_count = get_active_bookings_count(villa, sub_community)
                 daily_count = get_daily_bookings_count(villa, sub_community, selected_date)
                 
-                if active_count >= 14:
-                    st.error("Limit Reached (Max 14 active)")
-                    add_log("Access Denied", f"{sub_community} Villa {villa} reached active booking limit (14)")
+                if active_count >= 6:
+                    st.error("Limit Reached (Max 6 active)")
+                    add_log("Access Denied", f"{sub_community} Villa {villa} reached active booking limit (6)")
                 elif daily_count >= 2:
                     st.error("Daily Limit Reached (Max 2 per day)")
                     add_log("Access Denied", f"{sub_community} Villa {villa} reached daily limit (2) for {selected_date}")
@@ -626,7 +647,7 @@ with tab2:
     else:
         timing_msg = "7AM to 10PM slots."
     
-    st.info(f"App allows 14 Active bookings spanning 14 days, A maximum of 2 active bookings per day. Current date choice timing: **{timing_msg}**")
+    st.info(f"App allows 6 Active bookings spanning 14 days, A maximum of 2 active bookings per day. Current date choice timing: **{timing_msg}**")
     
     court_choice = st.selectbox("Court:", courts)
     free_hours = get_available_hours(court_choice, date_choice)
@@ -638,7 +659,7 @@ with tab2:
     active_count = get_active_bookings_count(villa, sub_community)
     daily_count = get_daily_bookings_count(villa, sub_community, date_choice)
     col_status1, col_status2 = st.columns(2)
-    with col_status1: st.info(f"Total active bookings: **{active_count} / 14**")
+    with col_status1: st.info(f"Total active bookings: **{active_count} / 6**")
     with col_status2: st.info(f"Bookings for {date_choice}: **{daily_count} / 2**")
     if st.button("Book This Slot", type="primary"):
         # RE-CALCULATE latest counts to prevent stale limit issues
@@ -647,9 +668,9 @@ with tab2:
         
         if not time_choice:
             st.error("Please select an available time slot.")
-        elif active_count_latest >= 14: 
-            st.error("🚫 Overall limit reached. You cannot have more than 14 active bookings total.")
-            add_log("Access Denied", f"{sub_community} Villa {villa} reached active booking limit (14)")
+        elif active_count_latest >= 6: 
+            st.error("🚫 Overall limit reached. You cannot have more than 6 active bookings total.")
+            add_log("Access Denied", f"{sub_community} Villa {villa} reached active booking limit (6)")
         elif daily_count_latest >= 2:
             st.error(f"🚫 Daily limit reached. You cannot have more than 2 bookings on {date_choice}.")
             add_log("Access Denied", f"{sub_community} Villa {villa} reached daily limit (2) for {date_choice}")
@@ -781,12 +802,18 @@ with tab4:
     if logs:
         log_df = pd.DataFrame(logs, columns=["timestamp", "event_type", "details"])
         
-        # Standard view: Filter out Debug, System Maintenance, and system-synced mentions
-        display_df = log_df[
+        # Standard filters
+        filters = (
             (log_df['event_type'] != "Debug") &
             (log_df['event_type'] != "System Maintenance") &
             (~log_df['details'].str.contains("System-Synced", case=False, na=False))
-        ].copy()        
+        )
+        
+        # If NOT admin, also filter out "Limit Enforcement"
+        if not is_admin:
+            filters &= (log_df['event_type'] != "Limit Enforcement")
+            
+        display_df = log_df[filters].copy()        
         if is_admin:
             # In admin mode, let's extract Fingerprints into their own column for easy copying
             display_df['Fingerprint'] = display_df['details'].str.extract(r'⟦FP:(.*?)⟧')
