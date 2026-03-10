@@ -10,6 +10,13 @@ from postgrest.exceptions import APIError
 # NEW IMPORT: For browser-side storage execution
 from streamlit_javascript import st_javascript
 
+# Set page configuration to wide mode by default
+st.set_page_config(
+    page_title="Mira Court Booking",
+    page_icon="🎾",
+    layout="wide",
+)
+
 # --- DATABASE SETUP (SUPABASE) ---
 @st.cache_resource
 def init_supabase():
