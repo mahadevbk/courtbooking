@@ -714,10 +714,24 @@ with tab3:
             vb = get_user_bookings(v_num, "Mira 1")
             for b in vb: b['orig_v'] = v_num; b['orig_sc'] = "Mira 1"
             my_b.extend(vb)
+        limit_val = 6 # Individual limit for Mira 1 villas
     else:
         my_b = get_user_bookings(villa, sub_community)
         for b in my_b: b['orig_v'] = villa; b['orig_sc'] = sub_community
-    
+        limit_val = 6
+
+    # --- Summary Section ---
+    today_str = get_today().strftime('%Y-%m-%d')
+    total_active = len(my_b)
+    today_bookings = len([b for b in my_b if b['date'] == today_str])
+
+    col_sum1, col_sum2 = st.columns(2)
+    with col_sum1:
+        st.metric("Total Active Bookings", f"{total_active} / {limit_val}")
+    with col_sum2:
+        st.metric("Today's Bookings", f"{today_bookings} / 2")
+    st.divider()
+
     if not my_b: st.info("You have no active bookings.")
     else:
         df_my_b = pd.DataFrame(my_b).sort_values(['date', 'court', 'start_hour'])
