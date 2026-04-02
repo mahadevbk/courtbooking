@@ -464,19 +464,19 @@ if st.query_params.get("view") == "full":
 st.subheader("🎾 Book that Court ...")    
 st.caption("An Un-Official & Community Driven Booking Solution.")
 
-with st.expander("📖 How the 'Fair Play' System Works", icon="🎾"):
+with st.expander("How the Fair Play System Works"):
     st.markdown("""
-    ### 🛡️ **Ensuring Fairness for Everyone**
+    ### **Ensuring Fairness for Everyone**
     To provide a fair chance for all residents and prevent system abuse, the following **Fair Play** rules are strictly enforced:
 
-    - **🔒 One Device ↔️ One Villa**: 
+    - **One Device - One Villa**: 
       Your device (phone or computer) is uniquely linked to your villa upon first login. You cannot use the same device to book for other villas.
-    - **🚫 One Villa ↔️ One Device**: 
+    - **One Villa - One Device**: 
       Once a villa is claimed by a device, no other device can register for that same villa. This prevents "stacking" bookings from multiple phones for a single household.
-    - **📊 Booking Quotas**:
+    - **Booking Quotas**:
         - **Daily Limit**: Maximum of **2 bookings per day** per villa.
         - **Active Limit**: Maximum of **6 active bookings** at any one time across the 14-day calendar.
-    - **🛠️ Need a Reset?**:
+    - **Need a Reset?**:
       If you get a new phone or move villas, the system will block you due to the existing lock. Please contact the Admin with your **Device ID** (found at the bottom of the *Activity Log* tab) for a manual reset.
 
     > **Note**: If you see "Access Denied" when logging in, it means your villa number has already been claimed or your device is locked to another villa. This protection ensures your villa identity remains yours.
