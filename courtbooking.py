@@ -98,9 +98,10 @@ def get_global_reset_ts():
     return "1970-01-01T00:00:00"
 
 def check_device_lock(current_villa, current_sub):
-    """Checks if current fingerprint is already associated with a different villa in logs."""
+    """Checks if current fingerprint is already associated with a different villa,
+    OR if the selected villa is already associated with a different fingerprint.
+    """
     fp = st.session_state.get('client_fp')
-    
     if not fp or fp == 0 or fp == 'unknown': return None
     
     now = get_utc_plus_4()
@@ -108,16 +109,46 @@ def check_device_lock(current_villa, current_sub):
     # Fingerprint lock is persistent (90 days)
     fp_cutoff = max((now - timedelta(days=90)).isoformat(), global_reset)
 
+    mira1_group = ["229", "231", "233"]
+    is_mira1_group = (current_sub == "Mira 1" and current_villa in mira1_group)
+
+    # Search for logs matching the fingerprint OR the villa/group
+    if is_mira1_group:
+        v_patterns = ",".join([f"details.ilike.%Mira 1%Villa%{v}%" for v in mira1_group])
+        query_filter = f"details.ilike.%⟦FP:{fp}⟧%,{v_patterns}"
+    else:
+        query_filter = f"details.ilike.%⟦FP:{fp}⟧%,details.ilike.%{current_sub}%Villa%{current_villa}%"
+
     response = run_query(
         supabase.table("logs")
         .select("timestamp, event_type, details")
-        .ilike("details", f"%⟦FP:{fp}⟧%")
+        .or_(query_filter)
         .order("timestamp", desc=True)
         .limit(100)
     )
     
     if not response or not response.data: return None
 
+    # Step 1: Find latest reset timestamps for this FP and this Villa
+    latest_villa_reset = "1970-01-01T00:00:00"
+    latest_fp_reset = "1970-01-01T00:00:00"
+    
+    for log in response.data:
+        ev = log['event_type']
+        det = log['details']
+        ts = log['timestamp']
+        
+        if ev == "Lock Reset" and f"⟦FP:{fp}⟧" in det:
+            latest_fp_reset = max(latest_fp_reset, ts)
+        elif ev == "Villa Reset":
+            if f"for {current_sub}" in det:
+                if is_mira1_group:
+                    if any(f"Villa {v}" in det for v in mira1_group):
+                        latest_villa_reset = max(latest_villa_reset, ts)
+                elif f"Villa {current_villa}" in det:
+                    latest_villa_reset = max(latest_villa_reset, ts)
+
+    # Step 2: Check for active locks
     for log in response.data:
         ts = log['timestamp']
         event = log['event_type']
@@ -125,16 +156,18 @@ def check_device_lock(current_villa, current_sub):
         
         if ts < fp_cutoff: continue
         if event == "Global Reset": break
-        if event == "Lock Reset" and f"⟦FP:{fp}⟧" in details: break
-            
+        
+        # Extract log fingerprint
+        log_fp = None
+        if "⟦FP:" in details and "⟧" in details:
+            log_fp = details.split("⟦FP:", 1)[1].split("⟧", 1)[0]
+
         try:
             # Extract villa info from details
             msg = details.split("⟧", 1)[-1].strip()
             log_sub, log_villa = None, None
             
-            # Common patterns in logs
             if " Villa " in msg:
-                # e.g. "Mira 1 Villa 101 booked..." or "New login for Mira 1 - Villa 101"
                 if " - Villa " in msg:
                     parts = msg.split(" - Villa ")
                     log_sub = parts[0].split("for ")[-1].strip()
@@ -144,14 +177,27 @@ def check_device_lock(current_villa, current_sub):
                     log_sub = parts[0].split("for ")[-1].strip()
                     log_villa = parts[1].split(" ")[0].strip()
             
-            if log_sub in sub_community_list and log_villa:
-                # Special group exception: Mira 1 villas 229, 231, 233 are interchangeable
-                mira1_group = ["229", "231", "233"]
-                if log_sub == "Mira 1" and current_sub == "Mira 1" and log_villa in mira1_group and current_villa in mira1_group:
-                    continue
+            if not (log_sub in sub_community_list and log_villa):
+                continue
+
+            # Check if this log relates to our FP
+            if log_fp == fp:
+                if ts < latest_fp_reset: continue
+                if event in ["Lock Reset", "Global Reset"]: continue
                 
-                if log_villa != current_villa or log_sub != current_sub:
+                # Is it a DIFFERENT villa?
+                is_same_villa = (log_sub == current_sub and (log_villa == current_villa or (is_mira1_group and log_villa in mira1_group)))
+                if not is_same_villa:
                     return f"{log_sub} - {log_villa}"
+            
+            # Check if this log relates to our Villa
+            is_our_villa = (log_sub == current_sub and (log_villa == current_villa or (is_mira1_group and log_villa in mira1_group)))
+            if is_our_villa:
+                if ts < latest_villa_reset: continue
+                if event in ["Villa Reset", "Global Reset"]: continue
+                
+                if log_fp and log_fp != fp:
+                    return "This villa is already registered to another device."
         except: continue
     return None
 
@@ -992,6 +1038,24 @@ with tab4:
                     st.info(f"No bookings found for {selected_villa}.")
             except Exception as e:
                 st.error(f"Error loading bookings: {str(e)}")
+
+        st.divider()
+        st.markdown("### Villa Lock Management")
+        
+        col_v1, col_v2 = st.columns([3, 1])
+        with col_v1:
+            v_reset_sub = st.selectbox("Sub-Community to Reset", options=sub_community_list, key="v_reset_sub")
+            v_reset_num = st.text_input("Villa Number to Reset", key="v_reset_num")
+        with col_v2:
+            st.write(""); st.write("")
+            if st.button("🔓 Reset Villa"):
+                if v_reset_num:
+                    add_log("Villa Reset", f"Admin reset lock for {v_reset_sub} - Villa {v_reset_num}")
+                    st.success(f"Lock reset for {v_reset_sub} - {v_reset_num}")
+                    time.sleep(2)
+                    st.rerun()
+                else:
+                    st.error("Enter villa number")
 
         st.divider()
         st.markdown("### Device Lock Management")
