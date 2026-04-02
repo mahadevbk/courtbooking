@@ -578,7 +578,11 @@ with tab1:
             q_time = st.selectbox("Select Time", options=q_time_options, key="q_time_select")
     with q_col3:
         st.write(""); st.write("") 
-        q_2_hours = st.checkbox("Book for 2 hours", key="q_2_hours_check")
+        q_label = "Book for 2 hours"
+        if q_time:
+            q_start_h = int(q_time.split(":")[0])
+            q_label = f"Book for 2 hours ({q_start_h:02d}:00 to {q_start_h+2:02d}:00)"
+        q_2_hours = st.checkbox(q_label, key="q_2_hours_check")
         q_slots = 2 if q_2_hours else 1
     with q_col4:
         st.write(""); st.write("") 
@@ -685,7 +689,11 @@ with tab2:
         time_options = [f"{h:02d}:00 - {h+1:02d}:00" for h in free_hours]
         time_choice = st.selectbox("Time Slot:", time_options)
     
-    slots_2_hours = st.checkbox("Book for 2 hours", key="tab2_slots_2_hours")
+    tab2_label = "Book for 2 hours"
+    if time_choice:
+        t2_start_h = int(time_choice.split(":")[0])
+        tab2_label = f"Book for 2 hours ({t2_start_h:02d}:00 to {t2_start_h+2:02d}:00)"
+    slots_2_hours = st.checkbox(tab2_label, key="tab2_slots_2_hours")
     slots_choice = 2 if slots_2_hours else 1
 
     active_count = get_active_bookings_count(villa, sub_community)
