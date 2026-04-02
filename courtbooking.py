@@ -567,7 +567,7 @@ with tab1:
     
     st.divider()
     st.markdown("### ⚡ Quick Book")
-    q_col1, q_col2, q_col3 = st.columns(3)
+    q_col1, q_col2, q_col3, q_col4 = st.columns([2, 2, 1, 2])
     with q_col1: q_court = st.selectbox("Select Court", options=courts, key="q_court_select")
     with q_col2:
         q_free_hours = get_available_hours(q_court, selected_date)
@@ -577,30 +577,49 @@ with tab1:
             q_time_options = [f"{h:02d}:00" for h in q_free_hours]
             q_time = st.selectbox("Select Time", options=q_time_options, key="q_time_select")
     with q_col3:
+        q_slots = st.selectbox("Slots", options=[1, 2], key="q_slots_select")
+    with q_col4:
         st.write(""); st.write("") 
         if st.button("🚀 Book Now", key="q_book_btn", use_container_width=True):
             if q_time:
                 active_count = get_active_bookings_count(villa, sub_community)
                 daily_count = get_daily_bookings_count(villa, sub_community, selected_date)
                 
-                if active_count >= 6:
-                    st.error("Limit Reached (Max 6 active)")
+                start_h = int(q_time.split(":")[0])
+                slots_to_book = list(range(start_h, start_h + q_slots))
+                valid_hours = get_start_hours_for_date(selected_date)
+                
+                # Check availability and limits for all requested slots
+                unavailable = []
+                for h in slots_to_book:
+                    if h not in valid_hours or is_slot_booked(q_court, selected_date, h) or is_slot_in_past(selected_date, h):
+                        unavailable.append(f"{h:02d}:00")
+                
+                if unavailable:
+                    st.error(f"Slot(s) {', '.join(unavailable)} are unavailable.")
+                elif active_count + q_slots > 6:
+                    st.error(f"Limit Reached (Max 6 active). You can book {max(0, 6-active_count)} more.")
                     add_log("Access Denied", f"{sub_community} Villa {villa} reached active booking limit (6)")
-                elif daily_count >= 2:
-                    st.error("Daily Limit Reached (Max 2 per day)")
+                elif daily_count + q_slots > 2:
+                    st.error(f"Daily Limit Reached (Max 2 per day). You can book {max(0, 2-daily_count)} more today.")
                     add_log("Access Denied", f"{sub_community} Villa {villa} reached daily limit (2) for {selected_date}")
                 else:
-                    start_h = int(q_time.split(":")[0])
-                    if is_slot_booked(q_court, selected_date, start_h):
-                        st.error("Slot taken!")
-                    else:
-                        if book_slot(villa, sub_community, q_court, selected_date, start_h):
-                            st.balloons()
-                            st.success(f"Booked {q_court} at {q_time}")
-                            time.sleep(2)
-                            st.rerun()
+                    success = True
+                    booked_slots = []
+                    for h in slots_to_book:
+                        if book_slot(villa, sub_community, q_court, selected_date, h):
+                            booked_slots.append(h)
                         else:
-                            st.error("❌ Slot was just taken! Please try another.")
+                            success = False
+                            break
+                    
+                    if success:
+                        st.balloons()
+                        st.success(f"Booked {q_slots} slot(s) for {q_court} starting at {q_time}")
+                        time.sleep(2)
+                        st.rerun()
+                    else:
+                        st.error("❌ One or more slots were taken! Please refresh.")
 
     st.divider()
     st.subheader("📊 Community Usage Insights")
@@ -663,11 +682,15 @@ with tab2:
     else:
         time_options = [f"{h:02d}:00 - {h+1:02d}:00" for h in free_hours]
         time_choice = st.selectbox("Time Slot:", time_options)
+    
+    slots_choice = st.selectbox("Number of Slots:", options=[1, 2], key="tab2_slots_choice")
+
     active_count = get_active_bookings_count(villa, sub_community)
     daily_count = get_daily_bookings_count(villa, sub_community, date_choice)
     col_status1, col_status2 = st.columns(2)
     with col_status1: st.info(f"Total active bookings: **{active_count} / 6**")
     with col_status2: st.info(f"Bookings for {date_choice}: **{daily_count} / 2**")
+    
     if st.button("Book This Slot", type="primary"):
         # RE-CALCULATE latest counts to prevent stale limit issues
         active_count_latest = get_active_bookings_count(villa, sub_community)
@@ -675,25 +698,42 @@ with tab2:
         
         if not time_choice:
             st.error("Please select an available time slot.")
-        elif active_count_latest >= 6: 
-            st.error("🚫 Overall limit reached. You cannot have more than 6 active bookings total.")
-            add_log("Access Denied", f"{sub_community} Villa {villa} reached active booking limit (6)")
-        elif daily_count_latest >= 2:
-            st.error(f"🚫 Daily limit reached. You cannot have more than 2 bookings on {date_choice}.")
-            add_log("Access Denied", f"{sub_community} Villa {villa} reached daily limit (2) for {date_choice}")
         else:
             start_h = int(time_choice.split(":")[0])
-            # Final check to prevent double booking if two users are on the same page
-            if is_slot_booked(court_choice, date_choice, start_h):
-                st.error("❌ This slot was just taken! Please refresh and try another.")
+            slots_to_book = list(range(start_h, start_h + slots_choice))
+            valid_hours = get_start_hours_for_date(date_choice)
+
+            # Check availability and limits
+            unavailable = []
+            for h in slots_to_book:
+                if h not in valid_hours or is_slot_booked(court_choice, date_choice, h) or is_slot_in_past(date_choice, h):
+                    unavailable.append(f"{h:02d}:00")
+
+            if unavailable:
+                st.error(f"Slot(s) {', '.join(unavailable)} are unavailable.")
+            elif active_count_latest + slots_choice > 6: 
+                st.error(f"🚫 Overall limit reached. You can book {max(0, 6-active_count_latest)} more slots.")
+                add_log("Access Denied", f"{sub_community} Villa {villa} reached active booking limit (6)")
+            elif daily_count_latest + slots_choice > 2:
+                st.error(f"🚫 Daily limit reached. You can book {max(0, 2-daily_count_latest)} more on {date_choice}.")
+                add_log("Access Denied", f"{sub_community} Villa {villa} reached daily limit (2) for {date_choice}")
             else:
-                if book_slot(villa, sub_community, court_choice, date_choice, start_h):
+                success = True
+                booked_slots = []
+                for h in slots_to_book:
+                    if book_slot(villa, sub_community, court_choice, date_choice, h):
+                        booked_slots.append(h)
+                    else:
+                        success = False
+                        break
+                
+                if success:
                     st.balloons()
-                    st.success(f"✅ SUCCESS! {court_choice} booked for {date_choice} at {start_h:02d}:00")
+                    st.success(f"✅ SUCCESS! {court_choice} booked for {date_choice} starting at {start_h:02d}:00 ({slots_choice} slot(s))")
                     time.sleep(2.5) 
                     st.rerun()
                 else:
-                    st.error("❌ Slot was just taken! Please refresh and try another.")
+                    st.error("❌ One or more slots were taken! Please refresh.")
 
 with tab3:
     st.subheader("📋 My Bookings")
