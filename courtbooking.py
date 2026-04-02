@@ -579,10 +579,19 @@ with tab1:
     with q_col3:
         st.write(""); st.write("") 
         q_label = "Book for 2 hours"
+        q_disabled = False
         if q_time:
             q_start_h = int(q_time.split(":")[0])
-            q_label = f"Book for 2 hours ({q_start_h:02d}:00 to {q_start_h+2:02d}:00)"
-        q_2_hours = st.checkbox(q_label, key="q_2_hours_check")
+            q_next_h = q_start_h + 1
+            q_valid_hours = get_start_hours_for_date(selected_date)
+            
+            if q_next_h not in q_valid_hours or is_slot_booked(q_court, selected_date, q_next_h) or is_slot_in_past(selected_date, q_next_h):
+                q_disabled = True
+                q_label = "2nd slot unavailable"
+            else:
+                q_label = f"Book for 2 hours ({q_start_h:02d}:00 to {q_start_h+2:02d}:00)"
+        
+        q_2_hours = st.checkbox(q_label, key="q_2_hours_check", disabled=q_disabled)
         q_slots = 2 if q_2_hours else 1
     with q_col4:
         st.write(""); st.write("") 
@@ -690,10 +699,19 @@ with tab2:
         time_choice = st.selectbox("Time Slot:", time_options)
     
     tab2_label = "Book for 2 hours"
+    tab2_disabled = False
     if time_choice:
         t2_start_h = int(time_choice.split(":")[0])
-        tab2_label = f"Book for 2 hours ({t2_start_h:02d}:00 to {t2_start_h+2:02d}:00)"
-    slots_2_hours = st.checkbox(tab2_label, key="tab2_slots_2_hours")
+        t2_next_h = t2_start_h + 1
+        t2_valid_hours = get_start_hours_for_date(date_choice)
+        
+        if t2_next_h not in t2_valid_hours or is_slot_booked(court_choice, date_choice, t2_next_h) or is_slot_in_past(date_choice, t2_next_h):
+            tab2_disabled = True
+            tab2_label = "2nd slot unavailable"
+        else:
+            tab2_label = f"Book for 2 hours ({t2_start_h:02d}:00 to {t2_start_h+2:02d}:00)"
+            
+    slots_2_hours = st.checkbox(tab2_label, key="tab2_slots_2_hours", disabled=tab2_disabled)
     slots_choice = 2 if slots_2_hours else 1
 
     active_count = get_active_bookings_count(villa, sub_community)
