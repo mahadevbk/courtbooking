@@ -45,6 +45,17 @@ def get_start_hours_for_date(date_str):
 
 # --- HELPER FUNCTIONS ---
 
+def get_remote_ip():
+    """Retrieves the remote IP from websocket headers."""
+    try:
+        from streamlit.web.server.websocket_headers import _get_websocket_headers
+        headers = _get_websocket_headers()
+        if headers:
+            return headers.get("X-Forwarded-For", "unknown").split(",")[0]
+    except:
+        pass
+    return "unknown"
+
 def get_utc_plus_4():
     return datetime.now(timezone.utc).replace(tzinfo=None) + timedelta(hours=4)
 
@@ -74,10 +85,14 @@ def run_query(query_method):
 
 def add_log(event_type, details):
     timestamp = get_utc_plus_4().isoformat()
-    # If fingerprint is available in session state, append it to details for locking
+    # Capture fingerprint and IP for device locking
     fp = st.session_state.get('client_fp')
-    if fp and fp != 0 and fp != 'unknown':
-        details = f"⟦FP:{fp}⟧ {details}"
+    ip = get_remote_ip()
+    
+    fp_tag = f"⟦FP:{fp}⟧" if fp and fp != 0 and fp != 'unknown' else "⟦FP:unknown⟧"
+    ip_tag = f"⟦IP:{ip}⟧"
+    
+    details = f"{fp_tag}{ip_tag} {details}"
     try:
         supabase.table("logs").insert({
             "timestamp": timestamp,
@@ -98,48 +113,60 @@ def get_global_reset_ts():
     return "1970-01-01T00:00:00"
 
 def check_device_lock(current_villa, current_sub):
-    """Checks if current fingerprint is already associated with a different villa,
-    OR if the selected villa is already associated with a different fingerprint.
+    """Checks device lock using a Weighted Scoring system:
+    1. UUID Match = 100% same browser.
+    2. UUID Different, but Media + HW + IP Match = Cross-Browser Match (Same device).
+    3. HW + IP Match, but Media Different = Different Device (e.g., neighbor with same model).
     """
     fp = st.session_state.get('client_fp')
-    if not fp or fp == 0 or fp == 'unknown': return None
+    if not fp or fp == 0 or fp == 'unknown': return False, None
     
+    # Parse current FP: UUID:MEDIA-HW
+    try:
+        if ":" in str(fp):
+            curr_uuid, hashes = str(fp).split(":", 1)
+            curr_media, curr_hw = hashes.split("-", 1) if "-" in hashes else (hashes, "legacy")
+        else:
+            curr_uuid, curr_media, curr_hw = str(fp), "legacy", "legacy"
+    except:
+        return False, None
+    
+    curr_ip = get_remote_ip()
     now = get_utc_plus_4()
     global_reset = get_global_reset_ts()
-    # Fingerprint lock is persistent (90 days)
     fp_cutoff = max((now - timedelta(days=90)).isoformat(), global_reset)
 
     mira1_group = ["229", "231", "233"]
     is_mira1_group = (current_sub == "Mira 1" and current_villa in mira1_group)
 
-    # Search for logs matching the fingerprint OR the villa/group
+    # Search for logs matching the fingerprint OR the hashes OR the villa/group
+    # Including hashes allows detection of the same device on a different browser (different UUID)
     if is_mira1_group:
         v_patterns = ",".join([f"details.ilike.%Mira 1%Villa%{v}%" for v in mira1_group])
-        query_filter = f"details.ilike.%⟦FP:{fp}⟧%,{v_patterns}"
+        query_filter = f"details.ilike.%⟦FP:{curr_uuid}%,details.ilike.%{hashes}%,{v_patterns}"
     else:
-        query_filter = f"details.ilike.%⟦FP:{fp}⟧%,details.ilike.%{current_sub}%Villa%{current_villa}%"
+        query_filter = f"details.ilike.%⟦FP:{curr_uuid}%,details.ilike.%{hashes}%,details.ilike.%{current_sub}%Villa%{current_villa}%"
 
     response = run_query(
         supabase.table("logs")
         .select("timestamp, event_type, details")
         .or_(query_filter)
         .order("timestamp", desc=True)
-        .limit(100)
+        .limit(150)
     )
     
-    if not response or not response.data: return None
+    if not response or not response.data: return False, None
 
-    # Step 1: Find latest reset timestamps for this FP and this Villa
     latest_villa_reset = "1970-01-01T00:00:00"
     latest_fp_reset = "1970-01-01T00:00:00"
     
+    # First pass: find resets
     for log in response.data:
         ev = log['event_type']
         det = log['details']
         ts = log['timestamp']
-        
-        if ev == "Lock Reset" and f"⟦FP:{fp}⟧" in det:
-            latest_fp_reset = max(latest_fp_reset, ts)
+        if ev == "Lock Reset" and curr_uuid in det:
+             latest_fp_reset = max(latest_fp_reset, ts)
         elif ev == "Villa Reset":
             if f"for {current_sub}" in det:
                 if is_mira1_group:
@@ -148,7 +175,7 @@ def check_device_lock(current_villa, current_sub):
                 elif f"Villa {current_villa}" in det:
                     latest_villa_reset = max(latest_villa_reset, ts)
 
-    # Step 2: Check for active locks
+    # Second pass: check locks
     for log in response.data:
         ts = log['timestamp']
         event = log['event_type']
@@ -156,50 +183,65 @@ def check_device_lock(current_villa, current_sub):
         
         if ts < fp_cutoff: continue
         if event == "Global Reset": break
+        if event in ["Lock Reset", "Villa Reset", "Access Denied", "System Maintenance"]: continue
         
-        # Extract log fingerprint
-        log_fp = None
+        # Extract log metadata
+        log_fp, log_ip = None, None
         if "⟦FP:" in details and "⟧" in details:
             log_fp = details.split("⟦FP:", 1)[1].split("⟧", 1)[0]
+        if "⟦IP:" in details and "⟧" in details:
+            log_ip = details.split("⟦IP:", 1)[1].split("⟧", 1)[0]
+        
+        if not log_fp: continue
 
+        # Parse log FP: UUID:MEDIA-HW
         try:
-            # Extract villa info from details
-            msg = details.split("⟧", 1)[-1].strip()
-            log_sub, log_villa = None, None
-            
-            if " Villa " in msg:
-                if " - Villa " in msg:
-                    parts = msg.split(" - Villa ")
-                    log_sub = parts[0].split("for ")[-1].strip()
-                    log_villa = parts[1].split(" ")[0].strip()
-                else:
-                    parts = msg.split(" Villa ")
-                    log_sub = parts[0].split("for ")[-1].strip()
-                    log_villa = parts[1].split(" ")[0].strip()
-            
-            if not (log_sub in sub_community_list and log_villa):
-                continue
+            if ":" in log_fp:
+                l_uuid, l_hashes = log_fp.split(":", 1)
+                l_media, l_hw = l_hashes.split("-", 1) if "-" in l_hashes else (l_hashes, "legacy")
+            else:
+                l_uuid, l_media, l_hw = log_fp, "legacy", "legacy"
+        except: continue
 
-            # Check if this log relates to our FP
-            if log_fp == fp:
-                if ts < latest_fp_reset: continue
-                if event in ["Lock Reset", "Global Reset"]: continue
-                
-                # Is it a DIFFERENT villa?
-                is_same_villa = (log_sub == current_sub and (log_villa == current_villa or (is_mira1_group and log_villa in mira1_group)))
-                if not is_same_villa:
-                    return f"{log_sub} - {log_villa}"
+        # Weighted Match Detection
+        is_same_browser = (l_uuid == curr_uuid)
+        # Cross-Browser: UUID different, but Media + HW + IP match exactly
+        is_cross_browser = (not is_same_browser and l_media == curr_media and l_hw == curr_hw and log_ip == curr_ip and l_media != "legacy")
+        
+        is_same_device = is_same_browser or is_cross_browser
+
+        # Extract villa info from log details
+        try:
+            # Details format: ⟦FP:...⟧⟦IP:...⟧ event_msg
+            msg = details.split("⟧", 2)[-1].strip()
+            log_sub, log_villa = None, None
+            if " Villa " in msg:
+                parts = msg.split(" Villa ")
+                log_sub = parts[0].split("for ")[-1].strip()
+                log_villa = parts[1].split(" ")[0].strip()
             
-            # Check if this log relates to our Villa
+            if not (log_sub in sub_community_list and log_villa): continue
+
             is_our_villa = (log_sub == current_sub and (log_villa == current_villa or (is_mira1_group and log_villa in mira1_group)))
+
+            if is_same_device:
+                if ts < latest_fp_reset: continue
+                # If same device but different villa -> Block
+                if not is_our_villa:
+                    owner = f"{log_sub} - Villa {log_villa}"
+                    if is_cross_browser:
+                        return True, f"This device is already locked to **{owner}**. Using multiple browsers on one device is not permitted for fair play."
+                    return True, f"This device is already associated with **{owner}**. Switching villas is not permitted."
+            
             if is_our_villa:
                 if ts < latest_villa_reset: continue
-                if event in ["Villa Reset", "Global Reset"]: continue
-                
-                if log_fp and log_fp != fp:
-                    return "This villa is already registered to another device."
+                # If our villa but different device -> Block (One Villa One Device rule)
+                if not is_same_device:
+                    # Note: If HW+IP match but Media differs, we treat as "Different Device" 
+                    # which falls into this block.
+                    return True, "This villa is already registered to another device."
         except: continue
-    return None
+    return False, None
 
 def get_bookings_for_day_with_details(date_str):
     response = run_query(supabase.table("bookings").select("court, start_hour, sub_community, villa").eq("date", date_str))
@@ -514,9 +556,40 @@ if not st.session_state.authenticated:
     # Note: st_javascript returns 0 or None while loading
     stored_lock = st_javascript("localStorage.getItem('court_villa_lock') || 'no_lock';")
     last_reset_seen = st_javascript("localStorage.getItem('court_last_reset_seen') || '1970-01-01T00:00:00';")
-    # Improved Fingerprint (Persistent Unique ID + Hardware)
-    # Fixes collisions for iPhone 14/Safari users who share identical hardware specs
-    client_fp = st_javascript("(function(){var d=localStorage.getItem('court_device_uuid');if(!d){d='D-'+Math.random().toString(36).substring(2,11)+'-'+Date.now();localStorage.setItem('court_device_uuid',d);}var h=btoa([Intl.DateTimeFormat().resolvedOptions().timeZone,screen.width+'x'+screen.height,navigator.hardwareConcurrency||'',navigator.deviceMemory||'',navigator.maxTouchPoints||'',navigator.platform,navigator.language,navigator.userAgent].join('|'));return d+':'+h;})()")
+    # Improved Hybrid Fingerprinting (UUID + Media + Hardware)
+    # Detects same device across different browsers while allowing distinct identical models.
+    client_fp = st_javascript("""(function(){
+        var uuid = localStorage.getItem('court_device_uuid');
+        if(!uuid){
+            uuid = (crypto.randomUUID ? crypto.randomUUID() : 'D-' + Math.random().toString(36).substring(2, 11) + '-' + Date.now());
+            localStorage.setItem('court_device_uuid', uuid);
+        }
+        function hash(s) {
+            var h = 0;
+            for (var i = 0; i < s.length; i++) {
+                h = ((h << 5) - h) + s.charCodeAt(i);
+                h |= 0;
+            }
+            return Math.abs(h).toString(16);
+        }
+        var canvas = document.createElement('canvas');
+        var ctx = canvas.getContext('2d');
+        canvas.width = 200; canvas.height = 40;
+        ctx.textBaseline = "top"; ctx.font = "14px 'Arial'";
+        ctx.fillStyle = "#f60"; ctx.fillRect(125,1,62,20);
+        ctx.fillStyle = "#069"; ctx.fillText("Mira-Booking-Lock", 2, 15);
+        ctx.fillStyle = "rgba(102, 204, 0, 0.7)"; ctx.fillText("Mira-Booking-Lock", 4, 17);
+        var canvasData = canvas.toDataURL();
+        var audio = "";
+        try {
+            var aCtx = new (window.AudioContext || window.webkitAudioContext)();
+            audio = aCtx.sampleRate + '_' + aCtx.destination.maxChannelCount;
+        } catch(e){ audio = "no-audio"; }
+        var hw = [screen.width, screen.height, window.devicePixelRatio, navigator.hardwareConcurrency || 0].join('|');
+        var mediaHash = hash(canvasData + audio);
+        var hwHash = hash(hw);
+        return uuid + ':' + mediaHash + '-' + hwHash;
+    })()""")
     
     # Wait for signals to stabilize (prevent loop while st_javascript is 0)
     if stored_lock == 0 or last_reset_seen == 0 or client_fp == 0:
@@ -576,11 +649,11 @@ if not st.session_state.authenticated:
                 st.warning("⚠️ Verifying device security. Please wait a moment and try again.")
             else:
                 # Check for existing lock in logs
-                owner = check_device_lock(villa_input, sub_community_input)
-                if owner:
-                    st.error(f"🚫 Access Denied: This device is already associated with **{owner}**. Switching villas is not permitted.")
+                blocked, lock_msg = check_device_lock(villa_input, sub_community_input)
+                if blocked:
+                    st.error(f"🚫 Access Denied: {lock_msg}")
                     st.info(f"🆔 **Your Device ID:** `{fp}`\n\nIf you think this is an error, copy this Device ID and send it to dev for a device reset.")
-                    add_log("Access Denied", f"Login blocked for Villa ({sub_community_input} - {villa_input}): Already locked to {owner}")
+                    add_log("Access Denied", f"Login blocked for Villa ({sub_community_input} - {villa_input}): {lock_msg}")
                 else:
                     current_choice = f"{sub_community_input}-{villa_input}"
                     st_javascript(f"localStorage.setItem('court_villa_lock', '{current_choice}'); localStorage.setItem('court_last_reset_seen', '{global_reset_ts}');")
