@@ -512,7 +512,7 @@ with st.expander("How the Fair Play System Works"):
     To provide a fair chance for all residents and prevent system abuse, the following **Fair Play** rules are strictly enforced:
 
     - **One Device - One Villa**: 
-      Your device (phone or computer) is uniquely linked to your villa upon first login. You cannot use the same device to book for other villas.
+      Your device is uniquely linked to your villa upon first login. To ensure fair access, **switching between different browsers (like Chrome and Safari) on the same phone to book for different villas is not permitted.** The system recognizes your physical device even if you change browsers.
     - **One Villa - One Device**: 
       Once a villa is claimed by a device, no other device can register for that same villa. This prevents "stacking" bookings from multiple phones for a single household.
     - **Booking Quotas**:
