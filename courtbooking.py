@@ -113,10 +113,9 @@ def get_global_reset_ts():
     return "1970-01-01T00:00:00"
 
 def check_device_lock(current_villa, current_sub):
-    """Checks device lock using a Weighted Scoring system + IP Velocity Check:
-    1. UUID Match = 100% same browser.
-    2. UUID Different, but Media + HW + IP Match = Cross-Browser Match.
-    3. IP Velocity Check: Same IP + "Device Registered" event < 15 mins ago = Likely same device/user.
+    """Checks device lock using a 'Lock-First' priority system:
+    1. Villa Ownership: Is this Villa (or group) already claimed by a DIFFERENT device?
+    2. Device Abuse: Is this device already claiming a DIFFERENT villa?
     """
     fp = st.session_state.get('client_fp')
     if not fp or fp == 0 or fp == 'unknown': return False, None
@@ -175,7 +174,7 @@ def check_device_lock(current_villa, current_sub):
                 elif f"Villa {current_villa}" in det:
                     latest_villa_reset = max(latest_villa_reset, ts)
 
-    # Second pass: check locks
+    # Second pass: check locks (Villa Ownership FIRST)
     for log in response.data:
         ts_str = log['timestamp']
         event = log['event_type']
@@ -185,14 +184,13 @@ def check_device_lock(current_villa, current_sub):
         if event == "Global Reset": break
         if event in ["Lock Reset", "Villa Reset", "Access Denied", "System Maintenance"]: continue
         
-        # Parse log timestamp for velocity check
+        # Parse log metadata (IP, FP, Time)
         try:
             log_time = datetime.fromisoformat(ts_str.replace('Z', '+00:00')).replace(tzinfo=None)
             time_diff_seconds = (now - log_time).total_seconds()
         except:
             time_diff_seconds = 99999
 
-        # Extract log metadata
         log_fp, log_ip = None, None
         if "⟦FP:" in details and "⟧" in details:
             log_fp = details.split("⟦FP:", 1)[1].split("⟧", 1)[0]
@@ -201,7 +199,7 @@ def check_device_lock(current_villa, current_sub):
         
         if not log_fp: continue
 
-        # Parse log FP: UUID:MEDIA-HW
+        # Parse log fingerprint components
         try:
             if ":" in log_fp:
                 l_uuid, l_hashes = log_fp.split(":", 1)
@@ -210,17 +208,14 @@ def check_device_lock(current_villa, current_sub):
                 l_uuid, l_media, l_hw = log_fp, "legacy", "legacy"
         except: continue
 
-        # Weighted Match Detection
+        # Identity Matching
         is_same_browser = (l_uuid == curr_uuid)
-        # Cross-Browser: UUID different, but Media + HW + IP match exactly
         is_cross_browser = (not is_same_browser and l_media == curr_media and l_hw == curr_hw and log_ip == curr_ip and l_media != "legacy")
-        
-        # IP Velocity Check: Same IP + Recent Device Registration (Loophole protection for Android/Firefox)
         is_ip_velocity_cheat = (not is_same_browser and log_ip == curr_ip and event == "Device Registered" and time_diff_seconds < 900)
         
         is_same_device = is_same_browser or is_cross_browser or is_ip_velocity_cheat
 
-        # Extract villa info from log details
+        # Villa Matching
         try:
             msg = details.split("⟧", 2)[-1].strip()
             log_sub, log_villa = None, None
@@ -231,23 +226,28 @@ def check_device_lock(current_villa, current_sub):
             
             if not (log_sub in sub_community_list and log_villa): continue
 
+            # Check if this log relates to OUR villa or our Mira 1 Group
             is_our_villa = (log_sub == current_sub and (log_villa == current_villa or (is_mira1_group and log_villa in mira1_group)))
 
-            if is_same_device:
-                if ts_str < latest_fp_reset: continue
-                # If same device but different villa -> Block
-                if not is_our_villa:
-                    owner = f"{log_sub} - Villa {log_villa}"
-                    if is_cross_browser or is_ip_velocity_cheat:
-                        return True, f"This device/network is recently locked to **{owner}**. Using multiple browsers is not permitted."
-                    return True, f"This device is already associated with **{owner}**. Switching villas is not permitted."
-            
+            # --- GATE 1: VILLA PROTECTION (Lock-First) ---
             if is_our_villa:
-                if ts_str < latest_villa_reset: continue
-                # If our villa but different device -> Block
-                if not is_same_device:
-                    return True, "This villa is already registered to another device."
+                if ts_str >= latest_villa_reset:
+                    # If this villa is active and registered to someone ELSE -> Block immediately
+                    if not is_same_device:
+                        if event in ["Device Registered", "Booking Created"]:
+                            return True, "This villa is already registered to another device."
+
+            # --- GATE 2: DEVICE PROTECTION (Multi-Villa) ---
+            if is_same_device:
+                if ts_str >= latest_fp_reset:
+                    # If this device is active and registered to a DIFFERENT villa -> Block
+                    if not is_our_villa:
+                        owner = f"{log_sub} - Villa {log_villa}"
+                        if is_cross_browser or is_ip_velocity_cheat:
+                            return True, f"This device/network is recently locked to **{owner}**. Using multiple browsers is not permitted."
+                        return True, f"This device is already associated with **{owner}**. Switching villas is not permitted."
         except: continue
+        
     return False, None
 
 def get_bookings_for_day_with_details(date_str):
