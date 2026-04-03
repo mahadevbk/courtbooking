@@ -113,10 +113,10 @@ def get_global_reset_ts():
     return "1970-01-01T00:00:00"
 
 def check_device_lock(current_villa, current_sub):
-    """Checks device lock using a Weighted Scoring system:
+    """Checks device lock using a Weighted Scoring system + IP Velocity Check:
     1. UUID Match = 100% same browser.
-    2. UUID Different, but Media + HW + IP Match = Cross-Browser Match (Same device).
-    3. HW + IP Match, but Media Different = Different Device (e.g., neighbor with same model).
+    2. UUID Different, but Media + HW + IP Match = Cross-Browser Match.
+    3. IP Velocity Check: Same IP + "Device Registered" event < 15 mins ago = Likely same device/user.
     """
     fp = st.session_state.get('client_fp')
     if not fp or fp == 0 or fp == 'unknown': return False, None
@@ -128,6 +128,7 @@ def check_device_lock(current_villa, current_sub):
             curr_media, curr_hw = hashes.split("-", 1) if "-" in hashes else (hashes, "legacy")
         else:
             curr_uuid, curr_media, curr_hw = str(fp), "legacy", "legacy"
+            hashes = "legacy"
     except:
         return False, None
     
@@ -140,7 +141,6 @@ def check_device_lock(current_villa, current_sub):
     is_mira1_group = (current_sub == "Mira 1" and current_villa in mira1_group)
 
     # Search for logs matching the fingerprint OR the hashes OR the villa/group
-    # Including hashes allows detection of the same device on a different browser (different UUID)
     if is_mira1_group:
         v_patterns = ",".join([f"details.ilike.%Mira 1%Villa%{v}%" for v in mira1_group])
         query_filter = f"details.ilike.%⟦FP:{curr_uuid}%,details.ilike.%{hashes}%,{v_patterns}"
@@ -177,14 +177,21 @@ def check_device_lock(current_villa, current_sub):
 
     # Second pass: check locks
     for log in response.data:
-        ts = log['timestamp']
+        ts_str = log['timestamp']
         event = log['event_type']
         details = log['details']
         
-        if ts < fp_cutoff: continue
+        if ts_str < fp_cutoff: continue
         if event == "Global Reset": break
         if event in ["Lock Reset", "Villa Reset", "Access Denied", "System Maintenance"]: continue
         
+        # Parse log timestamp for velocity check
+        try:
+            log_time = datetime.fromisoformat(ts_str.replace('Z', '+00:00')).replace(tzinfo=None)
+            time_diff_seconds = (now - log_time).total_seconds()
+        except:
+            time_diff_seconds = 99999
+
         # Extract log metadata
         log_fp, log_ip = None, None
         if "⟦FP:" in details and "⟧" in details:
@@ -208,11 +215,13 @@ def check_device_lock(current_villa, current_sub):
         # Cross-Browser: UUID different, but Media + HW + IP match exactly
         is_cross_browser = (not is_same_browser and l_media == curr_media and l_hw == curr_hw and log_ip == curr_ip and l_media != "legacy")
         
-        is_same_device = is_same_browser or is_cross_browser
+        # IP Velocity Check: Same IP + Recent Device Registration (Loophole protection for Android/Firefox)
+        is_ip_velocity_cheat = (not is_same_browser and log_ip == curr_ip and event == "Device Registered" and time_diff_seconds < 900)
+        
+        is_same_device = is_same_browser or is_cross_browser or is_ip_velocity_cheat
 
         # Extract villa info from log details
         try:
-            # Details format: ⟦FP:...⟧⟦IP:...⟧ event_msg
             msg = details.split("⟧", 2)[-1].strip()
             log_sub, log_villa = None, None
             if " Villa " in msg:
@@ -225,20 +234,18 @@ def check_device_lock(current_villa, current_sub):
             is_our_villa = (log_sub == current_sub and (log_villa == current_villa or (is_mira1_group and log_villa in mira1_group)))
 
             if is_same_device:
-                if ts < latest_fp_reset: continue
+                if ts_str < latest_fp_reset: continue
                 # If same device but different villa -> Block
                 if not is_our_villa:
                     owner = f"{log_sub} - Villa {log_villa}"
-                    if is_cross_browser:
-                        return True, f"This device is already locked to **{owner}**. Using multiple browsers on one device is not permitted for fair play."
+                    if is_cross_browser or is_ip_velocity_cheat:
+                        return True, f"This device/network is recently locked to **{owner}**. Using multiple browsers is not permitted."
                     return True, f"This device is already associated with **{owner}**. Switching villas is not permitted."
             
             if is_our_villa:
-                if ts < latest_villa_reset: continue
-                # If our villa but different device -> Block (One Villa One Device rule)
+                if ts_str < latest_villa_reset: continue
+                # If our villa but different device -> Block
                 if not is_same_device:
-                    # Note: If HW+IP match but Media differs, we treat as "Different Device" 
-                    # which falls into this block.
                     return True, "This villa is already registered to another device."
         except: continue
     return False, None
