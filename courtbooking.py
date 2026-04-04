@@ -97,6 +97,7 @@ def add_log(event_type, details):
         supabase.table("logs").insert({
             "timestamp": timestamp,
             "event_type": event_type,
+            "Fingerprint": fp if fp and fp != 0 and fp != 'unknown' else "unknown",
             "details": details
         }).execute()
     except:
@@ -147,57 +148,49 @@ def check_device_lock(current_villa, current_sub):
     else:
         query_filter = f"details.ilike.%⟦FP:{curr_uuid}%,details.ilike.%{hashes}%,details.ilike.%{current_sub}%Villa%{current_villa}%"
 
+    # REQUIREMENT: Order by timestamp ASCENDING
     response = run_query(
         supabase.table("logs")
         .select("timestamp, event_type, details")
         .or_(query_filter)
-        .order("timestamp", desc=True) # Process NEWEST to OLDEST
-        .limit(150)
+        .order("timestamp", desc=False) # ASC order
+        .limit(200)
     )
     
     if not response or not response.data: return False, None
 
-    # Determine latest reset timestamps
-    latest_villa_reset = "1970-01-01T00:00:00"
-    latest_fp_reset = "1970-01-01T00:00:00"
-    
-    for log in response.data:
-        ev = log['event_type']
-        det = log['details']
-        ts = log['timestamp']
-        if ev == "Lock Reset" and curr_uuid in det:
-             latest_fp_reset = max(latest_fp_reset, ts)
-        elif ev == "Villa Reset":
-            if f"for {current_sub}" in det:
-                if is_mira1_group:
-                    if any(f"Villa {v}" in det for v in mira1_group):
-                        latest_villa_reset = max(latest_villa_reset, ts)
-                elif f"Villa {current_villa}" in det:
-                    latest_villa_reset = max(latest_villa_reset, ts)
-
     # State variables for the ownership check
-    villa_already_claimed_by = None
-    device_already_locked_to = None
+    locked_sub, locked_villa = None, None
+    villa_owner_uuid, villa_owner_display = None, None
     is_cross_match = False
 
-    # Process logs to enforce strict ownership (Chronological: OLDEST to NEWEST)
-    for log in reversed(response.data):
+    # Process logs chronologically (Oldest to Newest)
+    for log in response.data:
         ts_str = log['timestamp']
         event = log['event_type']
         details = log['details']
         
-        # 1. Ignore Stale/System Logs
+        # 1. Ignore Stale Logs
         if ts_str < fp_cutoff: continue
-        if event == "Global Reset": break
-        if event in ["Lock Reset", "Villa Reset", "Access Denied", "System Maintenance"]: continue
         
-        # 2. Parse Log Metadata
-        try:
-            log_time = datetime.fromisoformat(ts_str.replace('Z', '+00:00')).replace(tzinfo=None)
-            time_diff_seconds = (now - log_time).total_seconds()
-        except:
-            time_diff_seconds = 99999
+        # 2. Reset Handling
+        if event == "Global Reset":
+            locked_sub, locked_villa = None, None
+            villa_owner_uuid, villa_owner_display = None, None
+            continue
+            
+        if event == "Lock Reset" and curr_uuid in details:
+            locked_sub, locked_villa = None, None
+            continue
+            
+        if event == "Villa Reset":
+            if f"for {current_sub}" in details and (f"Villa {current_villa}" in details or (is_mira1_group and any(f"Villa {v}" in details for v in mira1_group))):
+                villa_owner_uuid, villa_owner_display = None, None
+                continue
 
+        if event in ["Access Denied", "System Maintenance"]: continue
+        
+        # 3. Parse Identity Metadata (Robust & Safe)
         log_fp, log_ip = None, None
         if "⟦FP:" in details and "⟧" in details:
             log_fp = details.split("⟦FP:", 1)[1].split("⟧", 1)[0]
@@ -206,7 +199,7 @@ def check_device_lock(current_villa, current_sub):
         
         if not log_fp: continue
 
-        # Fingerprint Components Extraction
+        # Fingerprint Components
         try:
             if ":" in log_fp:
                 l_uuid, l_hashes = log_fp.split(":", 1)
@@ -218,47 +211,60 @@ def check_device_lock(current_villa, current_sub):
         # Identity Calculation
         is_same_browser = (l_uuid == curr_uuid)
         is_cross_browser = (not is_same_browser and l_media == curr_media and l_hw == curr_hw and log_ip == curr_ip and l_media != "legacy")
-        is_ip_velocity_cheat = (not is_same_browser and log_ip == curr_ip and event == "Device Registered" and time_diff_seconds < 900)
         
-        is_same_device = is_same_browser or is_cross_browser or is_ip_velocity_cheat
+        is_same_device = is_same_browser or is_cross_browser
 
-        # 3. Robust Villa/Sub Parsing (No exceptions)
+        # 4. Robust Parsing (User's Logic for "Device Registered")
         msg = details.split("⟧")[-1].strip()
         log_sub, log_villa = None, None
-        if " Villa " in msg:
-            v_parts = msg.split(" Villa ")
-            log_villa = v_parts[1].split(" ")[0].strip()
-            log_sub = next((sc for sc in sub_community_list if sc in v_parts[0]), None)
+        
+        if event == "Device Registered":
+            if " - Villa " in msg:
+                parts = msg.split(" - Villa ")
+                log_villa = parts[1].split(" ")[0].strip()
+                if "for " in parts[0]:
+                    log_sub = parts[0].split("for ")[1].strip()
+        elif event == "Booking Created":
+            if " Villa " in msg:
+                v_parts = msg.split(" Villa ")
+                log_villa = v_parts[1].split(" ")[0].strip()
+                log_sub = v_parts[0].strip()
         
         if not log_sub or not log_villa: continue
+        if log_sub not in sub_community_list: continue
 
-        is_our_villa = (log_sub == current_sub and (log_villa == current_villa or (is_mira1_group and log_villa in mira1_group)))
-
-        # 4. Ownership and Lock Logic (First Action Wins after Reset)
-        if event in ["Device Registered", "Booking Created"]:
-            # Check for Villa Ownership (Who claimed this villa first?)
-            if is_our_villa and ts_str >= latest_villa_reset:
-                if not villa_already_claimed_by:
-                    if is_same_device:
-                        villa_already_claimed_by = "OWNED_BY_ME"
-                    else:
-                        villa_already_claimed_by = f"{log_sub} - Villa {log_villa}"
-            
-            # Check for Device Lock (Multi-Villa Protection: What villa did this device claim first?)
-            if is_same_device and ts_str >= latest_fp_reset:
-                if not is_our_villa:
-                    if not device_already_locked_to:
-                        device_already_locked_to = f"{log_sub} - Villa {log_villa}"
-                        is_cross_match = (is_cross_browser or is_ip_velocity_cheat)
+        # 5. Logic Flow
+        # DEVICE LOCK: First valid registration defines the lock for THIS device
+        if is_same_device:
+            if locked_villa is None:
+                locked_sub = log_sub
+                locked_villa = log_villa
+                is_cross_match = is_cross_browser
         
+        # VILLA OWNERSHIP: First device to register this villa owns it
+        is_our_villa = (log_sub == current_sub and (log_villa == current_villa or (is_mira1_group and log_villa in mira1_group)))
+        if is_our_villa:
+            if villa_owner_uuid is None:
+                villa_owner_uuid = l_uuid
+                villa_owner_display = f"{log_sub} - Villa {log_villa}"
+
     # Final Decision Gate
-    if villa_already_claimed_by and villa_already_claimed_by != "OWNED_BY_ME":
-        return True, f"This villa is already registered to another device ({villa_already_claimed_by})."
-    
-    if device_already_locked_to:
-        if is_cross_match:
-            return True, f"This device/network is recently locked to **{device_already_locked_to}**. Using multiple browsers is not permitted."
-        return True, f"This device is already associated with **{device_already_locked_to}**. Switching villas is not permitted."
+    # Rule 1: Device Lock (One device - One Villa)
+    if locked_sub and locked_villa:
+        # Mira 1 Group Exception
+        is_locked_m1 = (locked_sub == "Mira 1" and locked_villa in mira1_group)
+        is_curr_m1 = (current_sub == "Mira 1" and current_villa in mira1_group)
+        
+        if is_locked_m1 and is_curr_m1:
+            pass 
+        elif locked_sub != current_sub or locked_villa != current_villa:
+            if is_cross_match:
+                return True, f"This device/network is recently locked to **{locked_sub} - Villa {locked_villa}**. Using multiple browsers is not permitted."
+            return True, f"This device is already associated with **{locked_sub} - Villa {locked_villa}**. Switching villas is not permitted."
+
+    # Rule 2: Villa Ownership (One Villa - One Device)
+    if villa_owner_uuid and villa_owner_uuid != curr_uuid:
+        return True, f"This villa is already registered to another device ({villa_owner_display})."
 
     return False, None
 
