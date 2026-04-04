@@ -1170,59 +1170,59 @@ with tab4:
                 st.error(f"Error loading bookings: {str(e)}")
 
         st.divider()
-        st.markdown("### Villa Lock Management")
-        
-        col_v1, col_v2 = st.columns([3, 1])
-        with col_v1:
-            v_reset_sub = st.selectbox("Sub-Community to Reset", options=sub_community_list, key="v_reset_sub")
-            v_reset_num = st.text_input("Villa Number to Reset", key="v_reset_num")
-        with col_v2:
-            st.write(""); st.write("")
-            if st.button("🔓 Reset Villa"):
-                if v_reset_num:
-                    add_log("Villa Reset", f"Admin reset lock for {v_reset_sub} - Villa {v_reset_num}")
-                    st.success(f"Lock reset for {v_reset_sub} - {v_reset_num}")
-                    time.sleep(2)
-                    st.rerun()
-                else:
-                    st.error("Enter villa number")
-
-        st.divider()
-        st.markdown("### Device Lock Management")
-        
-        # Option 1: Global Reset
-        if st.button("⚠️ Global Reset (Unlocks ALL devices)", type="secondary"):
-            add_log("Global Reset", "Admin triggered a system-wide device unlock.")
-            st.success("Global reset logged! Users will be unlocked upon their next refresh.")
-            time.sleep(2)
-            st.rerun()
+        with st.expander("🛡️ Security & Lock Management", expanded=True):
+            st.markdown("### 🏘️ Villa Ownership Reset")
+            st.info("Clearing villa ownership allows a new device to claim this villa. Previous device associations for this villa will be ignored.")
             
-        st.divider()
-        # Option 2: Reset specific device
-        col_res1, col_res2 = st.columns([3, 1])
-        with col_res1:
-            target_fp = st.text_input("Target Fingerprint to Reset", placeholder="Paste fingerprint from log here...")
-        with col_res2:
-            st.write(""); st.write("")
-            if st.button("🔓 Reset FP"):
-                if target_fp:
-                    add_log("Lock Reset", f"Admin reset lock for ⟦FP:{target_fp}⟧")
-                    st.success(f"Lock reset for {target_fp[:10]}...")
-                    time.sleep(2)
+            col_v1, col_v2 = st.columns([2, 1])
+            with col_v1:
+                v_sub = st.selectbox("Sub-Community", options=sub_community_list, key="admin_v_sub")
+            with col_v2:
+                v_num = st.text_input("Villa Number", key="admin_v_num")
+                
+            if st.button("🔓 Reset Villa Ownership", use_container_width=True):
+                if v_num:
+                    add_log("Villa Reset", f"Admin cleared ownership for {v_sub} Villa {v_num}")
+                    st.success(f"✅ Ownership cleared for {v_sub} - Villa {v_num}")
+                    time.sleep(1.5)
                     st.rerun()
                 else:
-                    st.error("Enter a fingerprint")
+                    st.error("Please enter a villa number")
 
-        # Option 3: Reset THIS device
-        curr_fp = st.session_state.get('client_fp')
-        if curr_fp:
-            st.write(f"Your Device Fingerprint: `{curr_fp}`")
-            if st.button("🔓 Reset MY Device Lock"):
-                add_log("Lock Reset", f"Admin reset lock for ⟦FP:{curr_fp}⟧")
-                st_javascript("localStorage.removeItem('court_villa_lock');")
-                st.success("Your device has been unlocked.")
+            st.divider()
+            st.markdown("### 📱 Device Lock Reset")
+            st.info("Clearing a device lock allows that device to register for a different villa. Enter only the UUID part of the fingerprint.")
+            
+            target_uuid = st.text_input("Target Device UUID", placeholder="e.g. 550e8400-e29b-41d4-a716-446655440000")
+            
+            if st.button("🔓 Reset Device Lock", use_container_width=True):
+                if target_uuid:
+                    add_log("Lock Reset", f"Admin cleared locks for UUID: {target_uuid}")
+                    st.success(f"✅ Device lock cleared for UUID: {target_uuid[:8]}...")
+                    time.sleep(1.5)
+                    st.rerun()
+                else:
+                    st.error("Please enter a Target UUID")
+
+            st.divider()
+            st.markdown("### ⚠️ System-Wide Actions")
+            if st.button("🚨 Global Reset (Unlock ALL devices)", type="secondary", use_container_width=True):
+                add_log("Global Reset", "Admin triggered a system-wide device unlock.")
+                st.success("Global reset logged! All users will be unlocked upon their next refresh.")
                 time.sleep(2)
                 st.rerun()
+            
+            # Option to reset current device for convenience
+            curr_fp = st.session_state.get('client_fp')
+            if curr_fp and ":" in str(curr_fp):
+                this_uuid = str(curr_fp).split(":")[0]
+                st.write("")
+                if st.button(f"🔓 Reset MY Device (UUID: {this_uuid[:8]}...)", type="tertiary"):
+                    add_log("Lock Reset", f"Admin cleared locks for UUID: {this_uuid}")
+                    st_javascript("localStorage.removeItem('court_villa_lock');")
+                    st.success("Your device lock has been cleared.")
+                    time.sleep(1.5)
+                    st.rerun()
     elif admin_pass:
         st.error("Incorrect Password")
 
