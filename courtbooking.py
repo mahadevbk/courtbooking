@@ -394,6 +394,7 @@ def delete_booking(booking_id, villa, sub_community):
         add_log("Booking Deleted", log_detail)
     run_query(supabase.table("bookings").delete().eq("id", booking_id).eq("villa", villa).eq("sub_community", sub_community))
 
+@st.cache_data(ttl=60)
 def get_logs_last_14_days():
     cutoff = (get_utc_plus_4() - timedelta(days=14)).isoformat()
     response = run_query(
