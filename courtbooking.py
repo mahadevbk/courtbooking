@@ -213,7 +213,20 @@ def check_device_lock(current_villa, current_sub):
         
         # SECURITY UPDATE: Cross-browser detection now relies strictly on hardware hashes (l_media and l_hw)
         # We removed the log_ip == curr_ip requirement to prevent VPN/Network-switch bypass.
-        is_cross_browser = (not is_same_browser and l_media == curr_media and l_hw == curr_hw and l_media != "legacy")
+        is_hardware_match = (l_media == curr_media and l_hw == curr_hw and l_media != "legacy")
+        
+        is_cross_browser = False
+        if is_hardware_match and not is_same_browser:
+            # Interaction Entropy: Check if this hardware registration was very recent (Exploiter behavior)
+            try:
+                log_time = datetime.fromisoformat(ts_str.replace('Z', '+00:00')).replace(tzinfo=None)
+                if (now - log_time).total_seconds() < 86400: # 24 hour window
+                    is_cross_browser = True
+                else:
+                    # Likely a different person with the same phone model who registered days/weeks ago.
+                    continue 
+            except:
+                is_cross_browser = True # Fallback to strict for safety
         
         is_same_device = is_same_browser or is_cross_browser
 
@@ -614,7 +627,7 @@ if not st.session_state.authenticated:
             var aCtx = new (window.AudioContext || window.webkitAudioContext)();
             audio = aCtx.sampleRate + '_' + aCtx.destination.maxChannelCount;
         } catch(e){ audio = "no-audio"; }
-        var hw = [screen.width, screen.height, window.devicePixelRatio, navigator.hardwareConcurrency || 0].join('|');
+        var hw = [screen.width, screen.height, window.devicePixelRatio, navigator.hardwareConcurrency || 0, navigator.userAgent].join('|');
         var mediaHash = hash(canvasData + audio);
         var hwHash = hash(hw);
         return uuid + ':' + mediaHash + '-' + hwHash;
