@@ -397,7 +397,7 @@ def delete_booking(booking_id, villa, sub_community):
 def get_logs_last_14_days():
     cutoff = (get_utc_plus_4() - timedelta(days=14)).isoformat()
     response = run_query(
-        supabase.table("logs").select("timestamp, event_type, details")\
+        supabase.table("logs").select("timestamp, event_type, Fingerprint, details")\
         .gte("timestamp", cutoff)\
         .order("timestamp", desc=True)
     )
@@ -1046,7 +1046,8 @@ with tab4:
 
     logs = get_logs_last_14_days()
     if logs:
-        log_df = pd.DataFrame(logs, columns=["timestamp", "event_type", "details"])
+        # Include Fingerprint in the DataFrame
+        log_df = pd.DataFrame(logs, columns=["timestamp", "event_type", "Fingerprint", "details"])
         
         # Standard filters
         filters = (
@@ -1060,14 +1061,16 @@ with tab4:
             filters &= (log_df['event_type'] != "Limit Enforcement")
             
         display_df = log_df[filters].copy()        
+        
+        # Clean up the details column (remove the duplicate FP/IP tags for display)
+        # Using a more robust regex that covers both tags and the trailing space
+        display_df['details'] = display_df['details'].str.replace(r'⟦FP:.*?⟧⟦IP:.*?⟧ ', '', regex=True)
+
         if is_admin:
-            # In admin mode, let's extract Fingerprints into their own column for easy copying
-            display_df['Fingerprint'] = display_df['details'].str.extract(r'⟦FP:(.*?)⟧')
-            display_df['details'] = display_df['details'].str.replace(r'⟦FP:.*?⟧ ', '', regex=True)
+            # In admin mode, show the Fingerprint column directly
             cols = ['timestamp', 'event_type', 'Fingerprint', 'details']
         else:
-            # In user mode, hide the fingerprint codes for cleaner UI
-            display_df['details'] = display_df['details'].str.replace(r'⟦FP:.*?⟧ ', '', regex=True)
+            # In user mode, hide the Fingerprint column for a cleaner UI
             cols = ['timestamp', 'event_type', 'details']
 
         display_df['timestamp'] = pd.to_datetime(display_df['timestamp'], format='ISO8601').dt.strftime('%b %d, %H:%M')
