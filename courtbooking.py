@@ -144,14 +144,14 @@ def check_device_lock(current_villa, current_sub):
     # Search for logs matching the current device OR the requested villa (or group)
     if is_mira1_group:
         v_patterns = ",".join([f"details.ilike.%Mira 1%Villa%{v}%" for v in mira1_group])
-        query_filter = f"details.ilike.%⟦FP:{curr_uuid}%,details.ilike.%{hashes}%,{v_patterns}"
+        query_filter = f"Fingerprint.ilike.%{curr_uuid}%,Fingerprint.ilike.%{hashes}%,{v_patterns}"
     else:
-        query_filter = f"details.ilike.%⟦FP:{curr_uuid}%,details.ilike.%{hashes}%,details.ilike.%{current_sub}%Villa%{current_villa}%"
+        query_filter = f"Fingerprint.ilike.%{curr_uuid}%,Fingerprint.ilike.%{hashes}%,details.ilike.%{current_sub}%Villa%{current_villa}%"
 
     # REQUIREMENT: Order by timestamp ASCENDING
     response = run_query(
         supabase.table("logs")
-        .select("timestamp, event_type, details")
+        .select("timestamp, event_type, details, Fingerprint") # Select the Fingerprint column
         .or_(query_filter)
         .order("timestamp", desc=False) # ASC order
         .limit(200)
@@ -191,13 +191,13 @@ def check_device_lock(current_villa, current_sub):
         if event in ["Access Denied", "System Maintenance"]: continue
         
         # 3. Parse Identity Metadata (Robust & Safe)
-        log_fp, log_ip = None, None
-        if "⟦FP:" in details and "⟧" in details:
-            log_fp = details.split("⟦FP:", 1)[1].split("⟧", 1)[0]
-        if "⟦IP:" in details and "⟧" in details:
-            log_ip = details.split("⟦IP:", 1)[1].split("⟧", 1)[0]
+        # Use Fingerprint column as the source of truth if available
+        log_fp = log.get('Fingerprint')
+        if not log_fp or log_fp == 'unknown':
+            if "⟦FP:" in details and "⟧" in details:
+                log_fp = details.split("⟦FP:", 1)[1].split("⟧", 1)[0]
         
-        if not log_fp: continue
+        if not log_fp or log_fp == 'unknown': continue
 
         # Fingerprint Components
         try:
@@ -210,7 +210,10 @@ def check_device_lock(current_villa, current_sub):
 
         # Identity Calculation
         is_same_browser = (l_uuid == curr_uuid)
-        is_cross_browser = (not is_same_browser and l_media == curr_media and l_hw == curr_hw and log_ip == curr_ip and l_media != "legacy")
+        
+        # SECURITY UPDATE: Cross-browser detection now relies strictly on hardware hashes (l_media and l_hw)
+        # We removed the log_ip == curr_ip requirement to prevent VPN/Network-switch bypass.
+        is_cross_browser = (not is_same_browser and l_media == curr_media and l_hw == curr_hw and l_media != "legacy")
         
         is_same_device = is_same_browser or is_cross_browser
 
