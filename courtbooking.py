@@ -180,13 +180,13 @@ def check_device_lock(current_villa, current_sub):
     device_already_locked_to = None
     is_cross_match = False
 
-    # Process logs to enforce strict ownership
-    for log in response.data:
+    # Process logs to enforce strict ownership (Chronological: OLDEST to NEWEST)
+    for log in reversed(response.data):
         ts_str = log['timestamp']
         event = log['event_type']
         details = log['details']
         
-        # 1. Ignore Stale Logs (Resets)
+        # 1. Ignore Stale/System Logs
         if ts_str < fp_cutoff: continue
         if event == "Global Reset": break
         if event in ["Lock Reset", "Villa Reset", "Access Denied", "System Maintenance"]: continue
@@ -206,6 +206,7 @@ def check_device_lock(current_villa, current_sub):
         
         if not log_fp: continue
 
+        # Fingerprint Components Extraction
         try:
             if ":" in log_fp:
                 l_uuid, l_hashes = log_fp.split(":", 1)
@@ -221,41 +222,37 @@ def check_device_lock(current_villa, current_sub):
         
         is_same_device = is_same_browser or is_cross_browser or is_ip_velocity_cheat
 
-        # Villa Identification
-        try:
-            msg = details.split("⟧", 2)[-1].strip()
-            log_sub, log_villa = None, None
-            if " Villa " in msg:
-                parts = msg.split(" Villa ")
-                log_sub = parts[0].split("for ")[-1].strip()
-                log_villa = parts[1].split(" ")[0].strip()
-            
-            if not (log_sub in sub_community_list and log_villa): continue
+        # 3. Robust Villa/Sub Parsing (No exceptions)
+        msg = details.split("⟧")[-1].strip()
+        log_sub, log_villa = None, None
+        if " Villa " in msg:
+            v_parts = msg.split(" Villa ")
+            log_villa = v_parts[1].split(" ")[0].strip()
+            log_sub = next((sc for sc in sub_community_list if sc in v_parts[0]), None)
+        
+        if not log_sub or not log_villa: continue
 
-            is_our_villa = (log_sub == current_sub and (log_villa == current_villa or (is_mira1_group and log_villa in mira1_group)))
+        is_our_villa = (log_sub == current_sub and (log_villa == current_villa or (is_mira1_group and log_villa in mira1_group)))
 
-            # --- OWNERSHIP LOGIC (Strict Owner First) ---
-            if event in ["Device Registered", "Booking Created"] and is_our_villa:
-                if ts_str >= latest_villa_reset:
+        # 4. Ownership and Lock Logic (First Action Wins after Reset)
+        if event in ["Device Registered", "Booking Created"]:
+            # Check for Villa Ownership (Who claimed this villa first?)
+            if is_our_villa and ts_str >= latest_villa_reset:
+                if not villa_already_claimed_by:
                     if is_same_device:
-                        # Rightful owner found (most recent activity is from this device)
-                        villa_already_claimed_by = None
-                        return False, None # Immediate allow
+                        villa_already_claimed_by = "OWNED_BY_ME"
                     else:
-                        # Someone else claimed this villa
-                        if not villa_already_claimed_by:
-                            villa_already_claimed_by = f"{log_sub} - Villa {log_villa}"
-
-            # --- DEVICE PROTECTION (Multi-Villa) ---
-            if is_same_device and not is_our_villa:
-                if ts_str >= latest_fp_reset:
+                        villa_already_claimed_by = f"{log_sub} - Villa {log_villa}"
+            
+            # Check for Device Lock (Multi-Villa Protection: What villa did this device claim first?)
+            if is_same_device and ts_str >= latest_fp_reset:
+                if not is_our_villa:
                     if not device_already_locked_to:
                         device_already_locked_to = f"{log_sub} - Villa {log_villa}"
                         is_cross_match = (is_cross_browser or is_ip_velocity_cheat)
-        except: continue
         
     # Final Decision Gate
-    if villa_already_claimed_by:
+    if villa_already_claimed_by and villa_already_claimed_by != "OWNED_BY_ME":
         return True, f"This villa is already registered to another device ({villa_already_claimed_by})."
     
     if device_already_locked_to:
