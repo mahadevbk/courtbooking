@@ -173,6 +173,10 @@ def check_device_lock(current_villa, current_sub):
         event = log['event_type']
         details = log['details']
         
+        # NORMALIZATION: Treat " - Villa " as " Villa " for robust parsing
+        # This ensures historical logs with dashes match current logs without dashes.
+        details_norm = details.replace(" - Villa ", " Villa ")
+        
         if ts_str < fp_cutoff: continue
         
         # Reset Handling (Admin control - unchanged)
@@ -186,7 +190,8 @@ def check_device_lock(current_villa, current_sub):
             continue
             
         if event == "Villa Reset":
-            is_reset_target = (f"for {current_sub}" in details and (f"Villa {current_villa}" in details or (is_mira1_group and any(f"Villa {v}" in details for v in mira1_group))))
+            # Use normalized details for reset check
+            is_reset_target = (f"for {current_sub}" in details_norm and (f"Villa {current_villa}" in details_norm or (is_mira1_group and any(f"Villa {v}" in details_norm for v in mira1_group))))
             if is_reset_target:
                 villa_owner_uuid, villa_owner_display = None, None
                 if locked_sub == current_sub and (locked_villa == current_villa or (is_mira1_group and locked_villa in mira1_group)):
@@ -215,27 +220,19 @@ def check_device_lock(current_villa, current_sub):
         is_same_browser = (l_uuid == curr_uuid)
         is_hardware_match = (l_media == curr_media and l_hw == curr_hw and l_media != "legacy")
         
-        # SOFTENED CROSS-BROWSER DETECTION (this is the new part)
-        # Reduces false positives on identical phones from ~8-18% → ~2-4%
-        is_cross_browser = False
-        if is_hardware_match and not is_same_browser:
-            try:
-                log_time = datetime.fromisoformat(ts_str.replace('Z', '+00:00')).replace(tzinfo=None)
-                # Only treat as same device if the previous hardware activity is recent (45 days)
-                if (now - log_time).days <= 45:
-                    is_cross_browser = True
-            except:
-                pass
-
-        is_same_device = is_same_browser or is_cross_browser
+        # STRICT SECURITY: Any hardware match is treated as the same physical device permanently.
+        # No time window or session trust allowed.
+        is_same_device = is_same_browser or is_hardware_match
+        is_cross_browser = (is_hardware_match and not is_same_browser)
 
         # Parse Log Details (Villa/Sub)
-        msg = details.split("⟧")[-1].strip()
+        # Use normalized details for message parsing
+        msg = details_norm.split("⟧")[-1].strip()
         log_sub, log_villa = None, None
         
         if event == "Device Registered":
-            if " - Villa " in msg:
-                parts = msg.split(" - Villa ")
+            if " Villa " in msg:
+                parts = msg.split(" Villa ")
                 log_villa = parts[1].split(" ")[0].strip()
                 if "for " in parts[0]:
                     log_sub = parts[0].split("for ")[1].strip()
@@ -698,7 +695,7 @@ if not st.session_state.authenticated:
                     st.session_state.authenticated = True
                     # Clear query params to remove ?logout=1 if it exists
                     st.query_params.clear()
-                    add_log("Device Registered", f"New login for {sub_community_input} - Villa {villa_input}")
+                    add_log("Device Registered", f"New login for {sub_community_input} Villa {villa_input}")
                     st.rerun()
     
     st.write("")
