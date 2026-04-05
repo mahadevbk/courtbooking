@@ -154,7 +154,7 @@ def check_device_lock(current_villa, current_sub):
         .select("timestamp, event_type, details, Fingerprint") # Select the Fingerprint column
         .or_(query_filter)
         .order("timestamp", desc=False) # ASC order
-        .limit(200)
+        .limit(1000)
     )
     
     if not response or not response.data: return False, None
