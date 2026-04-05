@@ -179,23 +179,25 @@ def check_device_lock(current_villa, current_sub):
         
         if ts_str < fp_cutoff: continue
         
-        # Reset Handling (Admin control - unchanged)
+        # Updated Reset Logic
         if event == "Global Reset":
             locked_sub, locked_villa = None, None
             villa_owner_uuid, villa_owner_display = None, None
             continue
-            
-        if event == "Lock Reset" and (curr_uuid in details or hashes in details):
+
+        # FIX: Check for the Hardware Hash (hashes) not just the UUID
+        if event == "Lock Reset" and (curr_uuid in details or (hashes and hashes in details)):
             locked_sub, locked_villa = None, None
             continue
-            
+
         if event == "Villa Reset":
-            # Use normalized details for reset check
-            is_reset_target = (f"for {current_sub}" in details_norm and (f"Villa {current_villa}" in details_norm or (is_mira1_group and any(f"Villa {v}" in details_norm for v in mira1_group))))
-            if is_reset_target:
+            # If the villa being reset matches the villa this device was locked to...
+            # Use normalized details to ensure "Mira 4 - Villa 316" matches "Mira 4 Villa 316"
+            is_match = f"for {current_sub}" in details_norm and (f"Villa {current_villa}" in details_norm or (is_mira1_group and any(f"Villa {v}" in details_norm for v in mira1_group)))
+            if is_match:
+                # ...then wipe the lock for this device too
+                locked_sub, locked_villa = None, None
                 villa_owner_uuid, villa_owner_display = None, None
-                if locked_sub == current_sub and (locked_villa == current_villa or (is_mira1_group and locked_villa in mira1_group)):
-                    locked_sub, locked_villa = None, None
                 continue
 
         if event in ["Access Denied", "System Maintenance"]: continue
