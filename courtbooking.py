@@ -537,20 +537,18 @@ st.caption("An Un-Official & Community Driven Booking Solution.")
 
 with st.expander("How the Fair Play System Works"):
     st.markdown("""
-    ### **Ensuring Fairness for Everyone**
-    To provide a fair chance for all residents and prevent system abuse, the following **Fair Play** rules are strictly enforced:
+    ### 📢 Fair Play: The "Digital Key" System 🔑
+    To ensure fair court access for all residents, the app uses a smart security system that links your villa to your specific device.
 
-    - **One Device - One Villa**: 
-      Your device is uniquely linked to your villa upon first login. To ensure fair access, **switching between different browsers (like Chrome and Safari) on the same phone to book for different villas is not permitted.** The system recognizes your physical device even if you change browsers.
-    - **One Villa - One Device**: 
-      Once a villa is claimed by a device, no other device can register for that same villa. This prevents "stacking" bookings from multiple phones for a single household.
-    - **Booking Quotas**:
-        - **Daily Limit**: Maximum of **2 bookings per day** per villa.
-        - **Active Limit**: Maximum of **6 active bookings** at any one time across the 14-day calendar.
-    - **Need a Reset?**:
-      If you get a new phone or move villas, the system will block you due to the existing lock. Please contact the Admin with your **Device ID** (found at the bottom of the *Activity Log* tab) for a manual reset.
+    **How it Works:**
+    *   **1 Villa = 1 Device:** Your phone acts as a unique "Digital Key" for your villa. This prevents users from "flooding" the system with multiple devices.
+    *   **Smart Recognition:** If you clear your browser cache or update your phone, the app recognizes your physical hardware and "re-keys" your access automatically so you aren't locked out.
+    *   **Cross-Browser Protection:** The system identifies your device even if you switch browsers (e.g., Safari to Chrome) to ensure booking limits are respected.
+    *   **Anti-Cheat Detection:** We monitor a 45-day window. Using one device to jump between different villas or manage multiple accounts will trigger an automatic block.
 
-    > **Note**: If you see "Access Denied" when logging in, it means your villa number has already been claimed or your device is locked to another villa. This protection ensures your villa identity remains yours.
+    **Pro-Tips for Residents:**
+    *   ✅ **Stick to one browser** (e.g., only Safari or only Chrome) to avoid temporary security checks.
+    *   ❌ **Avoid "Incognito" or "Private" mode**, as the app will treat you like a new stranger every time you visit.
     """)
 
 try:
