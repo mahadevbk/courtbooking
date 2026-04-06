@@ -348,26 +348,70 @@ def get_daily_bookings_count(villa, sub_community, date_str):
         if response is None or response.count is None: return 99
         return response.count
 
-def is_slot_booked(court, date_str, start_hour):
-    response = run_query(
-        supabase.table("bookings").select("id")\
-        .eq("court", court)\
-        .eq("date", date_str)\
-        .eq("start_hour", start_hour)
-    )
-    if not response or not response.data: return False
-    return len(response.data) > 0
+# --- SECURITY HELPERS ---
 
-def is_slot_in_past(date_str, start_hour):
+def is_under_probation(villa, sub_community):
+    """
+    Implements a 12-hour Cooling Period for new device/villa combinations.
+    Blocks booking if the hardware hash has no successful bookings for this villa
+    in the last 45 days and the registration is less than 12 hours old.
+    """
+    fp = st.session_state.get('client_fp')
+    if not fp or ":" not in str(fp): return False, 0
+    
+    try:
+        _, hashes = str(fp).split(":", 1)
+        _, hw_hash = hashes.split("-", 1) if "-" in hashes else (hashes, "legacy")
+    except:
+        return False, 0
+
     now = get_utc_plus_4()
-    today_str = now.strftime('%Y-%m-%d')
-    if date_str < today_str: return True
-    if date_str > today_str: return False
-    if start_hour < now.hour: return True
-    if start_hour == now.hour and now.minute > 0: return True
-    return False
+    villa_pattern = f"%{sub_community}%Villa%{villa}%"
+    
+    # 1. Check for any successful booking in the last 45 days
+    cutoff_45d = (now - timedelta(days=45)).isoformat()
+    prev_booking = run_query(
+        supabase.table("logs")
+        .select("timestamp")
+        .eq("event_type", "Booking Created")
+        .ilike("Fingerprint", f"%{hw_hash}%")
+        .ilike("details", villa_pattern)
+        .gte("timestamp", cutoff_45d)
+        .limit(1)
+    )
+    
+    if prev_booking and prev_booking.data:
+        return False, 0 # History exists, no probation
+        
+    # 2. Find the earliest registration for this Hardware/Villa pair
+    reg_event = run_query(
+        supabase.table("logs")
+        .select("timestamp")
+        .eq("event_type", "Device Registered")
+        .ilike("Fingerprint", f"%{hw_hash}%")
+        .ilike("details", villa_pattern)
+        .order("timestamp", desc=False)
+        .limit(1)
+    )
+    
+    if reg_event and reg_event.data:
+        reg_ts = datetime.fromisoformat(reg_event.data[0]['timestamp'].replace('Z', '+00:00')).replace(tzinfo=None)
+        diff = now - reg_ts
+        if diff < timedelta(hours=12):
+            wait_hours = 12 - (diff.total_seconds() / 3600)
+            return True, wait_hours
+            
+    return False, 0
 
 def book_slot(villa, sub_community, court, date_str, start_hour):
+    """Refactored booking function with Probation check."""
+    # 1. Check Probation Layer
+    is_probation, wait_time = is_under_probation(villa, sub_community)
+    if is_probation:
+        st.error(f"⚠️ Security Delay: Your device is in a 12-hour cooling period for this villa. Please try again in {wait_time:.1f} hours.")
+        add_log("Access Denied", f"{sub_community} Villa {villa} blocked by probation cooling period ({wait_time:.1f}h remaining)")
+        return False
+
     try:
         run_query(supabase.table("bookings").insert({
             "villa": villa,
@@ -593,8 +637,8 @@ if not st.session_state.authenticated:
     # Note: st_javascript returns 0 or None while loading
     stored_lock = st_javascript("localStorage.getItem('court_villa_lock') || 'no_lock';")
     last_reset_seen = st_javascript("localStorage.getItem('court_last_reset_seen') || '1970-01-01T00:00:00';")
-    # Improved Hybrid Fingerprinting (UUID + Media + Hardware)
-    # Detects same device across different browsers while allowing distinct identical models.
+    # Improved Composite Fingerprinting (UUID + Canvas + Hardware)
+    # Renders hidden canvas to create a stable hardware signature.
     client_fp = st_javascript("""(function(){
         var uuid = localStorage.getItem('court_device_uuid');
         if(!uuid){
@@ -611,11 +655,11 @@ if not st.session_state.authenticated:
         }
         var canvas = document.createElement('canvas');
         var ctx = canvas.getContext('2d');
-        canvas.width = 200; canvas.height = 40;
-        ctx.textBaseline = "top"; ctx.font = "14px 'Arial'";
+        canvas.width = 240; canvas.height = 60;
+        ctx.textBaseline = "top"; ctx.font = "18px 'Arial'";
         ctx.fillStyle = "#f60"; ctx.fillRect(125,1,62,20);
-        ctx.fillStyle = "#069"; ctx.fillText("Mira-Booking-Lock", 2, 15);
-        ctx.fillStyle = "rgba(102, 204, 0, 0.7)"; ctx.fillText("Mira-Booking-Lock", 4, 17);
+        ctx.fillStyle = "#069"; ctx.fillText("MiraSecurity-Check-2026", 2, 15);
+        ctx.fillStyle = "rgba(102, 204, 0, 0.7)"; ctx.fillText("MiraSecurity-Check-2026", 4, 17);
         var canvasData = canvas.toDataURL();
         var audio = "";
         try {
@@ -628,10 +672,15 @@ if not st.session_state.authenticated:
         return uuid + ':' + mediaHash + '-' + hwHash;
     })()""")
     
-    # Wait for signals to stabilize (prevent loop while st_javascript is 0)
+    # Wait for signals to stabilize
     if stored_lock == 0 or last_reset_seen == 0 or client_fp == 0:
         st.markdown("### 🔒 Security Check...")
         st.info("Verifying device identity. Please wait...")
+        st.stop()
+
+    # 3. Specific Hardware Blacklist (Isolation)
+    if client_fp and "31a5d4a3" in str(client_fp):
+        st.error("Hardware ID Blacklisted")
         st.stop()
 
     # Fetch latest global reset timestamp from DB
