@@ -660,7 +660,7 @@ if not st.session_state.authenticated:
         st.session_state.last_reset_triggered = None
 
     # Fetch VillaID from localStorage for Soft Lock
-    stored_villa_id = st_javascript("localStorage.getItem('court_villa_lock') || 'no_lock';")
+    stored_villa_id = st_javascript("localStorage.getItem('court_villa_lock') || 'no_lock';", key="soft_lock_check")
     if stored_villa_id != 0:
         st.session_state.stored_villa_id = stored_villa_id
 
