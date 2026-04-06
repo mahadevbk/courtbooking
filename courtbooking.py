@@ -114,20 +114,16 @@ def get_global_reset_ts():
     return "1970-01-01T00:00:00"
 
 def check_device_lock(current_villa, current_sub):
-    """Checks device lock using a 'Strict Owner First' policy:
+    """Checks device lock using a 'Strict Owner First' policy with Self-Correction:
     1. Villa Ownership: Once claimed by a device, only that device can use it.
     2. Device Protection: One device cannot claim multiple villas.
-    
-    PERMANENT LOCK ENFORCEMENT (with softening for identical phones):
-    - Lock Reset / Villa Reset / Global Reset: fully preserved.
-    - Same UUID = always same device.
-    - Cross-browser hardware match: only counts if the previous activity is within last 45 days.
-      This dramatically reduces false positives on identical iPhone/Samsung models while still blocking cheaters.
+    3. Self-Correction: If a user clears their cache (new UUID), recognize them via Hardware Hash.
+    4. Reset Logic: Automatically unlock if a reset event for this UUID or HW Hash is found.
     """
     fp = st.session_state.get('client_fp')
     if not fp or fp == 0 or fp == 'unknown': return False, None
     
-    # Parse current device fingerprint components
+    # Requirement 1: Extract the 'Hardware Hash' (curr_hw) and UUID
     try:
         if ":" in str(fp):
             curr_uuid, hashes = str(fp).split(":", 1)
@@ -149,9 +145,9 @@ def check_device_lock(current_villa, current_sub):
     # Search for logs matching the current device OR the requested villa (or group)
     if is_mira1_group:
         v_patterns = ",".join([f"details.ilike.%Mira 1%Villa%{v}%" for v in mira1_group])
-        query_filter = f"Fingerprint.ilike.%{curr_uuid}%,Fingerprint.ilike.%{hashes}%,{v_patterns}"
+        query_filter = f"Fingerprint.ilike.%{curr_uuid}%,Fingerprint.ilike.%{hashes}%,Fingerprint.ilike.%{curr_hw}%,{v_patterns}"
     else:
-        query_filter = f"Fingerprint.ilike.%{curr_uuid}%,Fingerprint.ilike.%{hashes}%,details.ilike.%{current_sub}%Villa%{current_villa}%"
+        query_filter = f"Fingerprint.ilike.%{curr_uuid}%,Fingerprint.ilike.%{hashes}%,Fingerprint.ilike.%{curr_hw}%,details.ilike.%{current_sub}%Villa%{current_villa}%"
 
     response = run_query(
         supabase.table("logs")
@@ -173,29 +169,23 @@ def check_device_lock(current_villa, current_sub):
         event = log['event_type']
         details = log['details']
         
-        # NORMALIZATION: Treat " - Villa " as " Villa " for robust parsing
-        # This ensures historical logs with dashes match current logs without dashes.
+        # Requirement 4: Normalize villa names in logs during the scan
         details_norm = details.replace(" - Villa ", " Villa ")
         
         if ts_str < fp_cutoff: continue
         
-        # Updated Reset Logic
-        if event == "Global Reset":
-            locked_sub, locked_villa = None, None
-            villa_owner_uuid, villa_owner_display = None, None
-            continue
-
-        # FIX: Check for the Hardware Hash (hashes) not just the UUID
-        if event == "Lock Reset" and (curr_uuid in details or (hashes and hashes in details)):
-            locked_sub, locked_villa = None, None
-            continue
-
-        if event == "Villa Reset":
-            # If the villa being reset matches the villa this device was locked to...
-            # Use normalized details to ensure "Mira 4 - Villa 316" matches "Mira 4 Villa 316"
-            is_match = f"for {current_sub}" in details_norm and (f"Villa {current_villa}" in details_norm or (is_mira1_group and any(f"Villa {v}" in details_norm for v in mira1_group)))
-            if is_match:
-                # ...then wipe the lock for this device too
+        # Requirement 2 & 3: Self-Correction / Reset Logic
+        # If any reset matches the current UUID or Hardware Hash, unlock immediately.
+        if event in ["Global Reset", "Lock Reset", "Villa Reset"]:
+            # Check for device-specific reset (UUID or Hardware Hash)
+            is_device_reset = (curr_uuid in details) or (curr_hw and curr_hw != "legacy" and curr_hw in details)
+            
+            # Check for villa-specific reset
+            is_villa_reset = False
+            if event == "Villa Reset":
+                is_villa_reset = f"for {current_sub}" in details_norm and (f"Villa {current_villa}" in details_norm or (is_mira1_group and any(f"Villa {v}" in details_norm for v in mira1_group)))
+            
+            if event == "Global Reset" or is_device_reset or is_villa_reset:
                 locked_sub, locked_villa = None, None
                 villa_owner_uuid, villa_owner_display = None, None
                 continue
@@ -218,17 +208,15 @@ def check_device_lock(current_villa, current_sub):
                 l_uuid, l_media, l_hw = log_fp, "legacy", "legacy"
         except: continue
 
-        # Identity Calculation
+        # Requirement 5: Distinguish between Browser Match and Hardware Match
         is_same_browser = (l_uuid == curr_uuid)
         is_hardware_match = (l_media == curr_media and l_hw == curr_hw and l_media != "legacy")
         
         # STRICT SECURITY: Any hardware match is treated as the same physical device permanently.
-        # No time window or session trust allowed.
         is_same_device = is_same_browser or is_hardware_match
         is_cross_browser = (is_hardware_match and not is_same_browser)
 
         # Parse Log Details (Villa/Sub)
-        # Use normalized details for message parsing
         msg = details_norm.split("⟧")[-1].strip()
         log_sub, log_villa = None, None
         
@@ -260,8 +248,13 @@ def check_device_lock(current_villa, current_sub):
             if villa_owner_uuid is None:
                 villa_owner_uuid = l_uuid
                 villa_owner_display = f"{log_sub} - Villa {log_villa}"
+            
+            # SELF-CORRECTION: If we find a log for this villa that matches our HARDWARE,
+            # then we are the legitimate owner even if the UUID changed (cache cleared).
+            if is_hardware_match:
+                villa_owner_uuid = curr_uuid # Recognize current session as the owner
 
-    # Final Decision Gate (unchanged)
+    # Final Decision Gate
     if locked_sub and locked_villa:
         is_locked_m1 = (locked_sub == "Mira 1" and locked_villa in mira1_group)
         is_curr_m1 = (current_sub == "Mira 1" and current_villa in mira1_group)
