@@ -537,7 +537,7 @@ st.caption("An Un-Official & Community Driven Booking Solution.")
 
 with st.expander("How the Fair Play System Works"):
     st.markdown("""
-    ### 📢 Fair Play: The "Digital Key" System 🔑
+    ### Fair Play: The "Digital Key" System
     To ensure fair court access for all residents, the app uses a smart security system that links your villa to your specific device.
 
     **How it Works:**
@@ -547,8 +547,8 @@ with st.expander("How the Fair Play System Works"):
     *   **Anti-Cheat Detection:** We monitor a 45-day window. Using one device to jump between different villas or manage multiple accounts will trigger an automatic block.
 
     **Pro-Tips for Residents:**
-    *   ✅ **Stick to one browser** (e.g., only Safari or only Chrome) to avoid temporary security checks.
-    *   ❌ **Avoid "Incognito" or "Private" mode**, as the app will treat you like a new stranger every time you visit.
+    *   **Stick to one browser** (e.g., only Safari or only Chrome) to avoid temporary security checks.
+    *   **Avoid "Incognito" or "Private" mode**, as the app will treat you like a new stranger every time you visit.
     """)
 
 try:
