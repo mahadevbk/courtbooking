@@ -255,19 +255,29 @@ def check_device_lock(current_villa, current_sub):
                 villa_owner_uuid = curr_uuid # Recognize current session as the owner
 
     # Final Decision Gate
+    # Scenario 2 & 3: Device-side locks (This device is already tied to another villa)
     if locked_sub and locked_villa:
         is_locked_m1 = (locked_sub == "Mira 1" and locked_villa in mira1_group)
         is_curr_m1 = (current_sub == "Mira 1" and current_villa in mira1_group)
         
-        if is_locked_m1 and is_curr_m1:
-            pass 
-        elif locked_sub != current_sub or locked_villa != current_villa:
+        # If the locked villa is NOT the one currently requested
+        if not (is_locked_m1 and is_curr_m1) and (locked_sub != current_sub or locked_villa != current_villa):
             if is_cross_match:
-                return True, f"This device/network is strictly locked to **{locked_sub} - Villa {locked_villa}**. Switching villas or browsers is not permitted."
-            return True, f"This device is already associated with **{locked_sub} - Villa {locked_villa}**. Switching villas is not permitted."
+                # Scenario 3: GENERAL BLOCK
+                return True, "⚠️ Security Block: Multiple browser or account switching detected. Please stick to one browser and villa, or contact Admin for assistance."
+            
+            # Scenario 2: VILLA JUMPER (Same Hardware, New Villa)
+            # Normalize villa name for display
+            locked_display = f"{locked_sub} Villa {locked_villa}"
+            return True, f"⚠️ Access Denied: This device is already registered to {locked_display}. Switching villas is not permitted. Please contact the Admin if you have moved villas."
 
+    # Scenario 1: VILLA HIJACK (Different Hardware owns this villa)
     if villa_owner_uuid and villa_owner_uuid != curr_uuid:
-        return True, f"This villa is already registered to another device ({villa_owner_display})."
+        # Since self-correction logic sets villa_owner_uuid = curr_uuid if hardware matches,
+        # reaching here means it's a completely different physical device.
+        # Normalize villa name for display
+        villa_display = f"{current_sub} Villa {current_villa}"
+        return True, f"⚠️ Access Denied: Villa {villa_display} is already linked to another device. Please use the device that originally registered this villa, or contact the Admin to reset access."
 
     return False, None
 
@@ -678,7 +688,7 @@ if not st.session_state.authenticated:
                 # Check for existing lock in logs
                 blocked, lock_msg = check_device_lock(villa_input, sub_community_input)
                 if blocked:
-                    st.error(f"🚫 Access Denied: {lock_msg}")
+                    st.error(lock_msg)
                     st.info(f"🆔 **Your Device ID:** `{fp}`\n\nIf you think this is an error, copy this Device ID and send it to dev for a device reset.")
                     add_log("Access Denied", f"Login blocked for Villa ({sub_community_input} - {villa_input}): {lock_msg}")
                 else:
