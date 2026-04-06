@@ -348,6 +348,25 @@ def get_daily_bookings_count(villa, sub_community, date_str):
         if response is None or response.count is None: return 99
         return response.count
 
+def is_slot_booked(court, date_str, start_hour):
+    response = run_query(
+        supabase.table("bookings").select("id")\
+        .eq("court", court)\
+        .eq("date", date_str)\
+        .eq("start_hour", start_hour)
+    )
+    if not response or not response.data: return False
+    return len(response.data) > 0
+
+def is_slot_in_past(date_str, start_hour):
+    now = get_utc_plus_4()
+    today_str = now.strftime('%Y-%m-%d')
+    if date_str < today_str: return True
+    if date_str > today_str: return False
+    if start_hour < now.hour: return True
+    if start_hour == now.hour and now.minute > 0: return True
+    return False
+
 # --- SECURITY HELPERS ---
 
 def is_under_probation(villa, sub_community):
