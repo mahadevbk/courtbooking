@@ -9,8 +9,6 @@ import random
 from postgrest.exceptions import APIError 
 # NEW IMPORT: For browser-side storage execution
 from streamlit_javascript import st_javascript
-import urllib.parse # Import added for URL encoding
-import re # Import added for regex parsing
 
 # Set page configuration to wide mode by default
 st.set_page_config(
@@ -127,75 +125,6 @@ def get_hw_id(fp):
     except:
         return "legacy"
 
-def extract_ip_from_log_details(details):
-    """Extracts IP address from log details string."""
-    match = re.search(r'⟦IP:(.*?)⟧', details)
-    return match.group(1) if match else None
-
-def extract_villa_info_from_log_details(details):
-    """
-    Extracts sub_community and villa number from log details string.
-    Looks for patterns like "Subcommunity Villa X" in the details.
-    Returns (sub_community, villa_number) or (None, None).
-    """
-    if not sub_community_list:
-        return None, None
-    escaped_sub_communities = [re.escape(sc) for sc in sub_community_list]
-    villa_pattern = re.compile(r'(' + '|'.join(escaped_sub_communities) + r') Villa (\d+)')
-    match = villa_pattern.search(details)
-    if match:
-        sub_community = match.group(1)
-        villa_number = match.group(2)
-        return sub_community, villa_number
-    return None, None
-
-def get_distinct_villa_count(hw_hash, lookback_days=30, min_timestamp=None):
-    """
-    Queries logs for 'Device Registered' events for a hardware ID
-    and returns the number of unique villas touched in the last `lookback_days`.
-    If `min_timestamp` is provided (ISO format string), only considers events after that timestamp.
-    """
-    if not hw_hash or hw_hash == "legacy":
-        return 0
-
-    now = get_utc_plus_4()
-    
-    lookback_cutoff_dt = now - timedelta(days=lookback_days)
-    lookback_cutoff_iso = lookback_cutoff_dt.isoformat()
-
-    effective_min_ts_iso = lookback_cutoff_iso
-    if min_timestamp:
-        try:
-            min_ts_dt = datetime.fromisoformat(min_timestamp.replace('Z', '+00:00')).replace(tzinfo=None)
-            effective_min_ts_dt = max(lookback_cutoff_dt, min_ts_dt)
-            effective_min_ts_iso = effective_min_ts_dt.isoformat()
-        except ValueError:
-            pass # If min_timestamp is invalid, fallback to lookback_cutoff
-
-    try:
-        response = run_query(
-            supabase.table("logs")
-            .select("details", "timestamp")
-            .eq("event_type", "Device Registered")
-            .ilike("Fingerprint", f"%{hw_hash}%")
-            .gte("timestamp", effective_min_ts_iso)
-            .order("timestamp", desc=False)
-        )
-
-        if response and response.data:
-            distinct_villas = set()
-            for log_entry in response.data:
-                details = log_entry.get('details', '')
-                sub_community, villa = extract_villa_info_from_log_details(details)
-                if sub_community and villa:
-                    distinct_villas.add(f"{sub_community}-{villa}")
-            return len(distinct_villas)
-        
-    except Exception as e:
-        print(f"Error in get_distinct_villa_count for {hw_hash}: {e}")
-        return 0
-    return 0
-
 def check_access(current_villa, current_sub):
     """
     Checks device lock with Hardware-Match Re-Auth handshake:
@@ -210,10 +139,8 @@ def check_access(current_villa, current_sub):
     curr_hw = get_hw_id(fp)
     
     now = get_utc_plus_4()
-    global_reset_ts_str = get_global_reset_ts() # Fetch the latest global reset timestamp
-    global_reset_ts_dt = datetime.fromisoformat(global_reset_ts_str.replace('Z', '+00:00')).replace(tzinfo=None)
-    
-    fp_cutoff = max((now - timedelta(days=90)).isoformat(), global_reset_ts_str) # Consider global reset when filtering history
+    global_reset = get_global_reset_ts()
+    fp_cutoff = max((now - timedelta(days=90)).isoformat(), global_reset)
 
     # SPECIAL: Check for 'Soft Lock' via localStorage
     stored_villa = st.session_state.get('stored_villa_id')
@@ -251,29 +178,17 @@ def check_access(current_villa, current_sub):
         details = str(log.get('details') or '')
         details_norm = details.replace(" - Villa ", " Villa ")
         
-        # Ignore logs that are older than the relevant cutoff (either 90 days or global reset, whichever is more recent)
         if ts_str < fp_cutoff: continue
         
-        # --- Reset Logic ---
-        # If a Global Reset event is processed, clear session ownership and activity for THIS device.
-        if event == "Global Reset":
-            # Clear ownership and activity state for this session
-            villa_owner_uuid = None
-            villa_owner_hw = None
-            last_hw_activity = None
-            # Clear localStorage for villa lock
-            st_javascript("localStorage.removeItem('court_villa_lock'); localStorage.setItem('court_last_reset_seen', '{}');".format(ts_str))
-            continue # Move to the next log entry
-
-        # Ignore specific lock reset events if they don't match the current device
-        if event in ["Lock Reset", "Villa Reset"]:
+        # Reset Logic
+        if event in ["Global Reset", "Lock Reset", "Villa Reset"]:
             is_device_reset = (curr_uuid in details) or (curr_hw and curr_hw != "legacy" and curr_hw in details)
-            if is_device_reset:
+            if event == "Global Reset" or is_device_reset:
                 villa_owner_uuid = None
                 villa_owner_hw = None
                 last_hw_activity = None
                 continue
-        
+
         if event in ["Access Denied", "System Maintenance"]: continue
         
         # Identity Parsing
@@ -301,8 +216,6 @@ def check_access(current_villa, current_sub):
             if villa_owner_uuid is None:
                 villa_owner_uuid = l_uuid
                 villa_owner_hw = l_hw
-
-    # --- FINAL ACCESS CHECKS ---
 
     # 1. GRACE PERIOD / COLLISION CHECK
     if last_hw_activity and last_hw_villa and last_hw_villa != f"{current_sub} Villa {current_villa}":
@@ -393,9 +306,9 @@ def get_daily_bookings_count(villa, sub_community, date_str):
 
 def is_slot_booked(court, date_str, start_hour):
     response = run_query(
-        supabase.table("bookings").select("id")
-        .eq("court", court)
-        .eq("date", date_str)
+        supabase.table("bookings").select("id")\
+        .eq("court", court)\
+        .eq("date", date_str)\
         .eq("start_hour", start_hour)
     )
     if not response or not response.data: return False
@@ -412,74 +325,11 @@ def is_slot_in_past(date_str, start_hour):
 
 # --- SECURITY HELPERS ---
 
-def extract_villa_info_from_log_details(details):
-    """
-    Extracts sub_community and villa number from log details string.
-    Looks for patterns like "Subcommunity Villa X" in the details.
-    Returns (sub_community, villa_number) or (None, None).
-    """
-    if not sub_community_list:
-        return None, None
-    escaped_sub_communities = [re.escape(sc) for sc in sub_community_list]
-    villa_pattern = re.compile(r'(' + '|'.join(escaped_sub_communities) + r') Villa (\d+)')
-    match = villa_pattern.search(details)
-    if match:
-        sub_community = match.group(1)
-        villa_number = match.group(2)
-        return sub_community, villa_number
-    return None, None
-
-def get_distinct_villa_count(hw_hash, lookback_days=30, min_timestamp=None):
-    """
-    Queries logs for 'Device Registered' events for a hardware ID
-    and returns the number of unique villas touched in the last `lookback_days`.
-    If `min_timestamp` is provided (ISO format string), only considers events after that timestamp.
-    """
-    if not hw_hash or hw_hash == "legacy":
-        return 0
-
-    now = get_utc_plus_4()
-    
-    lookback_cutoff_dt = now - timedelta(days=lookback_days)
-    lookback_cutoff_iso = lookback_cutoff_dt.isoformat()
-
-    effective_min_ts_iso = lookback_cutoff_iso
-    if min_timestamp:
-        try:
-            min_ts_dt = datetime.fromisoformat(min_timestamp.replace('Z', '+00:00')).replace(tzinfo=None)
-            effective_min_ts_dt = max(lookback_cutoff_dt, min_ts_dt)
-            effective_min_ts_iso = effective_min_ts_dt.isoformat()
-        except ValueError:
-            pass # If min_timestamp is invalid, fallback to lookback_cutoff
-
-    try:
-        response = run_query(
-            supabase.table("logs")
-            .select("details", "timestamp")
-            .eq("event_type", "Device Registered")
-            .ilike("Fingerprint", f"%{hw_hash}%")
-            .gte("timestamp", effective_min_ts_iso)
-            .order("timestamp", desc=False)
-        )
-
-        if response and response.data:
-            distinct_villas = set()
-            for log_entry in response.data:
-                details = log_entry.get('details', '')
-                sub_community, villa = extract_villa_info_from_log_details(details)
-                if sub_community and villa:
-                    distinct_villas.add(f"{sub_community}-{villa}")
-            return len(distinct_villas)
-        
-    except Exception as e:
-        print(f"Error in get_distinct_villa_count for {hw_hash}: {e}")
-        return 0
-    return 0
-
 def is_under_probation(villa, sub_community):
     """
-    Implements dynamic cooling periods based on device/villa switches and identity.
-    Probation is bypassed if relevant history is older than the last Global Reset.
+    Implements a 12-hour Cooling Period for new device/villa combinations.
+    Blocks booking if the hardware hash has no successful bookings for this villa
+    in the last 45 days and the registration is less than 12 hours old.
     """
     fp = st.session_state.get('client_fp')
     if not fp: return False, 0
@@ -488,117 +338,41 @@ def is_under_probation(villa, sub_community):
     if hw_hash == "legacy": return False, 0
 
     now = get_utc_plus_4()
-    current_villa_identifier = f"{sub_community}-{villa}"
+    villa_pattern = f"%{sub_community}%Villa%{villa}%"
     
-    current_ip = get_remote_ip()
-
-    # --- Fetch Global Reset Timestamp ---
-    global_reset_ts_str = get_global_reset_ts()
-    global_reset_ts_dt = datetime.fromisoformat(global_reset_ts_str.replace('Z', '+00:00')).replace(tzinfo=None)
-
-    # --- Admin Bypass ---
-    admin_hw_id = "3f58ed0f-1e00004d" # User-provided Admin ID
-    if hw_hash == admin_hw_id:
-        return False, 0 # Always bypass probation for admin ID
-
-    # --- Exemption 1: Recent Booking History ---
-    # Check for bookings POST global reset.
+    # 1. Check for any successful booking in the last 45 days
     cutoff_45d = (now - timedelta(days=45)).isoformat()
     prev_booking = run_query(
         supabase.table("logs")
         .select("timestamp")
         .eq("event_type", "Booking Created")
         .ilike("Fingerprint", f"%{hw_hash}%")
-        .ilike("details", f"%{current_villa_identifier}%") # Match current villa
+        .ilike("details", villa_pattern)
         .gte("timestamp", cutoff_45d)
-        .gte("timestamp", global_reset_ts_str) # Only consider bookings after global reset
         .limit(1)
     )
+    
     if prev_booking and prev_booking.data:
-        return False, 0 # History exists post-reset, no probation
-
-    # --- Exemption 2: Identity Transfer Rule ---
-    # Check the most recent 'Device Registered' log for this specific villa and HW ID POST global reset.
-    last_reg_for_villa = run_query(
-        supabase.table("logs")
-        .select("timestamp", "details")
-        .eq("event_type", "Device Registered")
-        .ilike("Fingerprint", f"%{hw_hash}%")
-        .ilike("details", f"%{current_villa_identifier}%") # Match current villa
-        .gte("timestamp", global_reset_ts_str) # Only consider registrations after global reset
-        .order("timestamp", desc=True)
-        .limit(1)
-    )
-
-    if last_reg_for_villa and last_reg_for_villa.data:
-        last_reg_details = last_reg_for_villa.data[0]['details']
-        last_reg_ip = extract_ip_from_log_details(last_reg_details)
-        if last_reg_ip and last_reg_ip == current_ip:
-            # IP matches last registration IP for this villa post-reset, bypass probation.
-            return False, 0
-
-    # --- Family Member Rule & Tiered Probation Logic ---
-    # Calculate distinct villas using logs *after* the global reset.
-    
-    # Count distinct villas associated with this HW ID in the last 30 days (post-reset).
-    distinct_villas_last_30d = get_distinct_villa_count(hw_hash, lookback_days=30, min_timestamp=global_reset_ts_str)
-    
-    # Count distinct villas associated with this HW ID in the last 7 days (post-reset).
-    distinct_villas_last_7d = get_distinct_villa_count(hw_hash, lookback_days=7, min_timestamp=global_reset_ts_str)
-
-    # Family Member Rule: If HW ID has touched > 2 distinct villas in last 30 days (post-reset), treat as high-risk.
-    # This means probation *will* be considered if other conditions are met.
-    # If count <= 2, it's less risky, but still subject to tiered probation.
-
-    # Determine probation duration based on the number of distinct villas associated in the LAST 7 DAYS (post-reset).
-    # This count determines the switch tier.
-    
-    current_switch_tier = distinct_villas_last_7d # Number of distinct villas associated in last 7 days (post-reset)
-
-    probation_hours_duration = 0
-    
-    # Tiered Probation Logic:
-    # If count is 0, it means only 1 distinct villa was logged for this HW_ID in the last 7 days. The current registration makes it the 2nd association for the HW ID overall. Treat as 1st switch scenario.
-    # If count is 1, it means 2 distinct villas were logged in last 7 days. The current registration makes it the 3rd. Treat as 2nd switch scenario.
-    # If count is 2+, it means 3+ distinct villas were logged. Current registration makes it 4th+. Treat as 3rd+ switch scenario.
-    
-    if current_switch_tier == 0: # Corresponds to 1st distinct villa association for HW_ID in last 7 days (making it the 2nd overall).
-        probation_hours_duration = 0.5 # 30 minutes
-    elif current_switch_tier == 1: # Corresponds to 2 distinct villas in last 7 days (making it the 3rd overall).
-        probation_hours_duration = 10/60 # 10 minutes
-    else: # current_switch_tier >= 2 (3+ distinct villas).
-        probation_hours_duration = 24.0 # 24 hours
-    
-    # Find the earliest registration timestamp for this HW ID and THIS Villa *after* the global reset.
-    earliest_reg_for_this_villa_after_reset = run_query(
+        return False, 0 # History exists, no probation
+        
+    # 2. Find the earliest registration for this Hardware/Villa pair
+    reg_event = run_query(
         supabase.table("logs")
         .select("timestamp")
         .eq("event_type", "Device Registered")
         .ilike("Fingerprint", f"%{hw_hash}%")
-        .ilike("details", f"%{current_villa_identifier}%") # Match current villa
-        .gte("timestamp", global_reset_ts_str) # Only consider registrations AFTER global reset
-        .order("timestamp", desc=False) # Earliest first
+        .ilike("details", villa_pattern)
+        .order("timestamp", desc=False)
         .limit(1)
     )
-
-    if earliest_reg_for_this_villa_after_reset and earliest_reg_for_this_villa_after_reset.data:
-        reg_ts_str = earliest_reg_for_this_villa_after_reset.data[0]['timestamp']
-        reg_ts = datetime.fromisoformat(reg_ts_str.replace('Z', '+00:00')).replace(tzinfo=None)
+    
+    if reg_event and reg_event.data:
+        reg_ts = datetime.fromisoformat(reg_event.data[0]['timestamp'].replace('Z', '+00:00')).replace(tzinfo=None)
         diff = now - reg_ts
-
-        if diff < timedelta(hours=probation_hours_duration):
-            wait_hours = probation_hours_duration - (diff.total_seconds() / 3600)
-            wait_hours = max(0, wait_hours) # Ensure wait_hours is not negative
+        if diff < timedelta(hours=12):
+            wait_hours = 10/60 - (diff.total_seconds() / 3600)
             return True, wait_hours
-        else:
-            # Registration is older than the determined probation period.
-            return False, 0
-    else:
-        # No 'Device Registered' event found for this HW ID and THIS Villa *after* the global reset.
-        # This implies a fresh start for probation calculation regarding this villa.
-        return False, 0
-
-    # Default case: No probation needed
+            
     return False, 0
 
 def book_slot(villa, sub_community, court, date_str, start_hour):
@@ -606,20 +380,8 @@ def book_slot(villa, sub_community, court, date_str, start_hour):
     # 1. Check Probation Layer
     is_probation, wait_time = is_under_probation(villa, sub_community)
     if is_probation:
-        # Dynamically set message based on wait_time tier
-        if abs(wait_time - 0.5/60) < 0.01 : # Approximately 30 minutes
-             probation_msg = "a short 30-minute cooling period"
-        elif abs(wait_time - 10/60) < 0.01: # Approximately 10 minutes
-             probation_msg = "a brief 10-minute cooling period"
-        elif abs(wait_time - 12) < 0.01: # Exactly 12 hours
-             probation_msg = "a 12-hour cooling period"
-        elif abs(wait_time - 24) < 0.01: # Exactly 24 hours
-             probation_msg = "a 24-hour cooling period"
-        else: # Fallback for other values
-             probation_msg = f"a cooling period of {wait_time:.1f} hours"
-
-        st.error(f"⚠️ Security Delay: Your device is in {probation_msg} for this villa. Please try again later.")
-        add_log("Access Denied", f"{sub_community} Villa {villa} blocked by probation ({wait_time:.1f}h remaining)")
+        st.error(f"⚠️ Security Delay: Your device is in a 12-hour cooling period for this villa. Please try again in {wait_time:.1f} hours.")
+        add_log("Access Denied", f"{sub_community} Villa {villa} blocked by probation cooling period ({wait_time:.1f}h remaining)")
         return False
 
     try:
@@ -644,11 +406,11 @@ def get_user_bookings(villa, sub_community):
     today_str = get_today().strftime('%Y-%m-%d')
     now_hour = get_utc_plus_4().hour
     response = run_query(
-        supabase.table("bookings").select("id, court, date, start_hour")
-        .eq("villa", villa)
-        .eq("sub_community", sub_community)
-        .or_(f"date.gt.{today_str},and(date.eq.{today_str},start_hour.gte.{now_hour})")
-        .order("date")
+        supabase.table("bookings").select("id, court, date, start_hour")\
+        .eq("villa", villa)\
+        .eq("sub_community", sub_community)\
+        .or_(f"date.gt.{today_str},and(date.eq.{today_str},start_hour.gte.{now_hour})")\
+        .order("date")\
         .order("start_hour")
     )
     return response.data if response else []
@@ -665,8 +427,8 @@ def delete_booking(booking_id, villa, sub_community):
 def get_logs_last_14_days():
     cutoff = (get_utc_plus_4() - timedelta(days=14)).isoformat()
     response = run_query(
-        supabase.table("logs").select("timestamp, event_type, Fingerprint, details")
-        .gte("timestamp", cutoff)
+        supabase.table("logs").select("timestamp, event_type, Fingerprint, details")\
+        .gte("timestamp", cutoff)\
         .order("timestamp", desc=True)
     )
     return response.data if response else []
@@ -692,10 +454,10 @@ def get_all_villas_with_any_bookings():
 
 def get_bookings_for_villa(villa, sub_community):
     response = run_query(
-        supabase.table("bookings").select("id, court, date, start_hour")
-        .eq("villa", villa)
-        .eq("sub_community", sub_community)
-        .order("date", desc=True)
+        supabase.table("bookings").select("id, court, date, start_hour")\
+        .eq("villa", villa)\
+        .eq("sub_community", sub_community)\
+        .order("date", desc=True)\
         .order("start_hour", desc=True)
     )
     return response.data if response else []
@@ -713,11 +475,11 @@ def get_active_bookings_for_villa_display(villa_identifier):
         today_str = get_today().strftime('%Y-%m-%d')
         now_hour = get_utc_plus_4().hour
         response = run_query(
-            supabase.table("bookings").select("court, date, start_hour")
-            .eq("villa", villa_num)
-            .eq("sub_community", sub_comm)
-            .or_(f"date.gt.{today_str},and(date.eq.{today_str},start_hour.gte.{now_hour})")
-            .order("date")
+            supabase.table("bookings").select("court, date, start_hour")\
+            .eq("villa", villa_num)\
+            .eq("sub_community", sub_comm)\
+            .or_(f"date.gt.{today_str},and(date.eq.{today_str},start_hour.gte.{now_hour})")\
+            .order("date")\
             .order("start_hour")
         )
         return [f"{b['date']} | {b['start_hour']:02d}:00 | {b['court']}" for b in response.data]
@@ -954,9 +716,7 @@ if not st.session_state.authenticated:
                 if blocked:
                     full_err = f"Login blocked for Villa ({sub_community_input} - {villa_input}): {lock_msg}"
                     st.error(full_err)
-                    st.info(f"🆔 **Your Device ID:** `{fp}`
-
-If you think this is an error, copy this Device ID and send it to dev for a device reset.")
+                    st.info(f"🆔 **Your Device ID:** \`{fp}\`\n\nIf you think this is an error, copy this Device ID and send it to dev for a device reset.")
                     add_log("Access Denied", full_err)
                 else:
                     current_choice = f"{sub_community_input}-{villa_input}"
@@ -1394,8 +1154,7 @@ with tab4:
                 with l_col3:
                     if item['is_fixed']:
                         fixed_dt = datetime.fromisoformat(item['fixed_at'].replace('Z', '+00:00'))
-                        st.success(f"✅ Locked/Fixed
-({fixed_dt.strftime('%b %d')})")
+                        st.success(f"✅ Locked/Fixed\n({fixed_dt.strftime('%b %d')})")
                     else:
                         st.warning("⚠️ Open")
                         if st.button("Fixed", key=f"fix_{item['id']}", width='stretch'):
@@ -1405,36 +1164,6 @@ with tab4:
                                 "fixed_at": now_ts
                             }).eq("id", item['id']))
                             st.rerun()
-                    
-                    # --- NEW: Share to WhatsApp Button ---
-                    court_name = item.get('court_name', 'Unknown Court')
-                    description = item.get('description', 'No description provided')
-                    phone_number = "+971562069871"
-                    
-                    # Construct the raw message
-                    raw_message = f"Hello, {court_name} has this issue "{description}". Please get maintenance team to address this asap. Thank you."
-                    
-                    # URL-encode the message
-                    encoded_message = urllib.parse.quote(raw_message) 
-                    
-                    whatsapp_url = f"https://wa.me/{phone_number}?text={encoded_message}"
-
-                    st.markdown(f'''
-                        <a href="{whatsapp_url}" target="_blank" style="
-                            display: block; 
-                            text-align: center; 
-                            padding: 10px; 
-                            background-color: #28a745; /* WhatsApp green */
-                            color: white; 
-                            border-radius: 5px; 
-                            text-decoration: none; 
-                            font-family: 'Audiowide', cursive; /* Maintain theme */
-                            margin-top: 10px; /* Space above button */
-                        ">
-                            Share to WhatsApp
-                        </a>
-                    ''', unsafe_allow_html=True)
-                    # --- End of NEW section ---
     else:
         st.info("No maintenance issues reported yet.")
 
