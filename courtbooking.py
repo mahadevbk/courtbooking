@@ -165,6 +165,7 @@ def check_device_lock(current_villa, current_sub):
 
     # State variables
     villa_owner_uuid = None
+    villa_owner_hw = None
     last_hw_activity = None
     last_hw_villa = None
 
@@ -210,11 +211,12 @@ def check_device_lock(current_villa, current_sub):
                 last_hw_activity = datetime.fromisoformat(ts_str.replace('Z', '+00:00')).replace(tzinfo=None)
                 last_hw_villa = log_villa_info
 
-        # Track Villa Ownership (UUID only)
+        # Track Villa Ownership (UUID + HW)
         is_our_villa = (f"{current_sub} Villa {current_villa}" in details_norm or (is_mira1_group and any(f"Villa {v}" in details_norm for v in mira1_group)))
         if is_our_villa:
             if villa_owner_uuid is None:
                 villa_owner_uuid = l_uuid
+                villa_owner_hw = l_hw
 
     # 1. GRACE PERIOD / COLLISION CHECK
     # If same hardware but different UUID, allow if last activity was > 10 mins ago.
@@ -226,9 +228,14 @@ def check_device_lock(current_villa, current_sub):
             # Allow login but log the collision
             add_log("Potential Hardware Collision", f"Device {curr_hw} logged in as {current_sub} Villa {current_villa} (Last seen: {last_hw_villa} {diff:.1f}m ago)")
 
-    # 2. VILLA OWNERSHIP (Strict UUID check)
+    # 2. VILLA OWNERSHIP (Smart Re-Auth handshake)
     if villa_owner_uuid and villa_owner_uuid != curr_uuid:
-        return True, f"⚠️ Access Denied: Villa {current_sub} Villa {current_villa} is already registered to another browser. Please use the original browser or contact Admin."
+        # If hardware matches, it's the same person on a new session/browser
+        if villa_owner_hw == curr_hw and curr_hw != "legacy":
+            # Allow and it will be updated by the 'Device Registered' log in the caller
+            pass
+        else:
+            return True, f"⚠️ Access Denied: Villa {current_sub} Villa {current_villa} is already registered to another browser. Please use the original browser or contact Admin."
 
     return False, None
 
