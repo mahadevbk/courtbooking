@@ -902,9 +902,7 @@ if not st.session_state.authenticated:
                 if blocked:
                     full_err = f"Login blocked for Villa ({sub_community_input} - {villa_input}): {lock_msg}"
                     st.error(full_err)
-                    st.info(f"🆔 **Your Device ID:** `{fp}`
-
-If you think this is an error, copy this Device ID and send it to dev for a device reset.")
+                    st.info(f"🆔 **Your Device ID:** `{fp}`\n\nIf you think this is an error, copy this Device ID and send it to dev for a device reset.")
                     add_log("Access Denied", full_err)
                 else:
                     current_choice = f"{sub_community_input}-{villa_input}"
