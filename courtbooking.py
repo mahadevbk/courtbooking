@@ -370,7 +370,7 @@ def is_under_probation(villa, sub_community):
         reg_ts = datetime.fromisoformat(reg_event.data[0]['timestamp'].replace('Z', '+00:00')).replace(tzinfo=None)
         diff = now - reg_ts
         if diff < timedelta(hours=12):
-            wait_hours = 12 - (diff.total_seconds() / 3600)
+            wait_hours = 10/60 - (diff.total_seconds() / 3600)
             return True, wait_hours
             
     return False, 0
