@@ -1084,17 +1084,10 @@ with tab4:
         m_court = st.selectbox("Select Court", options=courts, key="maint_court")
         m_desc = st.text_area("Issue Description", placeholder="Please describe the issue in detail...")
         
-        m_photo_source = st.radio("Photo Source", ["Camera", "Upload File"], horizontal=True)
+        m_photo = st.file_uploader("Upload a photo of the issue", type=["png", "jpg", "jpeg"])
         m_image_b64 = None
-        
-        if m_photo_source == "Camera":
-            m_photo = st.camera_input("Take a photo of the issue")
-            if m_photo:
-                m_image_b64 = base64.b64encode(m_photo.getvalue()).decode()
-        else:
-            m_photo = st.file_uploader("Upload a photo of the issue", type=["png", "jpg", "jpeg"])
-            if m_photo:
-                m_image_b64 = base64.b64encode(m_photo.getvalue()).decode()
+        if m_photo:
+            m_image_b64 = base64.b64encode(m_photo.getvalue()).decode()
                 
         if st.button("Submit Report", type="primary", use_container_width=True):
             if not m_desc:
@@ -1149,6 +1142,7 @@ with tab4:
                 l_col1, l_col2, l_col3 = st.columns([1, 2, 1])
                 with l_col1:
                     if item.get("image_url"):
+                        # Use use_container_width=True to scale image proportionally
                         st.image(f"data:image/png;base64,{item['image_url']}", use_container_width=True)
                     else:
                         st.info("No Photo")
