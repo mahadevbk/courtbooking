@@ -7,6 +7,7 @@ import zipfile
 import io
 import random
 from postgrest.exceptions import APIError 
+from PIL import Image # For image resizing
 # NEW IMPORT: For browser-side storage execution
 from streamlit_javascript import st_javascript
 import urllib.parse # Import added for URL encoding
@@ -27,6 +28,11 @@ def init_supabase():
     return create_client(url, key)
 
 supabase: Client = init_supabase()
+
+@st.cache_data(ttl=3600)
+def get_maintenance_data():
+    """Fetches maintenance reports with a 1-hour cache."""
+    return run_query(supabase.table("court_maintenance").select("*").order("created_at", desc=True))
 
 # Constants
 sub_community_list = [
@@ -1288,7 +1294,23 @@ with tab4:
         m_photo = st.file_uploader("Upload a photo of the issue", type=["png", "jpg", "jpeg"])
         m_image_b64 = None
         if m_photo:
-            m_image_b64 = base64.b64encode(m_photo.getvalue()).decode()
+            try:
+                img = Image.open(m_photo)
+                # Ensure RGB mode for JPEG
+                if img.mode in ("RGBA", "P"):
+                    img = img.convert("RGB")
+                
+                # Resize proportionally if any dimension > 640px
+                max_res = 640
+                if img.width > max_res or img.height > max_res:
+                    img.thumbnail((max_res, max_res))
+                
+                # Compress and encode
+                buffer = io.BytesIO()
+                img.save(buffer, format="JPEG", quality=40)
+                m_image_b64 = base64.b64encode(buffer.getvalue()).decode()
+            except Exception as e:
+                st.error(f"Error processing image: {str(e)}")
                 
         if st.button("Submit Report", type="primary", width='stretch'):
             if not m_desc:
@@ -1305,6 +1327,7 @@ with tab4:
                         "is_fixed": False
                     }))
                     add_log("Maintenance Reported", f"Issue reported for {m_court} by {sub_community} Villa {villa}")
+                    st.cache_data.clear() # Reset cache so new report is visible
                     st.success("✅ Maintenance report submitted successfully!")
                     time.sleep(1)
                     st.rerun()
@@ -1336,7 +1359,7 @@ with tab4:
     
     # 3. Maintenance Log
     st.markdown("### 📋 Maintenance Log")
-    maint_data = run_query(supabase.table("court_maintenance").select("*").order("created_at", desc=True))
+    maint_data = get_maintenance_data()
     if maint_data and maint_data.data:
         for item in maint_data.data:
             with st.container(border=True):
@@ -1364,6 +1387,7 @@ with tab4:
                                 "is_fixed": True,
                                 "fixed_at": now_ts
                             }).eq("id", item['id']))
+                            st.cache_data.clear() # Reset cache on fix
                             st.rerun()
                     
                     # --- NEW: Share to WhatsApp Button ---
