@@ -334,7 +334,7 @@ def is_under_probation(villa, sub_community):
     fp = st.session_state.get('client_fp')
     if not fp: return False, 0
     
-    hw_hash = extract_hardware_id(fp)
+    hw_hash = get_hw_id(fp)
     if hw_hash == "legacy": return False, 0
 
     now = get_utc_plus_4()
