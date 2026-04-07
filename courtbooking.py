@@ -737,7 +737,7 @@ if not st.session_state.authenticated:
 sub_community, villa = st.session_state.sub_community, st.session_state.villa
 st.success(f"✅ Logged in as: **{sub_community} - Villa {villa}**")
 
-tab1, tab2, tab3, tab4 = st.tabs(["📅 Availability", "➕ Book", "📋 My Bookings", "📜 Activity Log"])
+tab1, tab2, tab3, tab4, tab5 = st.tabs(["📅 Availability", "➕ Book", "📋 My Bookings", "🛠️ Court Maint.", "📜 Activity Log"])
 
 with tab1:
     st.subheader("Court Availability")
@@ -1076,6 +1076,106 @@ with tab3:
             logout_action()
 
 with tab4:
+    import base64
+    st.subheader("🛠️ Court Maintenance")
+    
+    # 1. Reporting Form
+    with st.expander("📝 Report a New Issue", expanded=True):
+        m_court = st.selectbox("Select Court", options=courts, key="maint_court")
+        m_desc = st.text_area("Issue Description", placeholder="Please describe the issue in detail...")
+        
+        m_photo_source = st.radio("Photo Source", ["Camera", "Upload File"], horizontal=True)
+        m_image_b64 = None
+        
+        if m_photo_source == "Camera":
+            m_photo = st.camera_input("Take a photo of the issue")
+            if m_photo:
+                m_image_b64 = base64.b64encode(m_photo.getvalue()).decode()
+        else:
+            m_photo = st.file_uploader("Upload a photo of the issue", type=["png", "jpg", "jpeg"])
+            if m_photo:
+                m_image_b64 = base64.b64encode(m_photo.getvalue()).decode()
+                
+        if st.button("Submit Report", type="primary", use_container_width=True):
+            if not m_desc:
+                st.error("Please provide a description.")
+            else:
+                try:
+                    now_ts = get_utc_plus_4().isoformat()
+                    run_query(supabase.table("court_maintenance").insert({
+                        "created_at": now_ts,
+                        "court_name": m_court,
+                        "description": m_desc,
+                        "image_url": m_image_b64,
+                        "reported_by": f"{sub_community} Villa {villa}",
+                        "is_fixed": False
+                    }))
+                    add_log("Maintenance Reported", f"Issue reported for {m_court} by {sub_community} Villa {villa}")
+                    st.success("✅ Maintenance report submitted successfully!")
+                    time.sleep(1)
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"Failed to submit report: {str(e)}")
+
+    st.divider()
+    
+    # 2. Contact Resources
+    st.markdown("### 📞 Contact Resources")
+    c_col1, c_col2, c_col3 = st.columns(3)
+    with c_col1:
+        st.markdown(f'<div style="background: rgba(255,255,255,0.05); padding: 15px; border-radius: 10px; text-align: center; border: 1px solid rgba(255,255,255,0.1);">'
+                    f'<div style="font-size: 20px;">📧 Email</div>'
+                    f'<div style="font-size: 14px; margin-top: 5px;"><a href="mailto:support@dubaiholdingcm.ae" style="color: #4CAF50; text-decoration: none;">support@dubaiholdingcm.ae</a></div>'
+                    f'</div>', unsafe_allow_html=True)
+    with c_col2:
+        st.markdown(f'<div style="background: rgba(255,255,255,0.05); padding: 15px; border-radius: 10px; text-align: center; border: 1px solid rgba(255,255,255,0.1);">'
+                    f'<div style="font-size: 20px;">💬 WhatsApp</div>'
+                    f'<div style="font-size: 14px; margin-top: 5px;"><a href="https://wa.me/971562069871" target="_blank" style="color: #4CAF50; text-decoration: none;">+971 56 206 9871</a></div>'
+                    f'</div>', unsafe_allow_html=True)
+    with c_col3:
+        st.markdown(f'<div style="background: rgba(255,255,255,0.05); padding: 15px; border-radius: 10px; text-align: center; border: 1px solid rgba(255,255,255,0.1);">'
+                    f'<div style="font-size: 20px;">🌐 Web</div>'
+                    f'<div style="font-size: 14px; margin-top: 5px;"><a href="https://dubaiholdingcommunities.ae" target="_blank" style="color: #4CAF50; text-decoration: none;">dubaiholdingcommunities.ae</a></div>'
+                    f'</div>', unsafe_allow_html=True)
+
+    st.divider()
+    
+    # 3. Maintenance Log
+    st.markdown("### 📋 Maintenance Log")
+    maint_data = run_query(supabase.table("court_maintenance").select("*").order("created_at", desc=True))
+    if maint_data and maint_data.data:
+        for item in maint_data.data:
+            with st.container(border=True):
+                l_col1, l_col2, l_col3 = st.columns([1, 2, 1])
+                with l_col1:
+                    if item.get("image_url"):
+                        st.image(f"data:image/png;base64,{item['image_url']}", use_container_width=True)
+                    else:
+                        st.info("No Photo")
+                with l_col2:
+                    st.markdown(f"**{item['court_name']}**")
+                    created_dt = datetime.fromisoformat(item['created_at'].replace('Z', '+00:00'))
+                    st.caption(f"📅 {created_dt.strftime('%b %d, %Y %I:%M %p')}")
+                    st.write(item['description'])
+                with l_col3:
+                    if item['is_fixed']:
+                        fixed_dt = datetime.fromisoformat(item['fixed_at'].replace('Z', '+00:00'))
+                        st.success(f"✅ Locked/Fixed\n({fixed_dt.strftime('%b %d')})")
+                    else:
+                        st.warning("⚠️ Open")
+                        if st.button("Fixed", key=f"fix_{item['id']}", use_container_width=True):
+                            now_ts = get_utc_plus_4().isoformat()
+                            run_query(supabase.table("court_maintenance").update({
+                                "is_fixed": True,
+                                "fixed_at": now_ts
+                            }).eq("id", item['id']))
+                            st.rerun()
+    else:
+        st.info("No maintenance issues reported yet.")
+
+with tab5:
+    st.subheader("Community Activity Log")
+
     st.subheader("Community Activity Log (Last 14 Days)")
     st.caption("Timezone: UTC+4")
     
