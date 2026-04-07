@@ -1268,7 +1268,7 @@ with tab4:
     <div style="background-color:#0d5384; padding:25px; border-radius:15px; border-left: 8px solid #ccff00;">
         <h2 style="color:#ccff00; margin-top:0;">Power in Numbers</h2>
         <p style="font-size:1.1em; line-height:1.6;">
-            One voice is a whisper; a community is a <b>shout</b>. This hub centralizes every court issue 
+            This hub centralizes every court issue 
             to facilitate <b>mass maintenance requests</b>. By reporting collectively, we ensure 
             our concerns are impossible to ignore and prioritized for repair.
         </p>
