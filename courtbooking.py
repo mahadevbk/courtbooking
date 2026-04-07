@@ -130,7 +130,7 @@ def check_access(current_villa, current_sub):
     Checks device lock with Hardware-Match Re-Auth handshake:
     1. Soft Lock: Uses browser localStorage to detect villa switching on the same browser.
     2. Hardware Handshake: Allows access if Hardware IDs match, even if Session UUID differs.
-    3. Collision Check: Allows hardware collisions if activity is > 180 mins apart.
+    3. Collision Check: Allows hardware collisions if activity is > 10 mins apart.
     """
     fp = st.session_state.get('client_fp')
     if not fp or fp == 0 or fp == 'unknown': return False, None
@@ -220,7 +220,7 @@ def check_access(current_villa, current_sub):
     # 1. GRACE PERIOD / COLLISION CHECK
     if last_hw_activity and last_hw_villa and last_hw_villa != f"{current_sub} Villa {current_villa}":
         diff = (now - last_hw_activity).total_seconds() / 60
-        if diff < 180:
+        if diff < 10:
             return True, f"⚠️ Security Block: This device was active with {last_hw_villa} only {diff:.1f} minutes ago. Please respect the community rules."
         else:
             add_log("Potential Hardware Collision", f"Device {curr_hw} logged in as {current_sub} Villa {current_villa} (Last seen: {last_hw_villa} {diff:.1f}m ago)")
