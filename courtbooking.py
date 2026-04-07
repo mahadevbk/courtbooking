@@ -1340,8 +1340,7 @@ with tab4:
                 with l_col3:
                     if item['is_fixed']:
                         fixed_dt = datetime.fromisoformat(item['fixed_at'].replace('Z', '+00:00'))
-                        st.success(f"✅ Locked/Fixed
-({fixed_dt.strftime('%b %d')})")
+                        st.success(f"✅ Locked/Fixed\n({fixed_dt.strftime('%b %d')})")
                     else:
                         st.warning("⚠️ Open")
                         if st.button("Fixed", key=f"fix_{item['id']}", width='stretch'):
