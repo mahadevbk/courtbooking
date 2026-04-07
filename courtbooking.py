@@ -1401,7 +1401,7 @@ with tab4:
 with tab5:
     st.subheader("Community Activity Log")
 
-    st.subheader("Community Activity Log (Last 14 Days)")
+    #st.subheader("Community Activity Log (Last 14 Days)")
     st.caption("Timezone: UTC+4")
     
     # Check for admin status via session state (from the password field at the bottom)
