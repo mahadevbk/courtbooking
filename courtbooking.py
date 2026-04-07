@@ -51,7 +51,10 @@ def get_remote_ip():
         # Use st.context.headers instead of the deprecated _get_websocket_headers
         headers = st.context.headers
         if headers:
-            return headers.get("X-Forwarded-For", "unknown").split(",")[0]
+            # Safely handle potential null or missing X-Forwarded-For
+            x_forwarded_for = headers.get("X-Forwarded-For")
+            if x_forwarded_for:
+                return str(x_forwarded_for).split(",")[0]
     except Exception:
         pass
     return "unknown"
@@ -166,9 +169,10 @@ def check_device_lock(current_villa, current_sub):
     last_hw_villa = None
 
     for log in response.data:
-        ts_str = log['timestamp']
-        event = log['event_type']
-        details = log['details']
+        ts_str = log.get('timestamp')
+        if not ts_str: continue
+        event = log.get('event_type', 'unknown')
+        details = str(log.get('details') or '')
         details_norm = details.replace(" - Villa ", " Villa ")
         
         if ts_str < fp_cutoff: continue
@@ -184,7 +188,7 @@ def check_device_lock(current_villa, current_sub):
         if event in ["Access Denied", "System Maintenance"]: continue
         
         # Identity Parsing
-        log_fp = log.get('Fingerprint', 'unknown')
+        log_fp = str(log.get('Fingerprint') or 'unknown')
         if ":" in log_fp:
             l_uuid, l_hashes = log_fp.split(":", 1)
             _, l_hw = l_hashes.split("-", 1) if "-" in l_hashes else (l_hashes, "legacy")
