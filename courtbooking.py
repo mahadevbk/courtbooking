@@ -48,11 +48,11 @@ def get_start_hours_for_date(date_str):
 def get_remote_ip():
     """Retrieves the remote IP from websocket headers."""
     try:
-        from streamlit.web.server.websocket_headers import _get_websocket_headers
-        headers = _get_websocket_headers()
+        # Use st.context.headers instead of the deprecated _get_websocket_headers
+        headers = st.context.headers
         if headers:
             return headers.get("X-Forwarded-For", "unknown").split(",")[0]
-    except:
+    except Exception:
         pass
     return "unknown"
 
