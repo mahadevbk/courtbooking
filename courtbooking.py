@@ -699,7 +699,7 @@ if not st.session_state.authenticated:
         villa_input_raw = st.text_input("Enter Villa Number").strip()
         villa_input = "".join(filter(str.isdigit, villa_input_raw))
 
-    if st.button("Login", type="primary", use_container_width=True):
+    if st.button("Login", type="primary", width='stretch'):
         if not sub_community_input or not villa_input:
             if villa_input_raw and not villa_input:
                 st.error("Please enter a numeric villa number (e.g. 255).")
@@ -729,7 +729,7 @@ if not st.session_state.authenticated:
                     st.rerun()
     
     st.write("")
-    if st.button("🚪 Reset / Change Villa", use_container_width=True, key="reg_logout"):
+    if st.button("🚪 Reset / Change Villa", width='stretch', key="reg_logout"):
         logout_action()
     
     st.stop()
@@ -790,7 +790,7 @@ with tab1:
         q_slots = 2 if q_2_hours else 1
     with q_col4:
         st.write(""); st.write("") 
-        if st.button("🚀 Book Now", key="q_book_btn", use_container_width=True):
+        if st.button("🚀 Book Now", key="q_book_btn", width='stretch'):
             if q_time:
                 active_count = get_active_bookings_count(villa, sub_community)
                 daily_count = get_daily_bookings_count(villa, sub_community, selected_date)
@@ -867,7 +867,7 @@ with tab1:
             else: st.write("No active bookings found for this villa.")
 
     st.divider()
-    if st.button("🚪 Logout / Change Villa", use_container_width=True, key="tab1_logout"):
+    if st.button("🚪 Logout / Change Villa", width='stretch', key="tab1_logout"):
         logout_action()
 
 with tab2:
@@ -1065,14 +1065,14 @@ with tab3:
                 """, unsafe_allow_html=True)
                 
                 # Integrated Action Button
-                if st.button(f"❌ Cancel Booking {id_display}", key=f"cancel_{i}", use_container_width=True):
+                if st.button(f"❌ Cancel Booking {id_display}", key=f"cancel_{i}", width='stretch'):
                     for bid in b['ids']: delete_booking(bid, b['v'], b['sc'])
                     st.success(f"Successfully cancelled booking {id_display}")
                     time.sleep(1.5); st.rerun()
                 st.markdown('<div style="margin-bottom: 25px;"></div>', unsafe_allow_html=True)
         
         st.divider()
-        if st.button("🚪 Logout / Change Villa", use_container_width=True):
+        if st.button("🚪 Logout / Change Villa", width='stretch'):
             logout_action()
 
 with tab4:
@@ -1089,7 +1089,7 @@ with tab4:
         if m_photo:
             m_image_b64 = base64.b64encode(m_photo.getvalue()).decode()
                 
-        if st.button("Submit Report", type="primary", use_container_width=True):
+        if st.button("Submit Report", type="primary", width='stretch'):
             if not m_desc:
                 st.error("Please provide a description.")
             else:
@@ -1142,8 +1142,8 @@ with tab4:
                 l_col1, l_col2, l_col3 = st.columns([1, 2, 1])
                 with l_col1:
                     if item.get("image_url"):
-                        # Use use_container_width=True to scale image proportionally
-                        st.image(f"data:image/png;base64,{item['image_url']}", use_container_width=True)
+                        # Use width='stretch' to scale image proportionally
+                        st.image(f"data:image/png;base64,{item['image_url']}", width='stretch')
                     else:
                         st.info("No Photo")
                 with l_col2:
@@ -1157,7 +1157,7 @@ with tab4:
                         st.success(f"✅ Locked/Fixed\n({fixed_dt.strftime('%b %d')})")
                     else:
                         st.warning("⚠️ Open")
-                        if st.button("Fixed", key=f"fix_{item['id']}", use_container_width=True):
+                        if st.button("Fixed", key=f"fix_{item['id']}", width='stretch'):
                             now_ts = get_utc_plus_4().isoformat()
                             run_query(supabase.table("court_maintenance").update({
                                 "is_fixed": True,
@@ -1296,7 +1296,7 @@ with tab5:
             with col_v2:
                 v_num = st.text_input("Villa Number", key="admin_v_num")
                 
-            if st.button("🔓 Reset Villa Ownership", use_container_width=True):
+            if st.button("🔓 Reset Villa Ownership", width='stretch'):
                 if v_num:
                     add_log("Villa Reset", f"Admin cleared ownership for {v_sub} Villa {v_num}")
                     st.success(f"✅ Ownership cleared for {v_sub} - Villa {v_num}")
@@ -1311,7 +1311,7 @@ with tab5:
             
             target_uuid = st.text_input("Target Device UUID", placeholder="e.g. 550e8400-e29b-41d4-a716-446655440000")
             
-            if st.button("🔓 Reset Device Lock", use_container_width=True):
+            if st.button("🔓 Reset Device Lock", width='stretch'):
                 if target_uuid:
                     add_log("Lock Reset", f"Admin cleared locks for UUID: {target_uuid}")
                     st.success(f"✅ Device lock cleared for UUID: {target_uuid[:8]}...")
@@ -1322,7 +1322,7 @@ with tab5:
 
             st.divider()
             st.markdown("### ⚠️ System-Wide Actions")
-            if st.button("🚨 Global Reset (Unlock ALL devices)", type="secondary", use_container_width=True):
+            if st.button("🚨 Global Reset (Unlock ALL devices)", type="secondary", width='stretch'):
                 add_log("Global Reset", "Admin triggered a system-wide device unlock.")
                 st.success("Global reset logged! All users will be unlocked upon their next refresh.")
                 time.sleep(2)
