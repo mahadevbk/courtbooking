@@ -1264,14 +1264,24 @@ with tab3:
 with tab4:
     import base64
     st.subheader("🛠️ Court Maintenance")
-    st.markdown("""
-    <div style="background-color:#f0f2f6; padding:20px; border-radius:10px; border-left: 5px solid #ff4b4b;">
-        <h3 style="margin-top:0;">Strength in Numbers</h3>
-        <p>This platform centralizes court issues to facilitate <b>mass reporting</b>. When we raise requests together, we get results faster. Once a repair is completed, help the community by marking the issue as <b>FIXED</b>.</p>
+    st.markdown(f"""
+    <div style="background-color:#0d5384; padding:25px; border-radius:15px; border-left: 8px solid #ccff00;">
+        <h2 style="color:#ccff00; margin-top:0;">Power in Numbers</h2>
+        <p style="font-size:1.1em; line-height:1.6;">
+            One voice is a whisper; a community is a <b>shout</b>. This hub centralizes every court issue 
+            to facilitate <b>mass maintenance requests</b>. By reporting collectively, we ensure 
+            our concerns are impossible to ignore and prioritized for repair.
+        </p>
+        <hr style="border:0.5px solid #052134; margin:15px 0;">
+        <p style="font-style:italic; font-size:0.95em;">
+            <b>Community Verified:</b> Once a repair is completed, any resident can mark the issue 
+            as <span style="color:#ccff00; font-weight:bold;">FIXED</span> to maintain real-time accuracy for the neighborhood.
+        </p>
     </div>
     """, unsafe_allow_html=True)
+
     # 1. Reporting Form
-    with st.expander("📝 Report a New Issue", expanded=True):
+    with st.expander("📝 Report a New Issue", expanded=False):
         m_court = st.selectbox("Select Court", options=courts, key="maint_court")
         m_desc = st.text_area("Issue Description", placeholder="Please describe the issue in detail...")
         
