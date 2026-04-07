@@ -116,32 +116,34 @@ def get_global_reset_ts():
         pass
     return "1970-01-01T00:00:00"
 
-def check_device_lock(current_villa, current_sub):
+def get_hw_id(fp):
+    """Extracts the hardware hash from a composite fingerprint (UUID:Media-Hardware)."""
+    if not fp or ":" not in str(fp): return "legacy"
+    try:
+        # Hardware ID is the part after the last hyphen -
+        return str(fp).rsplit("-", 1)[1] if "-" in str(fp) else str(fp).split(":", 1)[1]
+    except:
+        return "legacy"
+
+def check_access(current_villa, current_sub):
     """
-    Checks device lock with Hardware Collision protection:
+    Checks device lock with Hardware-Match Re-Auth handshake:
     1. Soft Lock: Uses browser localStorage to detect villa switching on the same browser.
-    2. De-prioritized Hardware: Doesn't block on hardware hash alone if UUID is different.
-    3. Grace Period: Allows hardware collisions if activity is > 10 mins apart.
+    2. Hardware Handshake: Allows access if Hardware IDs match, even if Session UUID differs.
+    3. Collision Check: Allows hardware collisions if activity is > 10 mins apart.
     """
     fp = st.session_state.get('client_fp')
     if not fp or fp == 0 or fp == 'unknown': return False, None
     
-    try:
-        if ":" in str(fp):
-            curr_uuid, hashes = str(fp).split(":", 1)
-            curr_media, curr_hw = hashes.split("-", 1) if "-" in hashes else (hashes, "legacy")
-        else:
-            curr_uuid, curr_media, curr_hw = str(fp), "legacy", "legacy"
-            hashes = "legacy"
-    except:
-        return False, None
+    curr_uuid = str(fp).split(":")[0] if ":" in str(fp) else str(fp)
+    curr_hw = get_hw_id(fp)
     
     now = get_utc_plus_4()
     global_reset = get_global_reset_ts()
     fp_cutoff = max((now - timedelta(days=90)).isoformat(), global_reset)
 
-    # SPECIAL: Check for 'Soft Lock' via localStorage (from session state)
-    stored_villa = st.session_state.get('stored_villa_id') # Will be set in main app logic
+    # SPECIAL: Check for 'Soft Lock' via localStorage
+    stored_villa = st.session_state.get('stored_villa_id')
     if stored_villa and stored_villa != "no_lock":
         if stored_villa != f"{current_sub}-{current_villa}":
             return True, f"⚠️ Access Denied: This browser is already tied to {stored_villa}. To switch villas, please contact Admin or clear your browser data."
@@ -150,7 +152,7 @@ def check_device_lock(current_villa, current_sub):
     mira1_group = ["229", "231", "233"]
     is_mira1_group = (current_sub == "Mira 1" and current_villa in mira1_group)
 
-    # Search for logs
+    # Search for logs to determine ownership and recent activity
     query_filter = f"Fingerprint.ilike.%{curr_uuid}%,Fingerprint.ilike.%{curr_hw}%,details.ilike.%{current_sub}%Villa%{current_villa}%"
 
     response = run_query(
@@ -183,6 +185,7 @@ def check_device_lock(current_villa, current_sub):
             is_device_reset = (curr_uuid in details) or (curr_hw and curr_hw != "legacy" and curr_hw in details)
             if event == "Global Reset" or is_device_reset:
                 villa_owner_uuid = None
+                villa_owner_hw = None
                 last_hw_activity = None
                 continue
 
@@ -190,15 +193,11 @@ def check_device_lock(current_villa, current_sub):
         
         # Identity Parsing
         log_fp = str(log.get('Fingerprint') or 'unknown')
-        if ":" in log_fp:
-            l_uuid, l_hashes = log_fp.split(":", 1)
-            _, l_hw = l_hashes.split("-", 1) if "-" in l_hashes else (l_hashes, "legacy")
-        else:
-            l_uuid, l_hw = log_fp, "legacy"
+        l_uuid = log_fp.split(":")[0] if ":" in log_fp else log_fp
+        l_hw = get_hw_id(log_fp)
 
         # Track Hardware Activity for Collision Check
         if l_hw == curr_hw and l_hw != "legacy":
-            # Extract villa from details for this log
             msg = details_norm.split("⟧")[-1].strip()
             log_villa_info = None
             if " Villa " in msg:
@@ -211,7 +210,7 @@ def check_device_lock(current_villa, current_sub):
                 last_hw_activity = datetime.fromisoformat(ts_str.replace('Z', '+00:00')).replace(tzinfo=None)
                 last_hw_villa = log_villa_info
 
-        # Track Villa Ownership (UUID + HW)
+        # Track Villa Ownership
         is_our_villa = (f"{current_sub} Villa {current_villa}" in details_norm or (is_mira1_group and any(f"Villa {v}" in details_norm for v in mira1_group)))
         if is_our_villa:
             if villa_owner_uuid is None:
@@ -219,21 +218,20 @@ def check_device_lock(current_villa, current_sub):
                 villa_owner_hw = l_hw
 
     # 1. GRACE PERIOD / COLLISION CHECK
-    # If same hardware but different UUID, allow if last activity was > 10 mins ago.
     if last_hw_activity and last_hw_villa and last_hw_villa != f"{current_sub} Villa {current_villa}":
         diff = (now - last_hw_activity).total_seconds() / 60
         if diff < 10:
             return True, f"⚠️ Security Block: This device was active with {last_hw_villa} only {diff:.1f} minutes ago. Please wait 10 minutes between account switches."
         else:
-            # Allow login but log the collision
             add_log("Potential Hardware Collision", f"Device {curr_hw} logged in as {current_sub} Villa {current_villa} (Last seen: {last_hw_villa} {diff:.1f}m ago)")
 
-    # 2. VILLA OWNERSHIP (Smart Re-Auth handshake)
+    # 2. VILLA OWNERSHIP (Hardware-Match Re-Auth handshake)
     if villa_owner_uuid and villa_owner_uuid != curr_uuid:
         # If hardware matches, it's the same person on a new session/browser
         if villa_owner_hw == curr_hw and curr_hw != "legacy":
-            # Allow and it will be updated by the 'Device Registered' log in the caller
-            pass
+            # Handshake success: allow access and log the session update
+            add_log("Session Updated", f"Hardware match found for {current_sub} Villa {current_villa}. New Session UUID registered.")
+            return False, None
         else:
             return True, f"⚠️ Access Denied: Villa {current_sub} Villa {current_villa} is already registered to another browser. Please use the original browser or contact Admin."
 
@@ -334,13 +332,10 @@ def is_under_probation(villa, sub_community):
     in the last 45 days and the registration is less than 12 hours old.
     """
     fp = st.session_state.get('client_fp')
-    if not fp or ":" not in str(fp): return False, 0
+    if not fp: return False, 0
     
-    try:
-        _, hashes = str(fp).split(":", 1)
-        _, hw_hash = hashes.split("-", 1) if "-" in hashes else (hashes, "legacy")
-    except:
-        return False, 0
+    hw_hash = extract_hardware_id(fp)
+    if hw_hash == "legacy": return False, 0
 
     now = get_utc_plus_4()
     villa_pattern = f"%{sub_community}%Villa%{villa}%"
@@ -717,7 +712,7 @@ if not st.session_state.authenticated:
                 st.warning("⚠️ Verifying device security. Please wait a moment and try again.")
             else:
                 # Check for existing lock in logs
-                blocked, lock_msg = check_device_lock(villa_input, sub_community_input)
+                blocked, lock_msg = check_access(villa_input, sub_community_input)
                 if blocked:
                     st.error(lock_msg)
                     st.info(f"🆔 **Your Device ID:** `{fp}`\n\nIf you think this is an error, copy this Device ID and send it to dev for a device reset.")
