@@ -307,7 +307,7 @@ def check_access(current_villa, current_sub):
     # 1. GRACE PERIOD / COLLISION CHECK
     if last_hw_activity and last_hw_villa and last_hw_villa != f"{current_sub} Villa {current_villa}":
         diff = (now - last_hw_activity).total_seconds() / 60
-        if diff < 10:
+        if diff < 30: # Loosened from 10 minutes
             return True, f"⚠️ Security Block: This device was active with {last_hw_villa} only {diff:.1f} minutes ago. Please respect the community rules."
         else:
             add_log("Potential Hardware Collision", f"Device {curr_hw} logged in as {current_sub} Villa {current_villa} (Last seen: {last_hw_villa} {diff:.1f}m ago)")
