@@ -1264,7 +1264,12 @@ with tab3:
 with tab4:
     import base64
     st.subheader("🛠️ Court Maintenance")
-    
+    st.markdown("""
+    <div style="background-color:#f0f2f6; padding:20px; border-radius:10px; border-left: 5px solid #ff4b4b;">
+        <h3 style="margin-top:0;">Strength in Numbers</h3>
+        <p>This platform centralizes court issues to facilitate <b>mass reporting</b>. When we raise requests together, we get results faster. Once a repair is completed, help the community by marking the issue as <b>FIXED</b>.</p>
+    </div>
+    """, unsafe_allow_html=True)
     # 1. Reporting Form
     with st.expander("📝 Report a New Issue", expanded=True):
         m_court = st.selectbox("Select Court", options=courts, key="maint_court")
