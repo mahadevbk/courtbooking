@@ -1357,7 +1357,7 @@ with tab4:
                     phone_number = "+971562069871"
                     
                     # Construct the raw message
-                    raw_message = f"Hello, {court_name} has this issue "{description}". Please get maintenance team to address this asap. Thank you."
+                    raw_message = f'Hello, {court_name} has this issue "{description}". Please get maintenance team to address this asap. Thank you.'
                     
                     # URL-encode the message
                     encoded_message = urllib.parse.quote(raw_message) 
