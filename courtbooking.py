@@ -868,10 +868,36 @@ with tab4:
 
     st.divider()
     
-    # 3. Maintenance Log
-    st.markdown("### 📋 Maintenance Log")
+    # 3. Court Issues
+    st.markdown("### 📋 Court Issues")
     maint_data = get_maintenance_data()
     if maint_data and maint_data.data:
+        # --- NEW: Bulk WhatsApp Share Button ---
+        open_issues = [item for item in maint_data.data if not item.get('is_fixed')]
+        if open_issues:
+            phone_number = "+971562069871"
+            issue_list = "\n".join([f"- **{item['court_name']}**: {item['description']}" for item in open_issues])
+            bulk_message = f"Hello, Please have the maintenance team urgently attend to the following court issues:\n\n{issue_list}"
+            encoded_bulk_msg = urllib.parse.quote(bulk_message)
+            whatsapp_bulk_url = f"https://wa.me/{phone_number}?text={encoded_bulk_msg}"
+
+            st.markdown(f'''
+                <a href="{whatsapp_bulk_url}" target="_blank" style="
+                    display: block; 
+                    text-align: center; 
+                    padding: 12px; 
+                    background-color: #28a745; 
+                    color: white; 
+                    border-radius: 8px; 
+                    text-decoration: none; 
+                    font-family: 'Audiowide', cursive; 
+                    margin-bottom: 20px;
+                    border: 2px solid #ccff00;
+                ">
+                    📢 Share All Open Issues to WhatsApp
+                </a>
+            ''', unsafe_allow_html=True)
+
         for item in maint_data.data:
             with st.container(border=True):
                 l_col1, l_col2, l_col3 = st.columns([1, 2, 1])
@@ -900,36 +926,6 @@ with tab4:
                             }).eq("id", item['id']))
                             st.cache_data.clear() # Reset cache on fix
                             st.rerun()
-                    
-                    # --- NEW: Share to WhatsApp Button ---
-                    court_name = item.get('court_name', 'Unknown Court')
-                    description = item.get('description', 'No description provided')
-                    phone_number = "+971562069871"
-                    
-                    # Construct the raw message
-                    raw_message = f'Hello, {court_name} has this issue "{description}". Please get maintenance team to address this asap. Thank you.'
-                    
-                    # URL-encode the message
-                    encoded_message = urllib.parse.quote(raw_message) 
-                    
-                    whatsapp_url = f"https://wa.me/{phone_number}?text={encoded_message}"
-
-                    st.markdown(f'''
-                        <a href="{whatsapp_url}" target="_blank" style="
-                            display: block; 
-                            text-align: center; 
-                            padding: 10px; 
-                            background-color: #28a745; /* WhatsApp green */
-                            color: white; 
-                            border-radius: 5px; 
-                            text-decoration: none; 
-                            font-family: 'Audiowide', cursive; /* Maintain theme */
-                            margin-top: 10px; /* Space above button */
-                        ">
-                            Share to WhatsApp
-                        </a>
-                    ''', unsafe_allow_html=True)
-                    # --- End of NEW section ---
     else:
         st.info("No maintenance issues reported yet.")
 
