@@ -894,7 +894,7 @@ with tab4:
                     margin-bottom: 20px;
                     border: 2px solid #ccff00;
                 ">
-                    📢 Share All Open Issues to WhatsApp
+                    📢 Share All Open Issues to Mira team via WhatsApp
                 </a>
             ''', unsafe_allow_html=True)
 
