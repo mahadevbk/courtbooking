@@ -11,7 +11,6 @@ from PIL import Image # For image resizing
 # NEW IMPORT: For browser-side storage execution
 from streamlit_javascript import st_javascript
 import urllib.parse # Import added for URL encoding
-import re # Import added for regex parsing
 
 # Set page configuration to wide mode by default
 st.set_page_config(
@@ -53,20 +52,6 @@ def get_start_hours_for_date(date_str):
 
 # --- HELPER FUNCTIONS ---
 
-def get_remote_ip():
-    """Retrieves the remote IP from websocket headers."""
-    try:
-        # Use st.context.headers instead of the deprecated _get_websocket_headers
-        headers = st.context.headers
-        if headers:
-            # Safely handle potential null or missing X-Forwarded-For
-            x_forwarded_for = headers.get("X-Forwarded-For")
-            if x_forwarded_for:
-                return str(x_forwarded_for).split(",")[0]
-    except Exception:
-        pass
-    return "unknown"
-
 def get_utc_plus_4():
     return datetime.now(timezone.utc).replace(tzinfo=None) + timedelta(hours=4)
 
@@ -96,239 +81,14 @@ def run_query(query_method):
 
 def add_log(event_type, details):
     timestamp = get_utc_plus_4().isoformat()
-    # Capture fingerprint and IP for device locking
-    fp = st.session_state.get('client_fp')
-    ip = get_remote_ip()
-    
-    fp_tag = f"⟦FP:{fp}⟧" if fp and fp != 0 and fp != 'unknown' else "⟦FP:unknown⟧"
-    ip_tag = f"⟦IP:{ip}⟧"
-    
-    details = f"{fp_tag}{ip_tag} {details}"
     try:
         supabase.table("logs").insert({
             "timestamp": timestamp,
             "event_type": event_type,
-            "Fingerprint": fp if fp and fp != 0 and fp != 'unknown' else "unknown",
             "details": details
         }).execute()
     except:
         pass 
-
-def get_global_reset_ts():
-    """Returns the timestamp of the latest Global Reset event."""
-    try:
-        response = supabase.table("logs").select("timestamp").eq("event_type", "Global Reset").order("timestamp", desc=True).limit(1).execute()
-        if response and response.data:
-            return response.data[0]['timestamp']
-    except:
-        pass
-    return "1970-01-01T00:00:00"
-
-def get_hw_id(fp):
-    """Extracts the hardware hash from a composite fingerprint (UUID:Media-Hardware)."""
-    if not fp or ":" not in str(fp): return "legacy"
-    try:
-        # Hardware ID is the part after the last hyphen -
-        return str(fp).rsplit("-", 1)[1] if "-" in str(fp) else str(fp).split(":", 1)[1]
-    except:
-        return "legacy"
-
-def extract_ip_from_log_details(details):
-    """Extracts IP address from log details string."""
-    match = re.search(r'⟦IP:(.*?)⟧', details)
-    return match.group(1) if match else None
-
-def extract_villa_info_from_log_details(details):
-    """
-    Extracts sub_community and villa number from log details string.
-    Looks for patterns like "Subcommunity Villa X" in the details.
-    Returns (sub_community, villa_number) or (None, None).
-    """
-    if not sub_community_list:
-        return None, None
-    escaped_sub_communities = [re.escape(sc) for sc in sub_community_list]
-    villa_pattern = re.compile(r'(' + '|'.join(escaped_sub_communities) + r') Villa (\d+)')
-    match = villa_pattern.search(details)
-    if match:
-        sub_community = match.group(1)
-        villa_number = match.group(2)
-        return sub_community, villa_number
-    return None, None
-
-def get_distinct_villa_count(hw_hash, lookback_days=30, min_timestamp=None):
-    """
-    Queries logs for 'Device Registered' events for a hardware ID
-    and returns the number of unique villas touched in the last `lookback_days`.
-    If `min_timestamp` is provided (ISO format string), only considers events after that timestamp.
-    """
-    if not hw_hash or hw_hash == "legacy":
-        return 0
-
-    now = get_utc_plus_4()
-    
-    lookback_cutoff_dt = now - timedelta(days=lookback_days)
-    lookback_cutoff_iso = lookback_cutoff_dt.isoformat()
-
-    effective_min_ts_iso = lookback_cutoff_iso
-    if min_timestamp:
-        try:
-            min_ts_dt = datetime.fromisoformat(min_timestamp.replace('Z', '+00:00')).replace(tzinfo=None)
-            effective_min_ts_dt = max(lookback_cutoff_dt, min_ts_dt)
-            effective_min_ts_iso = effective_min_ts_dt.isoformat()
-        except ValueError:
-            pass # If min_timestamp is invalid, fallback to lookback_cutoff
-
-    try:
-        response = run_query(
-            supabase.table("logs")
-            .select("details", "timestamp")
-            .eq("event_type", "Device Registered")
-            .ilike("Fingerprint", f"%{hw_hash}%")
-            .gte("timestamp", effective_min_ts_iso)
-            .order("timestamp", desc=False)
-        )
-
-        if response and response.data:
-            distinct_villas = set()
-            for log_entry in response.data:
-                details = log_entry.get('details', '')
-                sub_community, villa = extract_villa_info_from_log_details(details)
-                if sub_community and villa:
-                    distinct_villas.add(f"{sub_community}-{villa}")
-            return len(distinct_villas)
-        
-    except Exception as e:
-        print(f"Error in get_distinct_villa_count for {hw_hash}: {e}")
-        return 0
-    return 0
-
-def check_access(current_villa, current_sub):
-    """
-    Checks device lock with Hardware-Match Re-Auth handshake:
-    1. Soft Lock: Uses browser localStorage to detect villa switching on the same browser.
-    2. Hardware Handshake: Allows access if Hardware IDs match, even if Session UUID differs.
-    3. Collision Check: Allows hardware collisions if activity is > 10 mins apart.
-    """
-    fp = st.session_state.get('client_fp')
-    if not fp or fp == 0 or fp == 'unknown': return False, None
-    
-    curr_uuid = str(fp).split(":")[0] if ":" in str(fp) else str(fp)
-    curr_hw = get_hw_id(fp)
-    
-    now = get_utc_plus_4()
-    global_reset_ts_str = get_global_reset_ts() # Fetch the latest global reset timestamp
-    global_reset_ts_dt = datetime.fromisoformat(global_reset_ts_str.replace('Z', '+00:00')).replace(tzinfo=None)
-    
-    fp_cutoff = max((now - timedelta(days=90)).isoformat(), global_reset_ts_str) # Consider global reset when filtering history
-
-    # SPECIAL: Check for 'Soft Lock' via localStorage
-    stored_villa = st.session_state.get('stored_villa_id')
-    if stored_villa and stored_villa != "no_lock":
-        if stored_villa != f"{current_sub}-{current_villa}":
-            return True, f"⚠️ Access Denied: This browser is already tied to {stored_villa}. To switch villas, please contact Admin or clear your browser data."
-
-    # Special Grouping for Mira 1
-    mira1_group = ["229", "231", "233"]
-    is_mira1_group = (current_sub == "Mira 1" and current_villa in mira1_group)
-
-    # Search for logs to determine ownership and recent activity
-    query_filter = f"Fingerprint.ilike.%{curr_uuid}%,Fingerprint.ilike.%{curr_hw}%,details.ilike.%{current_sub}%Villa%{current_villa}%"
-
-    response = run_query(
-        supabase.table("logs")
-        .select("timestamp, event_type, details, Fingerprint")
-        .or_(query_filter)
-        .order("timestamp", desc=False)
-        .limit(1000)
-    )
-    
-    if not response or not response.data: return False, None
-
-    # State variables
-    villa_owner_uuid = None
-    villa_owner_hw = None
-    last_hw_activity = None
-    last_hw_villa = None
-
-    for log in response.data:
-        ts_str = log.get('timestamp')
-        if not ts_str: continue
-        event = log.get('event_type', 'unknown')
-        details = str(log.get('details') or '')
-        details_norm = details.replace(" - Villa ", " Villa ")
-        
-        # Ignore logs that are older than the relevant cutoff (either 90 days or global reset, whichever is more recent)
-        if ts_str < fp_cutoff: continue
-        
-        # --- Reset Logic ---
-        # If a Global Reset event is processed, clear session ownership and activity for THIS device.
-        if event == "Global Reset":
-            # Clear ownership and activity state for this session
-            villa_owner_uuid = None
-            villa_owner_hw = None
-            last_hw_activity = None
-            # Clear localStorage for villa lock
-            st_javascript("localStorage.removeItem('court_villa_lock'); localStorage.setItem('court_last_reset_seen', '{}');".format(ts_str))
-            continue # Move to the next log entry
-
-        # Ignore specific lock reset events if they don't match the current device
-        if event in ["Lock Reset", "Villa Reset"]:
-            is_device_reset = (curr_uuid in details) or (curr_hw and curr_hw != "legacy" and curr_hw in details)
-            if is_device_reset:
-                villa_owner_uuid = None
-                villa_owner_hw = None
-                last_hw_activity = None
-                continue
-        
-        if event in ["Access Denied", "System Maintenance"]: continue
-        
-        # Identity Parsing
-        log_fp = str(log.get('Fingerprint') or 'unknown')
-        l_uuid = log_fp.split(":")[0] if ":" in log_fp else log_fp
-        l_hw = get_hw_id(log_fp)
-
-        # Track Hardware Activity for Collision Check
-        if l_hw == curr_hw and l_hw != "legacy":
-            msg = details_norm.split("⟧")[-1].strip()
-            log_villa_info = None
-            if " Villa " in msg:
-                v_parts = msg.split(" Villa ")
-                v_num = v_parts[1].split(" ")[0].strip()
-                v_sub = v_parts[0].split("for ")[-1].strip() if "for " in v_parts[0] else v_parts[0].strip()
-                log_villa_info = f"{v_sub} Villa {v_num}"
-
-            if log_villa_info:
-                last_hw_activity = datetime.fromisoformat(ts_str.replace('Z', '+00:00')).replace(tzinfo=None)
-                last_hw_villa = log_villa_info
-
-        # Track Villa Ownership
-        is_our_villa = (f"{current_sub} Villa {current_villa}" in details_norm or (is_mira1_group and any(f"Villa {v}" in details_norm for v in mira1_group)))
-        if is_our_villa:
-            if villa_owner_uuid is None:
-                villa_owner_uuid = l_uuid
-                villa_owner_hw = l_hw
-
-    # --- FINAL ACCESS CHECKS ---
-
-    # 1. GRACE PERIOD / COLLISION CHECK
-    if last_hw_activity and last_hw_villa and last_hw_villa != f"{current_sub} Villa {current_villa}":
-        diff = (now - last_hw_activity).total_seconds() / 60
-        if diff < 30: # Loosened from 10 minutes
-            return True, f"⚠️ Security Block: This device was active with {last_hw_villa} only {diff:.1f} minutes ago. Please respect the community rules."
-        else:
-            add_log("Potential Hardware Collision", f"Device {curr_hw} logged in as {current_sub} Villa {current_villa} (Last seen: {last_hw_villa} {diff:.1f}m ago)")
-
-    # 2. VILLA OWNERSHIP (Hardware-Match Re-Auth handshake)
-    if villa_owner_uuid and villa_owner_uuid != curr_uuid:
-        # If hardware matches, it's the same person on a new session/browser
-        if villa_owner_hw == curr_hw and curr_hw != "legacy":
-            # Handshake success: allow access and log the session update
-            add_log("Session Updated", f"Hardware match found for {current_sub} Villa {current_villa}. New Session UUID registered.")
-            return False, None
-        else:
-            return True, f"⚠️ Access Denied: Villa {current_sub} Villa {current_villa} is already registered to another browser. Please use the original browser or contact Admin."
-
-    return False, None
 
 def get_bookings_for_day_with_details(date_str):
     response = run_query(supabase.table("bookings").select("court, start_hour, sub_community, villa").eq("date", date_str))
@@ -416,166 +176,8 @@ def is_slot_in_past(date_str, start_hour):
     if start_hour == now.hour and now.minute > 0: return True
     return False
 
-# --- SECURITY HELPERS ---
-
-def extract_villa_info_from_log_details(details):
-    """
-    Extracts sub_community and villa number from log details string.
-    Looks for patterns like "Subcommunity Villa X" in the details.
-    Returns (sub_community, villa_number) or (None, None).
-    """
-    if not sub_community_list:
-        return None, None
-    escaped_sub_communities = [re.escape(sc) for sc in sub_community_list]
-    villa_pattern = re.compile(r'(' + '|'.join(escaped_sub_communities) + r') Villa (\d+)')
-    match = villa_pattern.search(details)
-    if match:
-        sub_community = match.group(1)
-        villa_number = match.group(2)
-        return sub_community, villa_number
-    return None, None
-
-def get_distinct_villa_count(hw_hash, lookback_days=30, min_timestamp=None):
-    """
-    Queries logs for 'Device Registered' events for a hardware ID
-    and returns the number of unique villas touched in the last `lookback_days`.
-    If `min_timestamp` is provided (ISO format string), only considers events after that timestamp.
-    """
-    if not hw_hash or hw_hash == "legacy":
-        return 0
-
-    now = get_utc_plus_4()
-    
-    lookback_cutoff_dt = now - timedelta(days=lookback_days)
-    lookback_cutoff_iso = lookback_cutoff_dt.isoformat()
-
-    effective_min_ts_iso = lookback_cutoff_iso
-    if min_timestamp:
-        try:
-            min_ts_dt = datetime.fromisoformat(min_timestamp.replace('Z', '+00:00')).replace(tzinfo=None)
-            effective_min_ts_dt = max(lookback_cutoff_dt, min_ts_dt)
-            effective_min_ts_iso = effective_min_ts_dt.isoformat()
-        except ValueError:
-            pass # If min_timestamp is invalid, fallback to lookback_cutoff
-
-    try:
-        response = run_query(
-            supabase.table("logs")
-            .select("details", "timestamp")
-            .eq("event_type", "Device Registered")
-            .ilike("Fingerprint", f"%{hw_hash}%")
-            .gte("timestamp", effective_min_ts_iso)
-            .order("timestamp", desc=False)
-        )
-
-        if response and response.data:
-            distinct_villas = set()
-            for log_entry in response.data:
-                details = log_entry.get('details', '')
-                sub_community, villa = extract_villa_info_from_log_details(details)
-                if sub_community and villa:
-                    distinct_villas.add(f"{sub_community}-{villa}")
-            return len(distinct_villas)
-        
-    except Exception as e:
-        print(f"Error in get_distinct_villa_count for {hw_hash}: {e}")
-        return 0
-    return 0
-
-def is_under_probation(villa, sub_community):
-    """
-    Checks if a user is currently under probation based on device/villa activity post-reset.
-    Implements a 10-minute cooling period and bypasses for existing users.
-    """
-    fp = st.session_state.get('client_fp')
-    if not fp: return False, 0
-    
-    hw_hash = get_hw_id(fp)
-    if hw_hash == "legacy": return False, 0
-
-    now = datetime.now(timezone.utc).replace(tzinfo=None)
-    current_villa_id = f"{sub_community}-{villa}"
-
-    # --- 1. Admin Bypass ---
-    admin_hw_id = "3f58ed0f-1e00004d"
-    if hw_hash == admin_hw_id: return False, 0
-
-    # --- 2. Bypass: Existing Booking History ---
-    # Bypass if user has a 'Booking Created' event in the last 45 days.
-    recent_booking = run_query(
-        supabase.table("logs")
-        .select("id")
-        .eq("event_type", "Booking Created")
-        .ilike("Fingerprint", f"%{hw_hash}%")
-        .gte("timestamp", (now - timedelta(days=45)).isoformat())
-        .limit(1)
-    )
-    if recent_booking and recent_booking.data:
-        return False, 0
-
-    # --- 3. Get Strict Reset Threshold ---
-    # Only consider registrations after the most recent reset for THIS villa.
-    # We look for the latest 'Global Reset', 'Villa Reset', or similar relevant events.
-    resets = run_query(
-        supabase.table("logs")
-        .select("timestamp")
-        .in_("event_type", ["Global Reset", "Villa Reset"])
-        .ilike("details", f"%{current_villa_id}%")
-        .order("timestamp", desc=True)
-        .limit(1)
-    )
-    reset_ts = resets.data[0]['timestamp'] if resets and resets.data else "1970-01-01T00:00:00"
-    reset_dt = datetime.fromisoformat(reset_ts.replace('Z', '+00:00')).replace(tzinfo=None)
-
-    # --- 4. Simplify: Check most recent registration for this villa and HW ---
-    last_reg = run_query(
-        supabase.table("logs")
-        .select("timestamp")
-        .eq("event_type", "Device Registered")
-        .ilike("Fingerprint", f"%{hw_hash}%")
-        .ilike("details", f"%{current_villa_id}%")
-        .order("timestamp", desc=True)
-        .limit(1)
-    )
-
-    if last_reg and last_reg.data:
-        reg_dt = datetime.fromisoformat(last_reg.data[0]['timestamp'].replace('Z', '+00:00')).replace(tzinfo=None)
-        
-        # If the registration is *before* the reset, it's a stale record.
-        if reg_dt < reset_dt:
-            return False, 0
-        
-        # Calculate probation: 10 minutes (0.166 hours)
-        probation_duration = timedelta(minutes=10)
-        diff = now - reg_dt
-        
-        if diff < probation_duration:
-            wait_time = (probation_duration - diff).total_seconds() / 3600
-            return True, max(0, wait_time)
-
-    return False, 0
-
 def book_slot(villa, sub_community, court, date_str, start_hour):
-    """Refactored booking function with Probation check."""
-    # 1. Check Probation Layer
-    is_probation, wait_time = is_under_probation(villa, sub_community)
-    if is_probation:
-        # Dynamically set message based on wait_time tier
-        if abs(wait_time - 0.5/60) < 0.01 : # Approximately 30 minutes
-             probation_msg = "a short 30-minute cooling period"
-        elif abs(wait_time - 10/60) < 0.01: # Approximately 10 minutes
-             probation_msg = "a brief 10-minute cooling period"
-        elif abs(wait_time - 12) < 0.01: # Exactly 12 hours
-             probation_msg = "a 12-hour cooling period"
-        elif abs(wait_time - 24) < 0.01: # Exactly 24 hours
-             probation_msg = "a 24-hour cooling period"
-        else: # Fallback for other values
-             probation_msg = f"a cooling period of {wait_time:.1f} hours"
-
-        st.error(f"⚠️ Security Delay: Your device is in {probation_msg} for this villa. Please try again later.")
-        add_log("Access Denied", f"{sub_community} Villa {villa} blocked by probation ({wait_time:.1f}h remaining)")
-        return False
-
+    """Refactored booking function."""
     try:
         run_query(supabase.table("bookings").insert({
             "villa": villa,
@@ -753,22 +355,6 @@ if st.query_params.get("view") == "full":
 st.subheader("🎾 Book that Court ...")    
 st.caption("An Un-Official & Community Driven Booking Solution.")
 
-with st.expander("How the Fair Play System Works"):
-    st.markdown("""
-    ### Fair Play: The "Digital Key" System
-    To ensure fair court access for all residents, the app uses a smart security system that links your villa to your specific device.
-
-    **How it Works:**
-    *   **1 Villa = 1 Device:** Your phone acts as a unique "Digital Key" for your villa. This prevents users from "flooding" the system with multiple devices.
-    *   **Smart Recognition:** If you clear your browser cache or update your phone, the app recognizes your physical hardware and "re-keys" your access automatically so you aren't locked out.
-    *   **Cross-Browser Protection:** The system identifies your device even if you switch browsers (e.g., Safari to Chrome) to ensure booking limits are respected.
-    *   **Anti-Cheat Detection:** We monitor a 45-day window. Using one device to jump between different villas or manage multiple accounts will trigger an automatic block.
-
-    **Pro-Tips for Residents:**
-    *   **Stick to one browser** (e.g., only Safari or only Chrome) to avoid temporary security checks.
-    *   **Avoid "Incognito" or "Private" mode**, as the app will treat you like a new stranger every time you visit.
-    """)
-
 try:
     _process_background_tasks()
     villas_active = get_villas_with_active_bookings()
@@ -797,78 +383,16 @@ if not st.session_state.authenticated:
     # Use query params to detect manual logout
     logout_mode = st.query_params.get("logout") == "1"
     
-    # Get fingerprint and existing lock
-    # Note: st_javascript returns 0 or None while loading
+    # Simple auto-login from localStorage
     stored_lock = st_javascript("localStorage.getItem('court_villa_lock') || 'no_lock';")
-    last_reset_seen = st_javascript("localStorage.getItem('court_last_reset_seen') || '1970-01-01T00:00:00';")
-    # Improved Composite Fingerprinting (UUID + Canvas + Hardware)
-    # Renders hidden canvas to create a stable hardware signature.
-    client_fp = st_javascript("""(function(){
-        var uuid = localStorage.getItem('court_device_uuid');
-        if(!uuid){
-            uuid = (crypto.randomUUID ? crypto.randomUUID() : 'D-' + Math.random().toString(36).substring(2, 11) + '-' + Date.now());
-            localStorage.setItem('court_device_uuid', uuid);
-        }
-        function hash(s) {
-            var h = 0;
-            for (var i = 0; i < s.length; i++) {
-                h = ((h << 5) - h) + s.charCodeAt(i);
-                h |= 0;
-            }
-            return Math.abs(h).toString(16);
-        }
-        var canvas = document.createElement('canvas');
-        var ctx = canvas.getContext('2d');
-        canvas.width = 240; canvas.height = 60;
-        ctx.textBaseline = "top"; ctx.font = "18px 'Arial'";
-        ctx.fillStyle = "#f60"; ctx.fillRect(125,1,62,20);
-        ctx.fillStyle = "#069"; ctx.fillText("MiraSecurity-Check-2026", 2, 15);
-        ctx.fillStyle = "rgba(102, 204, 0, 0.7)"; ctx.fillText("MiraSecurity-Check-2026", 4, 17);
-        var canvasData = canvas.toDataURL();
-        var audio = "";
-        try {
-            var aCtx = new (window.AudioContext || window.webkitAudioContext)();
-            audio = aCtx.sampleRate + '_' + aCtx.destination.maxChannelCount;
-        } catch(e){ audio = "no-audio"; }
-        var hw = [screen.width, screen.height, window.devicePixelRatio, navigator.hardwareConcurrency || 0, navigator.userAgent].join('|');
-        var mediaHash = hash(canvasData + audio);
-        var hwHash = hash(hw);
-        return uuid + ':' + mediaHash + '-' + hwHash;
-    })()""")
     
     # Wait for signals to stabilize
-    if stored_lock == 0 or last_reset_seen == 0 or client_fp == 0:
-        st.markdown("### 🔒 Security Check...")
-        st.info("Verifying device identity. Please wait...")
+    if stored_lock == 0:
+        st.markdown("### 🔒 Loading...")
+        st.info("Please wait...")
         st.stop()
 
-    # 3. Specific Hardware Blacklist (Isolation)
-    if client_fp and "31a5d4a3" in str(client_fp):
-        st.error("Hardware ID Blacklisted")
-        st.stop()
-
-    # Fetch latest global reset timestamp from DB
-    global_reset_ts = get_global_reset_ts()
-
-    # Store in session state
-    if client_fp and client_fp != 0: st.session_state.client_fp = client_fp
-
-    # 1. Global Reset Enforcement (with session guard to prevent loops)
-    if 'last_reset_triggered' not in st.session_state:
-        st.session_state.last_reset_triggered = None
-
-    # Fetch VillaID from localStorage for Soft Lock
-    stored_villa_id = st_javascript("localStorage.getItem('court_villa_lock') || 'no_lock';", key="soft_lock_check")
-    if stored_villa_id != 0:
-        st.session_state.stored_villa_id = stored_villa_id
-
-    if last_reset_seen and last_reset_seen != 'no_lock':
-        if str(global_reset_ts) > str(last_reset_seen) and st.session_state.last_reset_triggered != global_reset_ts:
-            st.session_state.last_reset_triggered = global_reset_ts
-            st_javascript(f"localStorage.removeItem('court_villa_lock'); localStorage.setItem('court_last_reset_seen', '{global_reset_ts}');")
-            st.rerun()
-
-    # 2. Primary Auto-Login (localStorage)
+    # 1. Primary Auto-Login (localStorage)
     if not logout_mode and stored_lock and stored_lock != "no_lock":
         try:
             locked_sub, locked_villa = stored_lock.split("-")
@@ -879,9 +403,9 @@ if not st.session_state.authenticated:
             st_javascript("localStorage.removeItem('court_villa_lock');")
             st.rerun()
 
-    # 3. Registration Form
+    # 2. Registration Form
     st.subheader("Villa Login")
-    st.info("First-time login will lock this device to your villa.")
+    st.info("Enter your villa details to continue.")
     
     col1, col2 = st.columns(2)
     with col1:
@@ -898,27 +422,14 @@ if not st.session_state.authenticated:
             else:
                 st.error("Please select a sub-community and enter your villa number.")
         else:
-            # Check if FP is loaded
-            fp = st.session_state.get('client_fp')
-            if not fp or fp == 0 or fp == 'unknown':
-                st.warning("⚠️ Verifying device security. Please wait a moment and try again.")
-            else:
-                # Check for existing lock in logs
-                blocked, lock_msg = check_access(villa_input, sub_community_input)
-                if blocked:
-                    full_err = f"Login blocked for Villa ({sub_community_input} - {villa_input}): {lock_msg}"
-                    st.error(full_err)
-                    st.info(f"🆔 **Your Device ID:** `{fp}`\n\nIf you think this is an error, copy this Device ID and send it to dev for a device reset.")
-                    add_log("Access Denied", full_err)
-                else:
-                    current_choice = f"{sub_community_input}-{villa_input}"
-                    st_javascript(f"localStorage.setItem('court_villa_lock', '{current_choice}'); localStorage.setItem('court_last_reset_seen', '{global_reset_ts}');")
-                    st.session_state.sub_community, st.session_state.villa = sub_community_input, villa_input
-                    st.session_state.authenticated = True
-                    # Clear query params to remove ?logout=1 if it exists
-                    st.query_params.clear()
-                    add_log("Device Registered", f"New login for {sub_community_input} Villa {villa_input}")
-                    st.rerun()
+            current_choice = f"{sub_community_input}-{villa_input}"
+            st_javascript(f"localStorage.setItem('court_villa_lock', '{current_choice}');")
+            st.session_state.sub_community, st.session_state.villa = sub_community_input, villa_input
+            st.session_state.authenticated = True
+            # Clear query params to remove ?logout=1 if it exists
+            st.query_params.clear()
+            add_log("Device Registered", f"New login for {sub_community_input} Villa {villa_input}")
+            st.rerun()
     
     st.write("")
     if st.button("🚪 Reset / Change Villa", width='stretch', key="reg_logout"):
@@ -1473,13 +984,6 @@ with tab5:
         st.dataframe(display_df[cols].style.apply(style_rows, axis=1), hide_index=True, width="stretch")
     else: st.info("No activity.")
 
-    # Show Device ID to ALL users
-    st.divider()
-    curr_fp = st.session_state.get('client_fp')
-    if curr_fp:
-        st.info(f"🆔 **Your Device ID:** `{curr_fp}`")
-        st.caption("If you're unable to switch villas, copy this ID and send it to the admin for a manual reset.")
-
     st.divider()
     st.subheader("🛠️ Admin Tools")
     admin_pass = st.text_input("Admin Password", type="password", key="log_admin_pass")
@@ -1540,60 +1044,6 @@ with tab5:
             except Exception as e:
                 st.error(f"Error loading bookings: {str(e)}")
 
-        st.divider()
-        with st.expander("🛡️ Security & Lock Management", expanded=True):
-            st.markdown("### 🏘️ Villa Ownership Reset")
-            st.info("Clearing villa ownership allows a new device to claim this villa. Previous device associations for this villa will be ignored.")
-            
-            col_v1, col_v2 = st.columns([2, 1])
-            with col_v1:
-                v_sub = st.selectbox("Sub-Community", options=sub_community_list, key="admin_v_sub")
-            with col_v2:
-                v_num = st.text_input("Villa Number", key="admin_v_num")
-                
-            if st.button("🔓 Reset Villa Ownership", width='stretch'):
-                if v_num:
-                    add_log("Villa Reset", f"Admin cleared ownership for {v_sub} Villa {v_num}")
-                    st.success(f"✅ Ownership cleared for {v_sub} - Villa {v_num}")
-                    time.sleep(1.5)
-                    st.rerun()
-                else:
-                    st.error("Please enter a villa number")
-
-            st.divider()
-            st.markdown("### 📱 Device Lock Reset")
-            st.info("Clearing a device lock allows that device to register for a different villa. Enter only the UUID part of the fingerprint.")
-            
-            target_uuid = st.text_input("Target Device UUID", placeholder="e.g. 550e8400-e29b-41d4-a716-446655440000")
-            
-            if st.button("🔓 Reset Device Lock", width='stretch'):
-                if target_uuid:
-                    add_log("Lock Reset", f"Admin cleared locks for UUID: {target_uuid}")
-                    st.success(f"✅ Device lock cleared for UUID: {target_uuid[:8]}...")
-                    time.sleep(1.5)
-                    st.rerun()
-                else:
-                    st.error("Please enter a Target UUID")
-
-            st.divider()
-            st.markdown("### ⚠️ System-Wide Actions")
-            if st.button("🚨 Global Reset (Unlock ALL devices)", type="secondary", width='stretch'):
-                add_log("Global Reset", "Admin triggered a system-wide device unlock.")
-                st.success("Global reset logged! All users will be unlocked upon their next refresh.")
-                time.sleep(2)
-                st.rerun()
-            
-            # Option to reset current device for convenience
-            curr_fp = st.session_state.get('client_fp')
-            if curr_fp and ":" in str(curr_fp):
-                this_uuid = str(curr_fp).split(":")[0]
-                st.write("")
-                if st.button(f"🔓 Reset MY Device (UUID: {this_uuid[:8]}...)", type="tertiary"):
-                    add_log("Lock Reset", f"Admin cleared locks for UUID: {this_uuid}")
-                    st_javascript("localStorage.removeItem('court_villa_lock');")
-                    st.success("Your device lock has been cleared.")
-                    time.sleep(1.5)
-                    st.rerun()
     elif admin_pass:
         st.error("Incorrect Password")
 
