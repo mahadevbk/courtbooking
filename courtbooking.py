@@ -961,12 +961,8 @@ with tab5:
         # Using a more robust regex that covers both tags and the trailing space
         display_df['details'] = display_df['details'].str.replace(r'⟦FP:.*?⟧⟦IP:.*?⟧ ', '', regex=True)
 
-        if is_admin:
-            # In admin mode, show the Fingerprint column directly
-            cols = ['timestamp', 'event_type', 'Fingerprint', 'details']
-        else:
-            # In user mode, hide the Fingerprint column for a cleaner UI
-            cols = ['timestamp', 'event_type', 'details']
+        # Hide the Fingerprint column for a cleaner UI
+        cols = ['timestamp', 'event_type', 'details']
 
         display_df['timestamp'] = pd.to_datetime(display_df['timestamp'], format='ISO8601').dt.strftime('%b %d, %H:%M')
         
