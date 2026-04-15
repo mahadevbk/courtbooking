@@ -354,7 +354,7 @@ if st.query_params.get("view") == "full":
 # --- MAIN APP ---
 st.subheader("🎾 Book that Court ...")    
 st.caption("An Un-Official & Community Driven Booking Solution.")
-st.info("Log-in issues have been resolved. Refresh browser if needed. Pls msg dev incase you still face issues.")
+#st.info("Log-in issues have been resolved. Refresh browser if needed. Pls msg dev incase you still face issues.")
 
 try:
     _process_background_tasks()
