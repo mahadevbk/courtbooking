@@ -47,11 +47,9 @@ def enforce_active_limits(supabase):
     if not res or not res.data: return
 
     # Filter to truly active ones (handling today's hours)
-    # Ignore special event date 2026-04-25 for global limit enforcement
     active_bookings = [
         b for b in res.data 
-        if (b['date'] > today_str or int(b['start_hour']) >= now_hour)
-        and b['date'] != "2026-04-25"
+        if b['date'] > today_str or int(b['start_hour']) >= now_hour
     ]
 
     # 2. Group by villa
@@ -77,52 +75,6 @@ def enforce_active_limits(supabase):
                     add_log(supabase, "Limit Enforcement", f"Deleted {len(excess_ids)} excess bookings for {sc} Villa {v} (Max 6 limit).")
                 except: pass
 
-def book_april_25_event(supabase):
-    """Special one-off function to book Mira Oasis 3A/3B on April 25th 2026 from 4pm-10pm."""
-    target_date = "2026-04-25"
-    target_hours = [16, 17, 18, 19, 20, 21]
-    target_courts = ["Mira Oasis 3A", "Mira Oasis 3B"]
-    villas = [
-        ("229", "Mira 1"),
-        ("231", "Mira 1"),
-        ("11", "Mira Oasis"),
-        ("15", "Mira Oasis"),
-        ("14", "Mira Oasis")
-    ]
-    
-    now = get_utc_plus_4()
-    if now.date().strftime('%Y-%m-%d') > target_date:
-        return
-
-    res = run_query(supabase, supabase.table("bookings").select("*").eq("date", target_date).in_("court", target_courts))
-    existing_bookings = res.data if res else []
-    booked_slots = set((b['court'], int(b['start_hour'])) for b in existing_bookings)
-    
-    new_bookings = []
-    villa_idx = 0
-    for hour in target_hours:
-        if now.date().strftime('%Y-%m-%d') == target_date and now.hour > hour:
-            continue
-            
-        for court in target_courts:
-            if (court, hour) not in booked_slots:
-                v_num, v_sc = villas[villa_idx % len(villas)]
-                new_bookings.append({
-                    "villa": v_num,
-                    "sub_community": v_sc,
-                    "court": court,
-                    "date": target_date,
-                    "start_hour": hour
-                })
-                villa_idx += 1
-    
-    if new_bookings:
-        try:
-            supabase.table("bookings").insert(new_bookings).execute()
-            for b in new_bookings:
-                add_log(supabase, "Special Booking", f"{b['sub_community']} Villa {b['villa']} booked {b['court']} on {target_date} at {b['start_hour']}:00")
-        except: pass
-
 def run_db_cleanup(supabase, courts):
     if st.session_state.get('background_tasks_run', False): return
     st.session_state['background_tasks_run'] = True
@@ -131,9 +83,6 @@ def run_db_cleanup(supabase, courts):
     try:
         # First, enforce limits on existing bookings
         enforce_active_limits(supabase)
-        
-        # Run special one-off event booking for April 25th 2026
-        book_april_25_event(supabase)
         
         add_log(supabase, "System Maintenance", "Database sync triggered.")
         special_villas = [("229", "Mira 1"), ("231", "Mira 1"), ("233", "Mira 1")]
@@ -160,15 +109,13 @@ def run_db_cleanup(supabase, courts):
             b_hour = int(b['start_hour'])
 
             # Count active slots for our special villas
-            # Ignore special event date for counting towards the limit
             if b_sc == "Mira 1" and b_v in group_villa_nums:
-                if (b_date > today_str or b_hour >= now_hour) and b_date != "2026-04-25":
+                if b_date > today_str or b_hour >= now_hour:
                     villa_active_slots[b_v] += 1
                 
                 # Rule: One villa from the group can book per day (any time).
                 # If ANY booking exists for ANY villa in the group on this day, skip it.
-                if b_date != "2026-04-25":
-                    group_daily_occupied[b_date] = True
+                group_daily_occupied[b_date] = True
 
         # 2. Chronological fill loop
         for j in range(15):
