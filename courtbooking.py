@@ -1044,16 +1044,35 @@ st.divider()
 st.subheader("💾 Data Backup")
 def get_zip_data():
     try:
-        res_b = run_query(supabase.table("bookings").select("*"))
-        res_l = run_query(supabase.table("logs").select("*"))
-        b_data = res_b.data if res_b else []
-        l_data = res_l.data if res_l else []
+        # Fetch bookings in chunks
+        b_data = []
+        chunk_size = 1000
+        offset = 0
+        while True:
+            res = run_query(supabase.table("bookings").select("*").range(offset, offset + chunk_size - 1))
+            if not res or res.data is None: break
+            b_data.extend(res.data)
+            if len(res.data) < chunk_size: break
+            offset += chunk_size
+            
+        # Fetch logs in chunks
+        l_data = []
+        offset = 0
+        while True:
+            res = run_query(supabase.table("logs").select("*").range(offset, offset + chunk_size - 1).order("timestamp", desc=True))
+            if not res or res.data is None: break
+            l_data.extend(res.data)
+            if len(res.data) < chunk_size: break
+            offset += chunk_size
+
         buf = io.BytesIO()
         with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as vz:
             vz.writestr(f"bookings_{get_today()}.csv", pd.DataFrame(b_data).to_csv(index=False))
             vz.writestr(f"logs_{get_today()}.csv", pd.DataFrame(l_data).to_csv(index=False))
         return buf.getvalue()
-    except: return None
+    except Exception as e:
+        st.error(f"Backup Error: {str(e)}")
+        return None
 
 if st.button("Generate Backup Link"):
     data = get_zip_data()

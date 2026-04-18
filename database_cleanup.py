@@ -36,6 +36,19 @@ def check_global_lock(supabase):
         return len(res.data) > 0
     except: return False
 
+def delete_old_bookings(supabase):
+    """Deletes bookings older than 14 days."""
+    fourteen_days_ago = (get_today() - timedelta(days=14)).strftime('%Y-%m-%d')
+    try:
+        # Fetch IDs to delete first to log the count accurately
+        to_delete_res = supabase.table("bookings").select("id").lt("date", fourteen_days_ago).execute()
+        if to_delete_res.data:
+            count = len(to_delete_res.data)
+            supabase.table("bookings").delete().lt("date", fourteen_days_ago).execute()
+            add_log(supabase, "Cleanup", f"Deleted {count} bookings older than 14 days (older than {fourteen_days_ago}).")
+    except Exception as e:
+        add_log(supabase, "Cleanup Error", f"Failed to delete old bookings: {str(e)}")
+
 def enforce_active_limits(supabase):
     """Enforces the 6-active-booking limit globally. Keeps the earliest 6 and deletes the rest."""
     today_str = get_today().strftime('%Y-%m-%d')
@@ -81,7 +94,10 @@ def run_db_cleanup(supabase, courts):
     if check_global_lock(supabase): return
 
     try:
-        # First, enforce limits on existing bookings
+        # 0. Delete old bookings
+        delete_old_bookings(supabase)
+
+        # 1. Enforce limits on existing bookings
         enforce_active_limits(supabase)
         
         add_log(supabase, "System Maintenance", "Database sync triggered.")
