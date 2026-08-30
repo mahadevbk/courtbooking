@@ -1,5 +1,6 @@
 import time
 import streamlit as st
+import streamlit.components.v1 as components
 from supabase import create_client, Client
 from datetime import datetime, timedelta, timezone
 import pandas as pd
@@ -70,7 +71,7 @@ def render_donor_ticker(names):
         </style>
         <div class="donor-ticker-wrap">
             <div class="donor-ticker-move">
-                🎾 Thank you Guys ! &nbsp;&nbsp;•&nbsp;&nbsp; {ticker_text} &nbsp;&nbsp;•&nbsp;&nbsp; {ticker_text}
+                🎾 Thank you to our generous donors who keep this site running: &nbsp;&nbsp;•&nbsp;&nbsp; {ticker_text} &nbsp;&nbsp;•&nbsp;&nbsp; {ticker_text}
             </div>
         </div>
         <div class="donor-ticker-spacer"></div>
@@ -79,6 +80,29 @@ def render_donor_ticker(names):
     )
 
 render_donor_ticker(DONOR_NAMES)
+
+# --- AUTO-REFRESH ---
+# Reloads the whole tab periodically so it picks up any code/donor-list
+# changes even if a user leaves the tab open in the background.
+# NOTE: this is a full page reload, so it will clear any half-filled form
+# fields on the page at the moment it fires.
+AUTO_REFRESH_MINUTES = 10
+
+def enable_auto_refresh(minutes):
+    interval_ms = int(minutes * 60 * 1000)
+    components.html(
+        f"""
+        <script>
+        setTimeout(function() {{
+            window.top.location.reload();
+        }}, {interval_ms});
+        </script>
+        """,
+        height=0,
+        width=0,
+    )
+
+enable_auto_refresh(AUTO_REFRESH_MINUTES)
 
 # --- DATABASE SETUP (SUPABASE) ---
 @st.cache_resource
