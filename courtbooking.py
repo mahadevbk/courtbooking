@@ -32,7 +32,7 @@ def render_donor_ticker(names):
     """Renders a fixed, auto-scrolling ticker of donor names above all content."""
     if not names:
         return
-    ticker_text = "&nbsp;&nbsp;•&nbsp;&nbsp;".join(names)
+    ticker_text = "&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;•&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;".join(names)
     st.markdown(
         f"""
         <style>
@@ -56,7 +56,7 @@ def render_donor_ticker(names):
             padding-left: 100%;
             font-size: 0.9rem;
             font-weight: 600;
-            animation: donor-ticker-scroll 45s linear infinite;
+            animation: donor-ticker-scroll 20s linear infinite;
         }}
         .donor-ticker-move:hover {{
             animation-play-state: paused;
@@ -71,7 +71,7 @@ def render_donor_ticker(names):
         </style>
         <div class="donor-ticker-wrap">
             <div class="donor-ticker-move">
-                🎾 Thanks guys for keeping this site running! &nbsp;&nbsp;•&nbsp;&nbsp; {ticker_text} &nbsp;&nbsp;•&nbsp;&nbsp; {ticker_text}
+                🎾 Thanks guys for keeping this site running! &nbsp;&nbsp;•&nbsp;&nbsp; {ticker_text}
             </div>
         </div>
         <div class="donor-ticker-spacer"></div>
