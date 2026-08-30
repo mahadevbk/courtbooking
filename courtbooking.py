@@ -70,7 +70,7 @@ def render_donor_ticker(names):
         </style>
         <div class="donor-ticker-wrap">
             <div class="donor-ticker-move">
-                🎾 Thank you to our generous donors who keep this site running: &nbsp;&nbsp;•&nbsp;&nbsp; {ticker_text} &nbsp;&nbsp;•&nbsp;&nbsp; {ticker_text}
+                🎾 Thank you Guys ! &nbsp;&nbsp;•&nbsp;&nbsp; {ticker_text} &nbsp;&nbsp;•&nbsp;&nbsp; {ticker_text}
             </div>
         </div>
         <div class="donor-ticker-spacer"></div>
