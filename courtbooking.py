@@ -19,6 +19,67 @@ st.set_page_config(
     layout="wide",
 )
 
+# --- DONOR TICKER (scrolls at the top of every tab) ---
+# Just edit this list to add/remove/rename donors.
+DONOR_NAMES = [
+    "Abhisek", "Adam", "Arlan", "Carlos", "Charbel", "Dev",
+    "Farheen", "Hana", "Harith", "Hisham", "Katya", "Mei",
+    "Melissa", "Mustafa", "Nikki", "Rena", "Riin", "Vik",
+]
+
+def render_donor_ticker(names):
+    """Renders a fixed, auto-scrolling ticker of donor names above all content."""
+    if not names:
+        return
+    ticker_text = "&nbsp;&nbsp;•&nbsp;&nbsp;".join(names)
+    st.markdown(
+        f"""
+        <style>
+        .donor-ticker-wrap {{
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            z-index: 1000000;
+            background-color: #0d5384;
+            color: #ccff00;
+            overflow: hidden;
+            white-space: nowrap;
+            padding: 6px 0;
+            border-bottom: 2px solid #fff500;
+            box-sizing: border-box;
+        }}
+        .donor-ticker-move {{
+            display: inline-block;
+            white-space: nowrap;
+            padding-left: 100%;
+            font-size: 0.9rem;
+            font-weight: 600;
+            animation: donor-ticker-scroll 45s linear infinite;
+        }}
+        .donor-ticker-move:hover {{
+            animation-play-state: paused;
+        }}
+        @keyframes donor-ticker-scroll {{
+            0%   {{ transform: translate(0, 0); }}
+            100% {{ transform: translate(-100%, 0); }}
+        }}
+        .donor-ticker-spacer {{
+            height: 34px;
+        }}
+        </style>
+        <div class="donor-ticker-wrap">
+            <div class="donor-ticker-move">
+                🎾 Thank you to our generous donors who keep this site running: &nbsp;&nbsp;•&nbsp;&nbsp; {ticker_text} &nbsp;&nbsp;•&nbsp;&nbsp; {ticker_text}
+            </div>
+        </div>
+        <div class="donor-ticker-spacer"></div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+render_donor_ticker(DONOR_NAMES)
+
 # --- DATABASE SETUP (SUPABASE) ---
 @st.cache_resource
 def init_supabase():
