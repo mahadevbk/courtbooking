@@ -86,7 +86,7 @@ render_donor_ticker(DONOR_NAMES)
 # changes even if a user leaves the tab open in the background.
 # NOTE: this is a full page reload, so it will clear any half-filled form
 # fields on the page at the moment it fires.
-AUTO_REFRESH_MINUTES = 10
+AUTO_REFRESH_MINUTES = 30
 
 def enable_auto_refresh(minutes):
     interval_ms = int(minutes * 60 * 1000)
