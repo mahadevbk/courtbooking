@@ -23,9 +23,9 @@ st.set_page_config(
 # --- DONOR TICKER (scrolls at the top of every tab) ---
 # Just edit this list to add/remove/rename donors.
 DONOR_NAMES = [
-    "Abhisek", "Adam", "Arlan", "Carlos", "Charbel", "Dev",
+    "Abhisek", "Adam", "Arlan", "Alesia", "Carlos", "Charbel", "Dev",
     "Farheen", "Hana", "Harith", "Hisham", "Katya", "Mei",
-    "Melissa", "Mustafa", "Nikki", "Rena", "Riin", "Sheila", "Vik",
+    "Melissa", "Mustafa", "Nikki", "Rena", "Riin", "Sheila", "Sofia", "Vik",
 ]
 
 def render_donor_ticker(names):
