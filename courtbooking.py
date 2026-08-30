@@ -56,7 +56,7 @@ def render_donor_ticker(names):
             padding-left: 100%;
             font-size: 0.9rem;
             font-weight: 600;
-            animation: donor-ticker-scroll 20s linear infinite;
+            animation: donor-ticker-scroll 30s linear infinite;
         }}
         .donor-ticker-move:hover {{
             animation-play-state: paused;
