@@ -28,10 +28,23 @@ DONOR_NAMES = [
 ]
 
 def render_donor_ticker(names):
-    """Renders a fixed, auto-scrolling ticker of donor names above all content."""
+    """Renders a fixed, auto-scrolling ticker of donor names separated by tennis ball icons."""
     if not names:
         return
-    ticker_text = "&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;•&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;".join(names)
+
+    # Lightweight SVG of a standalone tennis ball (rendered inline)
+    tennis_ball_svg = (
+        '<svg style="vertical-align: middle; margin: 0 12px; display: inline-block;" '
+        'width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#ccff00" '
+        'stroke-width="2" stroke-linecap="round" stroke-linejoin="round">'
+        '<circle cx="12" cy="12" r="10" fill="#ccff00" stroke="#0d5384"/>'
+        '<path d="M2 12a10 10 0 0 0 10 10" stroke="#0d5384"/>'
+        '<path d="M12 2a10 10 0 0 1 10 10" stroke="#0d5384"/>'
+        '</svg>'
+    )
+
+    ticker_text = tennis_ball_svg.join(names)
+
     st.markdown(
         f"""
         <style>
@@ -70,7 +83,7 @@ def render_donor_ticker(names):
         </style>
         <div class="donor-ticker-wrap">
             <div class="donor-ticker-move">
-                🎾 Thanks guys for keeping this site running! &nbsp;&nbsp;•&nbsp;&nbsp; {ticker_text}
+                {tennis_ball_svg} Thanks guys for keeping this site running! {tennis_ball_svg} {ticker_text}
             </div>
         </div>
         <div class="donor-ticker-spacer"></div>
