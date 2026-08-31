@@ -28,9 +28,12 @@ DONOR_NAMES = [
 ]
 
 def render_donor_ticker(names):
-    """Renders a fixed, auto-scrolling ticker of donor names separated by tennis ball icons."""
+    """Renders a fixed, auto-scrolling ticker of uppercase donor names separated by tennis ball icons."""
     if not names:
         return
+
+    # Convert all names to uppercase
+    uppercase_names = [name.upper() for name in names]
 
     # Lightweight SVG of a standalone tennis ball (rendered inline)
     tennis_ball_svg = (
@@ -43,7 +46,7 @@ def render_donor_ticker(names):
         '</svg>'
     )
 
-    ticker_text = tennis_ball_svg.join(names)
+    ticker_text = tennis_ball_svg.join(uppercase_names)
 
     st.markdown(
         f"""
@@ -83,7 +86,7 @@ def render_donor_ticker(names):
         </style>
         <div class="donor-ticker-wrap">
             <div class="donor-ticker-move">
-                {tennis_ball_svg} Thanks guys for keeping this site running! {tennis_ball_svg} {ticker_text}
+                {tennis_ball_svg} THANKS GUYS FOR KEEPING THIS SITE RUNNING! {tennis_ball_svg} {ticker_text}
             </div>
         </div>
         <div class="donor-ticker-spacer"></div>
