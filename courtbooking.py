@@ -24,7 +24,7 @@ st.set_page_config(
 DONOR_NAMES = [
     "Abhisek", "Adam", "Arlan", "Alesia", "Angelo", "Carlos", "Charbel", "Dev",
     "Farheen", "Hana", "Harith", "Hisham", "Katya", "Mei",
-    "Melissa", "Mustafa", "Nikki", "Rena", "Riin", "Saket", "Sheila", "Sofia", "Vik",
+    "Melissa", "Mustafa", "Nikki", "Rena", "Riin", "Saket", "Sheila", "Sofia", "Vik", "Yousef",
 ]
 
 def render_donor_ticker(names):
