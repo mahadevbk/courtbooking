@@ -1,6 +1,5 @@
 import time
 import streamlit as st
-import streamlit.components.v1 as components
 from supabase import create_client, Client
 from datetime import datetime, timedelta, timezone
 import pandas as pd
@@ -90,7 +89,7 @@ AUTO_REFRESH_MINUTES = 30
 
 def enable_auto_refresh(minutes):
     interval_ms = int(minutes * 60 * 1000)
-    components.html(
+    st.iframe(
         f"""
         <script>
         setTimeout(function() {{
@@ -99,7 +98,6 @@ def enable_auto_refresh(minutes):
         </script>
         """,
         height=0,
-        width=0,
     )
 
 enable_auto_refresh(AUTO_REFRESH_MINUTES)
