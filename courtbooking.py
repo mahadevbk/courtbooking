@@ -22,7 +22,7 @@ st.set_page_config(
 # --- DONOR TICKER (scrolls at the top of every tab) ---
 # Just edit this list to add/remove/rename donors.
 DONOR_NAMES = [
-    "Abhisek", "Adam", "Arlan", "Alesia", "Carlos", "Charbel", "Dev",
+    "Abhisek", "Adam", "Arlan", "Alesia", "Angelo", "Carlos", "Charbel", "Dev",
     "Farheen", "Hana", "Harith", "Hisham", "Katya", "Mei",
     "Melissa", "Mustafa", "Nikki", "Rena", "Riin", "Saket", "Sheila", "Sofia", "Vik",
 ]
