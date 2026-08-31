@@ -97,7 +97,7 @@ def enable_auto_refresh(minutes):
         }}, {interval_ms});
         </script>
         """,
-        height=0,
+        height=1,
     )
 
 enable_auto_refresh(AUTO_REFRESH_MINUTES)
