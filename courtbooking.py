@@ -23,7 +23,7 @@ st.set_page_config(
 # Just edit this list to add/remove/rename donors.
 DONOR_NAMES = [
     "Abhisek", "Adam", "Arlan", "Alesia", "Angelo", "Carlos", "Charbel", "Dev", "Elie",
-    "Farheen", "Hana", "Harith", "Hisham", "Katya", "Leina", "Mei",
+    "Farheen", "Hana", "Harith", "Hisham", "Katya", "Khaled", "Leina", "Mei",
     "Melissa", "Mustafa", "Nikki", "Rena", "Riin", "Saket", "Sheila", "Sofia", "Vik", "Yousef",
 ]
 
