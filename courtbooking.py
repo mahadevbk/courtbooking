@@ -453,6 +453,14 @@ if st.query_params.get("view") == "full":
 # --- MAIN APP ---
 st.subheader("🎾 Book that Court ...")    
 st.caption("An Un-Official & Community Driven Booking Solution.")
+st.markdown(
+    "<p style='color:#ccff00; font-weight:700; margin-top:-8px;'>"
+    "Serving about 2,350 active users, the operation costs of this app "
+    "(DB & SaaS hosting) are funded by donations. Please reach out to Dev "
+    "if you'd like to help."
+    "</p>",
+    unsafe_allow_html=True,
+)
 st.info("Serving about 2350 activer users, the operation costs of this app are being funded by donations to pay for DB SAS hosting. Please reach out to Dev if, you would like to help.")
 
 try:
