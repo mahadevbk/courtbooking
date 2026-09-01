@@ -461,7 +461,7 @@ st.markdown(
     "</p>",
     unsafe_allow_html=True,
 )
-st.info("Serving about 2350 activer users, the operation costs of this app are being funded by donations to pay for DB SAS hosting. Please reach out to Dev if, you would like to help.")
+#st.info("Serving about 2350 activer users, the operation costs of this app are being funded by donations to pay for DB SAS hosting. Please reach out to Dev if, you would like to help.")
 
 try:
     _process_background_tasks()
