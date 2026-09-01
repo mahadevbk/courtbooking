@@ -453,7 +453,7 @@ if st.query_params.get("view") == "full":
 # --- MAIN APP ---
 st.subheader("🎾 Book that Court ...")    
 st.caption("An Un-Official & Community Driven Booking Solution.")
-st.info("With about 2350 activer users, the operation costs of this app are being funded by the community. Please reach out to Dev if would like to help.")
+st.info("Serving about 2350 activer users, the operation costs of this app are being funded by donations to pay for DB SAS hosting. Please reach out to Dev if, you would like to help.")
 
 try:
     _process_background_tasks()
