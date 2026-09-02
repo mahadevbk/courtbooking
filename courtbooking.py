@@ -557,7 +557,6 @@ if 'authenticated' not in st.session_state:
 if not st.session_state.authenticated:
     logout_mode = st.query_params.get("logout") == "1"
     
-    # Read browser storage bundle and ensure client UUID exists
     stored_auth_bundle = st_javascript("""
         (function() {
             let uuid = localStorage.getItem('court_device_uuid');
@@ -589,17 +588,17 @@ if not st.session_state.authenticated:
     refresh_token = auth_data.get("refreshToken", "no_token")
     claim_info = auth_data.get("claimInfo", "no_claim")
     
-    # Cache valid device UUID in session_state immediately
     fresh_uuid = auth_data.get("deviceUuid")
     if fresh_uuid and fresh_uuid not in ("no_uuid", "0", ""):
         st.session_state.device_uuid = fresh_uuid
     elif "device_uuid" not in st.session_state:
         st.session_state.device_uuid = "device_pending"
 
-    # 1. Primary: Silent session restore from Supabase Refresh Token
+    # 1. Primary: Silent restore using refresh_token parameter
     if not logout_mode and refresh_token and refresh_token != "no_token":
         try:
-            refresh_res = supabase.auth.refresh_session(refresh_token)
+            # Pass refresh_token as a keyword argument to prevent SDK invocation errors
+            refresh_res = supabase.auth.refresh_session(refresh_token=refresh_token)
             if refresh_res and refresh_res.session:
                 new_refresh = refresh_res.session.refresh_token
                 user_email = refresh_res.user.email
@@ -614,7 +613,14 @@ if not st.session_state.authenticated:
                         st.session_state.authenticated = True
                         st.rerun()
         except Exception:
-            st_javascript("localStorage.removeItem('supabase_refresh_token'); localStorage.removeItem('verified_claim_info');")
+            # Fall back to claimInfo and legacy lock instead of deleting tokens immediately
+            if claim_info and claim_info != "no_claim":
+                c_parts = claim_info.split("::")
+                if len(c_parts) == 2:
+                    st.session_state.sub_community = c_parts[0]
+                    st.session_state.villa = c_parts[1]
+                    st.session_state.authenticated = True
+                    st.rerun()
 
     # 2. Fallback: Legacy Auto-Login (localStorage lock)
     if not logout_mode and not st.session_state.authenticated and legacy_lock and legacy_lock != "no_lock":
@@ -627,14 +633,12 @@ if not st.session_state.authenticated:
             st_javascript("localStorage.removeItem('court_villa_lock');")
             st.rerun()
 
-    # Trigger Floating Announcement Dialog once per session
     if "seen_migration_notice" not in st.session_state:
         st.session_state.seen_migration_notice = False
 
     if not st.session_state.seen_migration_notice:
         show_migration_dialog()
 
-    # Initialize OTP form state
     if "otp_sent" not in st.session_state:
         st.session_state.otp_sent = False
     if "otp_email" not in st.session_state:
@@ -644,7 +648,6 @@ if not st.session_state.authenticated:
     if "otp_target_sub" not in st.session_state:
         st.session_state.otp_target_sub = None
 
-    # Primary login tab: Email verification | Secondary: Legacy direct login
     login_tab1, login_tab2 = st.tabs(["🛡️ Verify Villa via Email (Standard)", "⚡ Fast Login (Legacy Fallback)"])
 
     with login_tab1:
@@ -728,13 +731,10 @@ if not st.session_state.authenticated:
                                 verified_email = st.session_state.otp_email
                                 refresh_tok = res.session.refresh_token
                                 
-                                # Resolve persistent UUID safely
                                 resolved_uuid = st.session_state.get("device_uuid")
                                 if not resolved_uuid or resolved_uuid in ("no_uuid", "device_pending"):
-                                    # Fallback mint: ensure clean unique ID in table
                                     resolved_uuid = f"dev_{random.randint(10000000, 99999999)}_{int(time.time())}"
                                     st.session_state.device_uuid = resolved_uuid
-                                    st_javascript(f"localStorage.setItem('court_device_uuid', '{resolved_uuid}');")
 
                                 existing = get_existing_claim(target_sub, target_villa, verified_email)
                                 now_ts = get_utc_plus_4().isoformat()
@@ -756,10 +756,13 @@ if not st.session_state.authenticated:
                                         "status": "approved"
                                     }).eq("id", existing["id"]))
 
+                                # Persist all tokens: session, claimInfo, and the persistent villa lock
                                 claim_bundle = f"{target_sub}::{target_villa}"
+                                fallback_choice = f"{target_sub}-{target_villa}"
                                 js_persist = (
                                     f"localStorage.setItem('supabase_refresh_token', '{refresh_tok}'); "
                                     f"localStorage.setItem('verified_claim_info', '{claim_bundle}'); "
+                                    f"localStorage.setItem('court_villa_lock', '{fallback_choice}'); "
                                     f"localStorage.setItem('court_device_uuid', '{resolved_uuid}');"
                                 )
                                 st_javascript(js_persist)
@@ -1067,7 +1070,6 @@ with tab3:
         for b in my_b: b['orig_v'] = villa; b['orig_sc'] = sub_community
         limit_val = 6
 
-    # --- Summary Section ---
     today_str = get_today().strftime('%Y-%m-%d')
     total_active = len(my_b)
     today_bookings = len([b for b in my_b if b['date'] == today_str])
@@ -1337,7 +1339,6 @@ with tab5:
     if is_admin:
         st.success("Admin Access Granted")
         
-        # Villa Email-Claims Management (Reset / Reclaim)
         st.markdown("### 🛡️ Villa Claims & Verification Management")
         
         all_claimed = get_all_claimed_villas()
@@ -1381,7 +1382,6 @@ with tab5:
             except Exception as e:
                 st.error(f"Error inspecting claims: {str(e)}")
 
-        # Admin Manual Add Claim
         with st.expander("➕ Manually Add / Authorize an Email Claim (Without OTP)"):
             st.caption("Useful for edge cases or assisting residents who cannot receive the OTP code.")
             c_man1, c_man2 = st.columns(2)
