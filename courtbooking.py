@@ -649,36 +649,10 @@ if not st.session_state.authenticated:
     if "otp_target_sub" not in st.session_state:
         st.session_state.otp_target_sub = None
 
-    login_tab1, login_tab2 = st.tabs(["⚡ Fast Login (Legacy)", "🛡️ Verify Villa via Email (New)"])
+    # Default tab is now Email-Verified Access; Legacy login serves as secondary fallback
+    login_tab1, login_tab2 = st.tabs(["🛡️ Verify Villa via Email (Standard)", "⚡ Fast Login (Legacy Fallback)"])
 
     with login_tab1:
-        st.subheader("Villa Login")
-        st.caption("Standard direct login.")
-        
-        col1, col2 = st.columns(2)
-        with col1:
-            sub_community_input = st.selectbox("Select Your Sub-Community", options=sub_community_list, index=None, key="leg_sub")
-        with col2:
-            villa_input_raw = st.text_input("Enter Villa Number", key="leg_villa").strip()
-            villa_input = "".join(filter(str.isdigit, villa_input_raw))
-
-        if st.button("Login", type="primary", width='stretch', key="leg_btn"):
-            if not sub_community_input or not villa_input:
-                if villa_input_raw and not villa_input:
-                    st.error("Please enter a numeric villa number (e.g. 255).")
-                else:
-                    st.error("Please select a sub-community and enter your villa number.")
-            else:
-                current_choice = f"{sub_community_input}-{villa_input}"
-                st_javascript(f"localStorage.setItem('court_villa_lock', '{current_choice}');")
-                st.session_state.sub_community, st.session_state.villa = sub_community_input, villa_input
-                st.session_state.device_uuid = device_uuid
-                st.session_state.authenticated = True
-                st.query_params.clear()
-                add_log("Device Registered", f"New login for {sub_community_input} Villa {villa_input}", fingerprint=device_uuid)
-                st.rerun()
-
-    with login_tab2:
         st.subheader("Email-Verified Access")
         st.caption("Verify via a 6-digit email code. Max 2 verified emails per villa.")
 
@@ -813,6 +787,33 @@ if not st.session_state.authenticated:
                 if st.button("Cancel / Change", width='stretch'):
                     st.session_state.otp_sent = False
                     st.rerun()
+
+    with login_tab2:
+        st.subheader("Villa Login (Legacy Fallback)")
+        st.caption("Standard direct login without email verification.")
+        
+        col1, col2 = st.columns(2)
+        with col1:
+            sub_community_input = st.selectbox("Select Your Sub-Community", options=sub_community_list, index=None, key="leg_sub")
+        with col2:
+            villa_input_raw = st.text_input("Enter Villa Number", key="leg_villa").strip()
+            villa_input = "".join(filter(str.isdigit, villa_input_raw))
+
+        if st.button("Login (Legacy)", type="secondary", width='stretch', key="leg_btn"):
+            if not sub_community_input or not villa_input:
+                if villa_input_raw and not villa_input:
+                    st.error("Please enter a numeric villa number (e.g. 255).")
+                else:
+                    st.error("Please select a sub-community and enter your villa number.")
+            else:
+                current_choice = f"{sub_community_input}-{villa_input}"
+                st_javascript(f"localStorage.setItem('court_villa_lock', '{current_choice}');")
+                st.session_state.sub_community, st.session_state.villa = sub_community_input, villa_input
+                st.session_state.device_uuid = device_uuid
+                st.session_state.authenticated = True
+                st.query_params.clear()
+                add_log("Device Registered", f"New login for {sub_community_input} Villa {villa_input}", fingerprint=device_uuid)
+                st.rerun()
 
     st.write("")
     if st.button("🚪 Reset / Change Villa", width='stretch', key="reg_logout"):
