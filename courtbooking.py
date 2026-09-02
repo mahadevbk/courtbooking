@@ -461,7 +461,6 @@ st.markdown(
     "</p>",
     unsafe_allow_html=True,
 )
-#st.info("Serving about 2350 activer users, the operation costs of this app are being funded by donations to pay for DB SAS hosting. Please reach out to Dev if, you would like to help.")
 
 try:
     _process_background_tasks()
@@ -491,7 +490,7 @@ if not st.session_state.authenticated:
     # Use query params to detect manual logout
     logout_mode = st.query_params.get("logout") == "1"
     
-    # Simple auto-login from localStorage
+    # Simple auto-login from localStorage (legacy)
     stored_lock = st_javascript("localStorage.getItem('court_villa_lock') || 'no_lock';")
     
     # Wait for signals to stabilize
@@ -500,45 +499,125 @@ if not st.session_state.authenticated:
         st.info("Please wait...")
         st.stop()
 
-    # 1. Primary Auto-Login (localStorage)
+    # 1. Primary Auto-Login (localStorage legacy lock)
     if not logout_mode and stored_lock and stored_lock != "no_lock":
         try:
             locked_sub, locked_villa = stored_lock.split("-")
             st.session_state.sub_community, st.session_state.villa = locked_sub, locked_villa
             st.session_state.authenticated = True
             st.rerun()
-        except:
+        except Exception:
             st_javascript("localStorage.removeItem('court_villa_lock');")
             st.rerun()
 
-    # 2. Registration Form
-    st.subheader("Villa Login")
-    st.info("Enter your villa details to continue.")
-    
-    col1, col2 = st.columns(2)
-    with col1:
-        sub_community_input = st.selectbox("Select Your Sub-Community", options=sub_community_list, index=None)
-    with col2:
-        # Filter input to only allow digits for villa number
-        villa_input_raw = st.text_input("Enter Villa Number").strip()
-        villa_input = "".join(filter(str.isdigit, villa_input_raw))
+    # Initialize OTP state flags
+    if "otp_sent" not in st.session_state:
+        st.session_state.otp_sent = False
+    if "otp_email" not in st.session_state:
+        st.session_state.otp_email = ""
+    if "otp_target_villa" not in st.session_state:
+        st.session_state.otp_target_villa = None
+    if "otp_target_sub" not in st.session_state:
+        st.session_state.otp_target_sub = None
 
-    if st.button("Login", type="primary", width='stretch'):
-        if not sub_community_input or not villa_input:
-            if villa_input_raw and not villa_input:
-                st.error("Please enter a numeric villa number (e.g. 255).")
+    # --- TABBED LOGIN UI: Fast Track vs Verified ---
+    login_tab1, login_tab2 = st.tabs(["⚡ Fast Login (Legacy)", "🛡️ Verify Villa via Email (New)"])
+
+    with login_tab1:
+        st.subheader("Villa Login")
+        st.caption("Standard direct login.")
+        
+        col1, col2 = st.columns(2)
+        with col1:
+            sub_community_input = st.selectbox("Select Your Sub-Community", options=sub_community_list, index=None, key="leg_sub")
+        with col2:
+            villa_input_raw = st.text_input("Enter Villa Number", key="leg_villa").strip()
+            villa_input = "".join(filter(str.isdigit, villa_input_raw))
+
+        if st.button("Login", type="primary", width='stretch', key="leg_btn"):
+            if not sub_community_input or not villa_input:
+                if villa_input_raw and not villa_input:
+                    st.error("Please enter a numeric villa number (e.g. 255).")
+                else:
+                    st.error("Please select a sub-community and enter your villa number.")
             else:
-                st.error("Please select a sub-community and enter your villa number.")
+                current_choice = f"{sub_community_input}-{villa_input}"
+                st_javascript(f"localStorage.setItem('court_villa_lock', '{current_choice}');")
+                st.session_state.sub_community, st.session_state.villa = sub_community_input, villa_input
+                st.session_state.authenticated = True
+                st.query_params.clear()
+                add_log("Device Registered", f"New login for {sub_community_input} Villa {villa_input}")
+                st.rerun()
+
+    with login_tab2:
+        st.subheader("Email-Verified Access")
+        st.caption("Receive a 6-digit one-time code to secure your villa.")
+
+        if not st.session_state.otp_sent:
+            col_v1, col_v2 = st.columns(2)
+            with col_v1:
+                otp_sub = st.selectbox("Sub-Community", options=sub_community_list, index=None, key="otp_sub_select")
+            with col_v2:
+                otp_villa_raw = st.text_input("Villa Number", key="otp_villa_text").strip()
+                otp_villa = "".join(filter(str.isdigit, otp_villa_raw))
+
+            otp_email_input = st.text_input("Email Address", placeholder="name@example.com", key="otp_email_text").strip().lower()
+
+            if st.button("Send 6-Digit Code", type="primary", width='stretch'):
+                if not otp_sub or not otp_villa:
+                    st.error("Please specify your Sub-Community and Villa Number.")
+                elif not otp_email_input or "@" not in otp_email_input:
+                    st.error("Please provide a valid email address.")
+                else:
+                    try:
+                        # Request Supabase OTP
+                        supabase.auth.sign_in_with_otp({"email": otp_email_input})
+                        st.session_state.otp_sent = True
+                        st.session_state.otp_email = otp_email_input
+                        st.session_state.otp_target_sub = otp_sub
+                        st.session_state.otp_target_villa = otp_villa
+                        st.success(f"Code sent to {otp_email_input}!")
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"Failed to send code: {str(e)}")
         else:
-            current_choice = f"{sub_community_input}-{villa_input}"
-            st_javascript(f"localStorage.setItem('court_villa_lock', '{current_choice}');")
-            st.session_state.sub_community, st.session_state.villa = sub_community_input, villa_input
-            st.session_state.authenticated = True
-            # Clear query params to remove ?logout=1 if it exists
-            st.query_params.clear()
-            add_log("Device Registered", f"New login for {sub_community_input} Villa {villa_input}")
-            st.rerun()
-    
+            st.info(f"Enter the 6-digit code sent to **{st.session_state.otp_email}** for **{st.session_state.otp_target_sub} - Villa {st.session_state.otp_target_villa}**.")
+            token_input = st.text_input("Enter 6-digit code", max_chars=6, key="otp_token_text").strip()
+            
+            c1, c2 = st.columns(2)
+            with c1:
+                if st.button("Verify Code", type="primary", width='stretch'):
+                    if not token_input or len(token_input) != 6:
+                        st.error("Please enter a 6-digit verification code.")
+                    else:
+                        try:
+                            # Verify OTP with Supabase
+                            res = supabase.auth.verify_otp({
+                                "email": st.session_state.otp_email,
+                                "token": token_input,
+                                "type": "email"
+                            })
+                            if res and res.session:
+                                # Successful verification test
+                                st.session_state.sub_community = st.session_state.otp_target_sub
+                                st.session_state.villa = st.session_state.otp_target_villa
+                                st.session_state.authenticated = True
+                                
+                                # Reset OTP state
+                                st.session_state.otp_sent = False
+                                st.balloons()
+                                st.success("Verified successfully! Logging you in...")
+                                time.sleep(1.5)
+                                st.rerun()
+                            else:
+                                st.error("Verification failed. Please check the code.")
+                        except Exception as e:
+                            st.error(f"Invalid code or verification error: {str(e)}")
+            with c2:
+                if st.button("Cancel / Try Different Email", width='stretch'):
+                    st.session_state.otp_sent = False
+                    st.rerun()
+
     st.write("")
     if st.button("🚪 Reset / Change Villa", width='stretch', key="reg_logout"):
         logout_action()
@@ -1147,44 +1226,44 @@ with tab5:
     elif admin_pass:
         st.error("Incorrect Password")
 
-st.divider()
-st.subheader("💾 Data Backup")
-def get_zip_data():
-    try:
-        # Fetch bookings in chunks
-        b_data = []
-        chunk_size = 1000
-        offset = 0
-        while True:
-            res = run_query(supabase.table("bookings").select("*").range(offset, offset + chunk_size - 1))
-            if not res or res.data is None: break
-            b_data.extend(res.data)
-            if len(res.data) < chunk_size: break
-            offset += chunk_size
-            
-        # Fetch logs in chunks
-        l_data = []
-        offset = 0
-        while True:
-            res = run_query(supabase.table("logs").select("*").range(offset, offset + chunk_size - 1).order("timestamp", desc=True))
-            if not res or res.data is None: break
-            l_data.extend(res.data)
-            if len(res.data) < chunk_size: break
-            offset += chunk_size
+    st.divider()
+    st.subheader("💾 Data Backup")
+    def get_zip_data():
+        try:
+            # Fetch bookings in chunks
+            b_data = []
+            chunk_size = 1000
+            offset = 0
+            while True:
+                res = run_query(supabase.table("bookings").select("*").range(offset, offset + chunk_size - 1))
+                if not res or res.data is None: break
+                b_data.extend(res.data)
+                if len(res.data) < chunk_size: break
+                offset += chunk_size
+                
+            # Fetch logs in chunks
+            l_data = []
+            offset = 0
+            while True:
+                res = run_query(supabase.table("logs").select("*").range(offset, offset + chunk_size - 1).order("timestamp", desc=True))
+                if not res or res.data is None: break
+                l_data.extend(res.data)
+                if len(res.data) < chunk_size: break
+                offset += chunk_size
 
-        buf = io.BytesIO()
-        with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as vz:
-            vz.writestr(f"bookings_{get_today()}.csv", pd.DataFrame(b_data).to_csv(index=False))
-            vz.writestr(f"logs_{get_today()}.csv", pd.DataFrame(l_data).to_csv(index=False))
-        return buf.getvalue()
-    except Exception as e:
-        st.error(f"Backup Error: {str(e)}")
-        return None
+            buf = io.BytesIO()
+            with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as vz:
+                vz.writestr(f"bookings_{get_today()}.csv", pd.DataFrame(b_data).to_csv(index=False))
+                vz.writestr(f"logs_{get_today()}.csv", pd.DataFrame(l_data).to_csv(index=False))
+            return buf.getvalue()
+        except Exception as e:
+            st.error(f"Backup Error: {str(e)}")
+            return None
 
-if st.button("Generate Backup Link"):
-    data = get_zip_data()
-    if data: st.download_button(label="Click here to Download ZIP", data=data, file_name=f"court_booking_backup_{get_today()}.zip", mime="application/zip")
-    else: st.error("Failed to fetch data for backup.")
+    if st.button("Generate Backup Link"):
+        data = get_zip_data()
+        if data: st.download_button(label="Click here to Download ZIP", data=data, file_name=f"court_booking_backup_{get_today()}.zip", mime="application/zip")
+        else: st.error("Failed to fetch data for backup.")
 
 col1, col2 = st.columns([1, 5])
 with col1: st.markdown(f'<img src="https://raw.githubusercontent.com/mahadevbk/courtbooking/main/qr-code.miracourtbooking.streamlit.app.png" height="100">', unsafe_allow_html=True)
