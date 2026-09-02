@@ -181,10 +181,6 @@ def get_villa_claims_count(sub_community, villa):
     return res.count if res and res.count is not None else 0
 
 def get_existing_claim(sub_community, villa, email):
-    # Exact match on the already-lowercased email. Using ilike() here previously
-    # treated '%' and '_' as SQL wildcards, so an email like 'john_doe@x.com'
-    # could unintentionally match unrelated rows containing any character in
-    # that position.
     res = run_query(supabase.table("villa_claims").select("*")
                     .eq("sub_community", sub_community)
                     .eq("villa", villa)
@@ -433,8 +429,7 @@ COOKIE_MAX_AGE_SECONDS = 60 * 60 * 24 * 365  # 1 year
 def get_cookie_claim():
     """Read the verified-login cookie directly from the incoming HTTP request via
     st.context.cookies. This is synchronous - available on the very first script
-    execution, with no async JS round-trip and no retry/race condition. This is
-    the primary session-restore mechanism."""
+    execution, with no async JS round-trip and no retry/race condition."""
     try:
         raw = st.context.cookies.get(COOKIE_NAME)
     except Exception:
@@ -451,10 +446,7 @@ def get_cookie_claim():
     return None
 
 def set_claim_cookie(sub_community, villa, email):
-    """Write the verified-login cookie. This still requires one JS call, but it
-    only ever runs once, at the moment of an explicit user action (completing
-    OTP verification or legacy login) - not on every automatic page load - so
-    it isn't exposed to the same timing race as the old localStorage restore."""
+    """Write the verified-login cookie."""
     value = urllib.parse.quote(f"{sub_community}::{villa}::{email or ''}")
     st_javascript(
         f"document.cookie = '{COOKIE_NAME}={value}; max-age={COOKIE_MAX_AGE_SECONDS}; path=/; SameSite=Lax'; 1;"
@@ -466,16 +458,18 @@ def clear_claim_cookie():
 def logout_action():
     """Centrally handles logout, clears session, cookie, and legacy localStorage."""
     clear_claim_cookie()
+    # Navigate to clean origin and pathname without appending ?logout=1
     js_clear = (
         "localStorage.removeItem('court_villa_lock'); "
         "localStorage.removeItem('supabase_refresh_token'); "
         "localStorage.removeItem('verified_claim_info'); "
-        "setTimeout(() => { window.location.href = window.location.origin + window.location.pathname + '?logout=1'; }, 300);"
+        "setTimeout(() => { window.location.href = window.location.origin + window.location.pathname; }, 300);"
     )
     st_javascript(js_clear)
     for key in ["authenticated", "sub_community", "villa", "verified_email", "otp_sent", "otp_email", "otp_target_villa", "otp_target_sub"]:
         if key in st.session_state:
             del st.session_state[key]
+    st.query_params.clear()
     st.info("Logging out... Please wait.")
     time.sleep(1.2)
     st.rerun()
@@ -579,13 +573,13 @@ if 'authenticated' not in st.session_state:
 # --- AUTHENTICATION LOGIC ---
 if not st.session_state.authenticated:
     logout_mode = st.query_params.get("logout") == "1"
+    
+    # Strip ?logout=1 from the URL state so subsequent manual page refreshes do not get stuck
+    if logout_mode:
+        st.query_params.clear()
 
     # 1. Primary restore path: read the login cookie directly off the incoming
-    # HTTP request via st.context.cookies. This is synchronous - no JS
-    # round-trip, no timing race, works identically on every browser/OS since
-    # the browser sends cookies automatically on every request (including a
-    # plain manual refresh). This replaces the old localStorage-based restore
-    # as the main mechanism.
+    # HTTP request via st.context.cookies. Synchronous and available immediately.
     if not logout_mode:
         cookie_claim = get_cookie_claim()
         if cookie_claim:
@@ -594,6 +588,7 @@ if not st.session_state.authenticated:
             if cookie_claim.get("email"):
                 st.session_state.verified_email = cookie_claim["email"]
             st.session_state.authenticated = True
+            st.query_params.clear()
             st.rerun()
 
     stored_auth_bundle = st_javascript("""
@@ -616,15 +611,6 @@ if not st.session_state.authenticated:
         })()
     """)
     
-    # The JS read above is async: on the very first script pass right after a
-    # page load, the component can report back before the browser has actually
-    # returned the stored values, showing up here as a falsy/0 result. Treat
-    # that as "still loading" rather than "nothing stored" - but cap the
-    # retries so a genuine error (e.g. JS blocked) can't spin forever and trap
-    # a real first-time visitor. This whole block is now only a MIGRATION
-    # BRIDGE for people who logged in before the cookie became the primary
-    # mechanism - anyone with the cookie already returned above and never
-    # reaches here.
     if not stored_auth_bundle:
         retries = st.session_state.get("_restore_retries", 0)
         if retries < 4:
@@ -652,9 +638,7 @@ if not st.session_state.authenticated:
     elif "device_uuid" not in st.session_state:
         st.session_state.device_uuid = "device_pending"
 
-    # 2. Migration bridge: restore from the old localStorage claim (set before
-    # this update) and immediately upgrade the person to a cookie so every
-    # future load goes through the fast, reliable path above instead.
+    # 2. Migration bridge: restore from the old localStorage claim and update cookie
     if not logout_mode and claim_info and claim_info != "no_claim":
         c_parts = claim_info.split("::")
         if len(c_parts) == 2:
@@ -663,10 +647,7 @@ if not st.session_state.authenticated:
             st.session_state.authenticated = True
             set_claim_cookie(c_parts[0], c_parts[1], st.session_state.get("verified_email", ""))
 
-    # 3. Best-effort only: try to refresh the underlying Supabase auth session
-    # (e.g. to pick up the verified email for display). Supabase refresh
-    # tokens are single-use, so this can legitimately fail - that must never
-    # undo the restore above.
+    # 3. Best-effort refresh for Supabase auth session
     if not logout_mode and refresh_token and refresh_token != "no_token":
         try:
             refresh_res = supabase.auth.refresh_session(refresh_token=refresh_token)
@@ -679,6 +660,7 @@ if not st.session_state.authenticated:
             pass
 
     if st.session_state.authenticated:
+        st.query_params.clear()
         st.rerun()
 
     # 4. Fallback: Legacy Auto-Login (localStorage lock), also upgraded to a cookie
@@ -688,6 +670,7 @@ if not st.session_state.authenticated:
             st.session_state.sub_community, st.session_state.villa = locked_sub, locked_villa
             st.session_state.authenticated = True
             set_claim_cookie(locked_sub, locked_villa, "")
+            st.query_params.clear()
             st.rerun()
         except Exception:
             st_javascript("localStorage.removeItem('court_villa_lock');")
@@ -816,8 +799,7 @@ if not st.session_state.authenticated:
                                         "status": "approved"
                                     }).eq("id", existing["id"]))
 
-                                # Persist the primary cookie (synchronous restore going forward)
-                                # plus the legacy localStorage values for backward compatibility.
+                                # Persist the primary cookie and legacy localStorage
                                 set_claim_cookie(target_sub, target_villa, verified_email)
 
                                 claim_bundle = f"{target_sub}::{target_villa}"
@@ -835,6 +817,9 @@ if not st.session_state.authenticated:
                                 st.session_state.verified_email = verified_email
                                 st.session_state.authenticated = True
                                 st.session_state.otp_sent = False
+                                
+                                # Clear query parameters so ?logout=1 cannot stay active
+                                st.query_params.clear()
                                 
                                 st.balloons()
                                 st.success("✅ Verified and registered successfully! Logging you in...")
