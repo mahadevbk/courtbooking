@@ -212,7 +212,7 @@ def color_cell(val):
         return "background-color: #f8d7da; color: #721c24; font-weight: bold;"
 
 def get_active_bookings_count(villa, sub_community):
-    today_str = get_today().strftime('%Y-%m-%d')
+    today_str = get_today().strftime('%Y-%m-%d'),
     now_hour = get_utc_plus_4().hour
     
     # Active bookings are individual per villa (Limit 6)
