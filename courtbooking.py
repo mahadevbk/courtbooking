@@ -1,11 +1,13 @@
 import time
 import streamlit as st
+import streamlit.components.v1 as components
 from supabase import create_client, Client
 from datetime import datetime, timedelta, timezone
 import pandas as pd
 import zipfile
 import io
 import random
+import json
 from postgrest.exceptions import APIError 
 from PIL import Image # For image resizing
 from streamlit_javascript import st_javascript
@@ -534,7 +536,6 @@ except Exception:
 if 'authenticated' not in st.session_state:
     st.session_state.authenticated = False
 
-# Ensure device UUID exists in memory
 if "device_uuid" not in st.session_state:
     st.session_state.device_uuid = f"dev_{random.randint(10000000, 99999999)}_{int(time.time())}"
 
@@ -542,34 +543,32 @@ if "device_uuid" not in st.session_state:
 if not st.session_state.authenticated:
     logout_mode = st.query_params.get("logout") == "1"
 
-    # Single-line, error-free synchronous localStorage probe (proven pattern from previous working version)
-    stored_bundle = st_javascript("(localStorage.getItem('court_villa_lock') || 'no_lock') + ':::' + (localStorage.getItem('court_verified_email') || '');")
+    # Read the exact simple key as original courtbooking_2.py
+    stored_lock = st_javascript("localStorage.getItem('court_villa_lock') || 'no_lock';")
 
-    # On initial browser refresh, st_javascript returns 0 while the component initializes.
-    # We halt execution here for this single tick so Streamlit never falls through to the registration form.
-    if stored_bundle == 0:
-        st.markdown("### 🔒 Loading...")
-        st.info("Restoring session, please wait...")
-        st.stop()
+    # On manual browser refresh, st_javascript returns 0 or None on the initial script pass.
+    # Instead of freezing with st.stop(), rerun once to let the browser bridge complete:
+    if stored_lock == 0 or stored_lock is None:
+        retries = st.session_state.get("_boot_retries", 0)
+        if retries < 4:
+            st.session_state._boot_retries = retries + 1
+            time.sleep(0.15)
+            st.rerun()
+        stored_lock = "no_lock"
+    else:
+        st.session_state._boot_retries = 0
 
-    lock_val = "no_lock"
-    saved_email = ""
-    if isinstance(stored_bundle, str) and ":::" in stored_bundle:
-        lock_val, saved_email = stored_bundle.split(":::", 1)
-
-    # 1. Restore saved session
-    if not logout_mode and lock_val and lock_val != "no_lock":
+    # 1. Primary Auto-Login (Exact logic from courtbooking_2.py)
+    if not logout_mode and stored_lock and stored_lock != "no_lock":
         try:
-            locked_sub, locked_villa = lock_val.rsplit("-", 1)
+            locked_sub, locked_villa = stored_lock.rsplit("-", 1)
             st.session_state.sub_community = locked_sub
             st.session_state.villa = locked_villa
-            if saved_email:
-                st.session_state.verified_email = saved_email
             st.session_state.authenticated = True
             st.query_params.clear()
             st.rerun()
         except Exception:
-            st_javascript("localStorage.removeItem('court_villa_lock'); localStorage.removeItem('court_verified_email');")
+            st_javascript("localStorage.removeItem('court_villa_lock');")
             st.rerun()
 
     if "seen_migration_notice" not in st.session_state:
@@ -692,12 +691,11 @@ if not st.session_state.authenticated:
                                     }).eq("id", existing["id"]))
 
                                 fallback_choice = f"{target_sub}-{target_villa}"
-                                claim_bundle = f"{target_sub}::{target_villa}"
                                 
+                                # Set the exact key that auto-logs in on refresh
                                 st_javascript(f"""
                                     localStorage.setItem('court_villa_lock', '{fallback_choice}');
                                     localStorage.setItem('court_verified_email', '{verified_email}');
-                                    localStorage.setItem('verified_claim_info', '{claim_bundle}');
                                     localStorage.setItem('supabase_refresh_token', '{refresh_tok}');
                                 """)
 
@@ -747,10 +745,7 @@ if not st.session_state.authenticated:
                     st.error("Please select a sub-community and enter your villa number.")
             else:
                 current_choice = f"{sub_community_input}-{villa_input}"
-                st_javascript(f"""
-                    localStorage.setItem('court_villa_lock', '{current_choice}');
-                    localStorage.removeItem('court_verified_email');
-                """)
+                st_javascript(f"localStorage.setItem('court_villa_lock', '{current_choice}');")
                 st.session_state.sub_community = sub_community_input
                 st.session_state.villa = villa_input
                 st.session_state.authenticated = True
