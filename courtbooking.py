@@ -720,7 +720,6 @@ if not st.session_state.authenticated:
                         )
                         add_log("Access Denied", f"Email {otp_email_input} exceeded 3-villa cap attempting {otp_sub} Villa {otp_villa}", fingerprint=device_uuid)
                     elif not existing_claim and target_pair not in uuid_villas and len(uuid_villas) >= 3:
-                        # Device UUID cap: block OTP generation for a 4th villa from this browser
                         st.error(
                             "This device has reached the maximum allowed registered villas. "
                             "Please contact Dev via Court Maintenance if you require an exception."
@@ -740,9 +739,10 @@ if not st.session_state.authenticated:
                             st.error(f"Failed to send code: {str(e)}")
         else:
             st.info(f"Enter the 6-digit code sent to **{st.session_state.otp_email}** for **{st.session_state.otp_target_sub} - Villa {st.session_state.otp_target_villa}**.")
+            st.caption("Check your spam/junk folder if the email does not appear in your inbox within a minute.")
             token_input = st.text_input("Enter 6-digit code", max_chars=6, key="otp_token_text").strip()
             
-            c1, c2 = st.columns(2)
+            c1, c2, c3 = st.columns([1.5, 1.2, 1.2])
             with c1:
                 if st.button("Verify Code", type="primary", width='stretch'):
                     if not token_input or len(token_input) != 6:
@@ -803,7 +803,14 @@ if not st.session_state.authenticated:
                         except Exception as e:
                             st.error(f"Invalid code or verification error: {str(e)}")
             with c2:
-                if st.button("Cancel / Try Different Email", width='stretch'):
+                if st.button("🔄 Resend Code", width='stretch'):
+                    try:
+                        supabase.auth.sign_in_with_otp({"email": st.session_state.otp_email})
+                        st.toast(f"A new 6-digit code has been sent to {st.session_state.otp_email}!")
+                    except Exception as e:
+                        st.error(f"Could not resend code: {str(e)}")
+            with c3:
+                if st.button("Cancel / Change", width='stretch'):
                     st.session_state.otp_sent = False
                     st.rerun()
 
