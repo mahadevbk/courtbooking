@@ -199,15 +199,19 @@ def get_villa_claims_count(sub_community, villa):
     return res.count if res and res.count is not None else 0
 
 def get_existing_claim(sub_community, villa, email):
+    # Exact match on the already-lowercased email. Using ilike() here previously
+    # treated '%' and '_' as SQL wildcards, so an email like 'john_doe@x.com'
+    # could unintentionally match unrelated rows containing any character in
+    # that position.
     res = run_query(supabase.table("villa_claims").select("*")
                     .eq("sub_community", sub_community)
                     .eq("villa", villa)
-                    .ilike("email", email.strip().lower()))
+                    .eq("email", email.strip().lower()))
     return res.data[0] if res and res.data else None
 
 def get_email_claimed_villas_count(email):
     res = run_query(supabase.table("villa_claims").select("sub_community, villa")
-                    .ilike("email", email.strip().lower())
+                    .eq("email", email.strip().lower())
                     .eq("status", "approved"))
     if not res or not res.data:
         return 0
@@ -602,7 +606,7 @@ if not st.session_state.authenticated:
             if refresh_res and refresh_res.session:
                 new_refresh = refresh_res.session.refresh_token
                 user_email = refresh_res.user.email
-                st_javascript(f"localStorage.setItem('supabase_refresh_token', '{new_refresh}');")
+                st_javascript(f"localStorage.setItem('supabase_refresh_token', {json.dumps(new_refresh)});")
 
                 if claim_info and claim_info != "no_claim":
                     c_parts = claim_info.split("::")
@@ -756,14 +760,17 @@ if not st.session_state.authenticated:
                                         "status": "approved"
                                     }).eq("id", existing["id"]))
 
-                                # Persist all tokens: session, claimInfo, and the persistent villa lock
+                                # Persist all tokens: session, claimInfo, and the persistent villa lock.
+                                # Use json.dumps to safely encode each value for embedding in JS -
+                                # avoids breaking (or injecting into) the script if a token or value
+                                # ever contains a quote or special character.
                                 claim_bundle = f"{target_sub}::{target_villa}"
                                 fallback_choice = f"{target_sub}-{target_villa}"
                                 js_persist = (
-                                    f"localStorage.setItem('supabase_refresh_token', '{refresh_tok}'); "
-                                    f"localStorage.setItem('verified_claim_info', '{claim_bundle}'); "
-                                    f"localStorage.setItem('court_villa_lock', '{fallback_choice}'); "
-                                    f"localStorage.setItem('court_device_uuid', '{resolved_uuid}');"
+                                    f"localStorage.setItem('supabase_refresh_token', {json.dumps(refresh_tok)}); "
+                                    f"localStorage.setItem('verified_claim_info', {json.dumps(claim_bundle)}); "
+                                    f"localStorage.setItem('court_villa_lock', {json.dumps(fallback_choice)}); "
+                                    f"localStorage.setItem('court_device_uuid', {json.dumps(resolved_uuid)});"
                                 )
                                 st_javascript(js_persist)
 
@@ -812,7 +819,7 @@ if not st.session_state.authenticated:
                     st.error("Please select a sub-community and enter your villa number.")
             else:
                 current_choice = f"{sub_community_input}-{villa_input}"
-                st_javascript(f"localStorage.setItem('court_villa_lock', '{current_choice}');")
+                st_javascript(f"localStorage.setItem('court_villa_lock', {json.dumps(current_choice)});")
                 st.session_state.sub_community, st.session_state.villa = sub_community_input, villa_input
                 st.session_state.authenticated = True
                 st.query_params.clear()
