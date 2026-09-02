@@ -209,6 +209,19 @@ def get_existing_claim(sub_community, villa, email):
                     .ilike("email", email.strip().lower()))
     return res.data[0] if res and res.data else None
 
+def get_claims_for_villa(sub_community, villa):
+    res = run_query(supabase.table("villa_claims").select("*")
+                    .eq("sub_community", sub_community)
+                    .eq("villa", villa)
+                    .order("created_at"))
+    return res.data if res and res.data else []
+
+def get_all_claimed_villas():
+    res = run_query(supabase.table("villa_claims").select("sub_community, villa"))
+    if not res or not res.data: return []
+    unique_villas = sorted(list(set([f"{row['sub_community']} - {row['villa']}" for row in res.data])))
+    return unique_villas
+
 def get_bookings_for_day_with_details(date_str):
     response = run_query(supabase.table("bookings").select("court, start_hour, sub_community, villa").eq("date", date_str))
     if not response or not response.data: return {}
@@ -1243,7 +1256,7 @@ with tab5:
         def style_rows(row):
             styles = [''] * len(row)
             if row.event_type in ["Booking Created", "Villa Claim"]: styles[1] = 'background-color: #d4edda; color: #155724; font-weight: bold;'
-            elif row.event_type in ["Booking Deleted", "Booking Cancelled"]: styles[1] = 'background-color: #f8d7da; color: #721c24; font-weight: bold;'
+            elif row.event_type in ["Booking Deleted", "Booking Cancelled", "Villa Claim Removed"]: styles[1] = 'background-color: #f8d7da; color: #721c24; font-weight: bold;'
             elif row.event_type in ["Access Denied", "Claim Held for Review"]: styles[1] = 'background-color: #ffcc00; color: black; font-weight: bold;'
             return styles
             
@@ -1256,6 +1269,82 @@ with tab5:
     
     if is_admin:
         st.success("Admin Access Granted")
+        
+        # --- NEW SECTION: Villa Email-Claims Management (Reset / Reclaim) ---
+        st.markdown("### 🛡️ Villa Claims & Verification Management")
+        
+        all_claimed = get_all_claimed_villas()
+        col_c1, col_c2 = st.columns([2, 1])
+        with col_c1:
+            claim_inspect_villa = st.selectbox(
+                "Select Claimed Villa to Inspect / Reset",
+                options=["-- Select --"] + all_claimed,
+                key="admin_claimed_villa_select"
+            )
+        
+        if claim_inspect_villa != "-- Select --":
+            try:
+                c_sub, c_villa = claim_inspect_villa.split(" - ")
+                claims = get_claims_for_villa(c_sub, c_villa)
+                
+                if claims:
+                    st.write(f"Active Verified Emails for **{claim_inspect_villa}** ({len(claims)} / 2):")
+                    for claim in claims:
+                        c_box1, c_box2 = st.columns([3, 1])
+                        with c_box1:
+                            v_time = claim.get('verified_at', 'Unverified')
+                            if v_time and v_time != 'Unverified':
+                                try:
+                                    v_dt = datetime.fromisoformat(v_time.replace('Z', '+00:00'))
+                                    v_time = v_dt.strftime('%b %d, %Y %I:%M %p')
+                                except:
+                                    pass
+                            st.info(f"📧 **{claim['email']}**  \n*Status:* `{claim['status']}` | *Verified:* {v_time}")
+                        with c_box2:
+                            st.write("")
+                            if st.button(f"🗑️ Release / Reset", key=f"del_claim_{claim['id']}", type="secondary", width="stretch"):
+                                run_query(supabase.table("villa_claims").delete().eq("id", claim['id']))
+                                add_log("Villa Claim Removed", f"Admin released claim for {c_sub} Villa {c_villa} ({claim['email']})")
+                                st.success(f"Released claim for {claim['email']}")
+                                time.sleep(1.2)
+                                st.rerun()
+                else:
+                    st.info("No active claims found for this villa.")
+            except Exception as e:
+                st.error(f"Error inspecting claims: {str(e)}")
+
+        # Admin Manual Add Claim
+        with st.expander("➕ Manually Add / Authorize an Email Claim (Without OTP)"):
+            st.caption("Useful for edge cases or assisting residents who cannot receive the OTP code.")
+            c_man1, c_man2 = st.columns(2)
+            with c_man1:
+                man_sub = st.selectbox("Sub-Community", options=sub_community_list, key="admin_man_sub")
+            with c_man2:
+                man_villa = st.text_input("Villa Number", key="admin_man_villa").strip()
+            man_email = st.text_input("Resident Email Address", key="admin_man_email").strip().lower()
+            
+            if st.button("Authorize Claim Now", type="primary", key="admin_auth_claim_btn"):
+                if not man_villa or not man_email or "@" not in man_email:
+                    st.error("Please provide valid villa and email details.")
+                else:
+                    curr_c = get_villa_claims_count(man_sub, man_villa)
+                    if curr_c >= 2:
+                        st.error(f"Cannot add: {man_sub} Villa {man_villa} already has 2 verified claims.")
+                    else:
+                        now_ts = get_utc_plus_4().isoformat()
+                        run_query(supabase.table("villa_claims").insert({
+                            "sub_community": man_sub,
+                            "villa": man_villa,
+                            "email": man_email,
+                            "status": "approved",
+                            "verified_at": now_ts
+                        }))
+                        add_log("Villa Claim", f"Admin manually authorized {man_sub} Villa {man_villa} for {man_email}")
+                        st.success(f"Claim created for {man_sub} Villa {man_villa} ({man_email})!")
+                        time.sleep(1.5)
+                        st.rerun()
+
+        st.divider()
         st.markdown("### 🏘️ Villa Booking Management")
         
         all_villas = get_all_villas_with_any_bookings()
