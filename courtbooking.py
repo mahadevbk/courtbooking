@@ -1,6 +1,5 @@
 import time
 import streamlit as st
-import streamlit.components.v1 as components
 from supabase import create_client, Client
 from datetime import datetime, timedelta, timezone
 import pandas as pd
@@ -8,6 +7,8 @@ import zipfile
 import io
 import random
 import json
+import base64
+import hashlib
 from postgrest.exceptions import APIError 
 from PIL import Image # For image resizing
 from streamlit_javascript import st_javascript
@@ -423,14 +424,38 @@ def get_available_hours(court, date_str):
             available.append(h)
     return available
 
+# --- ZERO-LATENCY TOKEN AUTH (PERSISTS SYNCHRONOUSLY ACROSS BROWSER REFRESH) ---
+AUTH_SALT = "mira_court_booking_salt_2026"
+
+def encode_auth_token(sub_community, villa, email=""):
+    """Encodes credentials into a tamper-proof URL token that survives hard browser refreshes."""
+    payload = f"{sub_community}::{villa}::{email or ''}"
+    sig = hashlib.sha256(f"{payload}:{AUTH_SALT}".encode()).hexdigest()[:10]
+    raw = f"{payload}::{sig}".encode()
+    return base64.urlsafe_b64encode(raw).decode()
+
+def decode_auth_token(token_str):
+    """Verifies and decodes the URL auth token."""
+    try:
+        raw = base64.urlsafe_b64decode(token_str.encode()).decode()
+        parts = raw.split("::")
+        if len(parts) == 4:
+            sub, villa, email, sig = parts
+            expected_sig = hashlib.sha256(f"{sub}::{villa}::{email}:{AUTH_SALT}".encode()).hexdigest()[:10]
+            if sig == expected_sig:
+                return {"sub_community": sub, "villa": villa, "email": email}
+    except Exception:
+        pass
+    return None
+
 def logout_action():
-    """Centrally handles logout, clears session and localStorage."""
+    """Centrally handles logout, clears tokens and localStorage."""
     st_javascript("""
         localStorage.removeItem('court_villa_lock');
         localStorage.removeItem('court_verified_email');
         localStorage.removeItem('verified_claim_info');
         localStorage.removeItem('supabase_refresh_token');
-        setTimeout(() => { window.location.href = window.location.origin + window.location.pathname; }, 200);
+        setTimeout(() => { window.location.href = window.location.origin + window.location.pathname; }, 150);
     """)
     for key in ["authenticated", "sub_community", "villa", "verified_email", "otp_sent", "otp_email", "otp_target_villa", "otp_target_sub"]:
         if key in st.session_state:
@@ -479,7 +504,11 @@ def show_migration_dialog():
 if st.query_params.get("view") == "full":
     st.title("📅 Full 14-Day Schedule")
     if st.button("⬅️ Back to Booking App"):
+        # Preserve auth token if returning from full view
+        curr_auth = st.query_params.get("auth")
         st.query_params.clear()
+        if curr_auth:
+            st.query_params["auth"] = curr_auth
         st.rerun()
     for d in get_next_14_days():
         d_str = d.strftime('%Y-%m-%d')
@@ -539,37 +568,32 @@ if 'authenticated' not in st.session_state:
 if "device_uuid" not in st.session_state:
     st.session_state.device_uuid = f"dev_{random.randint(10000000, 99999999)}_{int(time.time())}"
 
-# --- AUTHENTICATION LOGIC ---
+# --- SYNCHRONOUS INSTANT AUTH (SURVIVES MANUAL REFRESH IMMEDIATELY) ---
+url_token = st.query_params.get("auth")
+if url_token and not st.session_state.authenticated:
+    verified_claim = decode_auth_token(url_token)
+    if verified_claim:
+        st.session_state.sub_community = verified_claim["sub_community"]
+        st.session_state.villa = verified_claim["villa"]
+        if verified_claim.get("email"):
+            st.session_state.verified_email = verified_claim["email"]
+        st.session_state.authenticated = True
+
+# --- FALLBACK ASYNC RESTORE (MIGRATION BRIDGE FOR PREVIOUS LOCALSTORAGE) ---
 if not st.session_state.authenticated:
-    logout_mode = st.query_params.get("logout") == "1"
-
-    # Read the exact simple key as original courtbooking_2.py
     stored_lock = st_javascript("localStorage.getItem('court_villa_lock') || 'no_lock';")
-
-    # On manual browser refresh, st_javascript returns 0 or None on the initial script pass.
-    # Instead of freezing with st.stop(), rerun once to let the browser bridge complete:
-    if stored_lock == 0 or stored_lock is None:
-        retries = st.session_state.get("_boot_retries", 0)
-        if retries < 4:
-            st.session_state._boot_retries = retries + 1
-            time.sleep(0.15)
-            st.rerun()
-        stored_lock = "no_lock"
-    else:
-        st.session_state._boot_retries = 0
-
-    # 1. Primary Auto-Login (Exact logic from courtbooking_2.py)
-    if not logout_mode and stored_lock and stored_lock != "no_lock":
+    
+    if isinstance(stored_lock, str) and stored_lock not in ("no_lock", "0", ""):
         try:
             locked_sub, locked_villa = stored_lock.rsplit("-", 1)
             st.session_state.sub_community = locked_sub
             st.session_state.villa = locked_villa
             st.session_state.authenticated = True
-            st.query_params.clear()
+            # Upgrade user to URL token authentication
+            st.query_params["auth"] = encode_auth_token(locked_sub, locked_villa, "")
             st.rerun()
         except Exception:
-            st_javascript("localStorage.removeItem('court_villa_lock');")
-            st.rerun()
+            pass
 
     if "seen_migration_notice" not in st.session_state:
         st.session_state.seen_migration_notice = False
@@ -692,23 +716,25 @@ if not st.session_state.authenticated:
 
                                 fallback_choice = f"{target_sub}-{target_villa}"
                                 
-                                # Set the exact key that auto-logs in on refresh
+                                # Backup in localStorage
                                 st_javascript(f"""
                                     localStorage.setItem('court_villa_lock', '{fallback_choice}');
                                     localStorage.setItem('court_verified_email', '{verified_email}');
                                     localStorage.setItem('supabase_refresh_token', '{refresh_tok}');
                                 """)
 
+                                # Bind instant URL token
+                                st.query_params["auth"] = encode_auth_token(target_sub, target_villa, verified_email)
+
                                 st.session_state.sub_community = target_sub
                                 st.session_state.villa = target_villa
                                 st.session_state.verified_email = verified_email
                                 st.session_state.authenticated = True
                                 st.session_state.otp_sent = False
-                                st.query_params.clear()
                                 
                                 st.balloons()
                                 st.success("✅ Verified and registered successfully! Logging you in...")
-                                time.sleep(1.5)
+                                time.sleep(1.2)
                                 st.rerun()
                             else:
                                 st.error("Verification failed. Please check the code.")
@@ -746,10 +772,13 @@ if not st.session_state.authenticated:
             else:
                 current_choice = f"{sub_community_input}-{villa_input}"
                 st_javascript(f"localStorage.setItem('court_villa_lock', '{current_choice}');")
+                
+                # Bind instant URL token
+                st.query_params["auth"] = encode_auth_token(sub_community_input, villa_input, "")
+                
                 st.session_state.sub_community = sub_community_input
                 st.session_state.villa = villa_input
                 st.session_state.authenticated = True
-                st.query_params.clear()
                 add_log("Device Registered", f"New login for {sub_community_input} Villa {villa_input}", fingerprint=st.session_state.get("device_uuid"))
                 st.rerun()
 
@@ -783,7 +812,10 @@ with tab1:
             else: row.append("Available")
         data[label] = row
     st.dataframe(pd.DataFrame(data, index=courts).style.map(color_cell), width="stretch")
-    st.link_button("🌐 View Full 14-Day Schedule (Full Page)", url="/?view=full")
+    
+    curr_auth = st.query_params.get("auth")
+    full_url = f"/?view=full&auth={curr_auth}" if curr_auth else "/?view=full"
+    st.link_button("🌐 View Full 14-Day Schedule (Full Page)", url=full_url)
     
     st.divider()
     st.markdown("### ⚡ Quick Book")
