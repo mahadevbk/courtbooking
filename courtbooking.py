@@ -184,15 +184,18 @@ def run_query(query_method):
                 return None
             time.sleep((0.5 * (2 ** attempt)) + random.uniform(0, 0.2))
 
-def add_log(event_type, details):
+def add_log(event_type, details, fingerprint=None):
     timestamp = get_utc_plus_4().isoformat()
     try:
-        supabase.table("logs").insert({
+        log_entry = {
             "timestamp": timestamp,
             "event_type": event_type,
             "details": details
-        }).execute()
-    except:
+        }
+        if fingerprint:
+            log_entry["Fingerprint"] = fingerprint
+        supabase.table("logs").insert(log_entry).execute()
+    except Exception:
         pass 
 
 def get_villa_claims_count(sub_community, villa):
@@ -218,6 +221,17 @@ def get_email_claimed_villas_count(email):
         return 0
     unique_villas = set([f"{r['sub_community']}::{r['villa']}" for r in res.data])
     return len(unique_villas)
+
+def get_uuid_claimed_villas(uuid_val):
+    """Fetches all distinct approved villas linked to this client UUID."""
+    if not uuid_val or uuid_val == "no_uuid":
+        return set()
+    res = run_query(supabase.table("villa_claims").select("sub_community, villa")
+                    .eq("fingerprint", uuid_val)
+                    .eq("status", "approved"))
+    if not res or not res.data:
+        return set()
+    return set([f"{r['sub_community']}::{r['villa']}" for r in res.data])
 
 def get_claims_for_villa(sub_community, villa):
     res = run_query(supabase.table("villa_claims").select("*")
@@ -556,13 +570,21 @@ if 'authenticated' not in st.session_state:
 if not st.session_state.authenticated:
     logout_mode = st.query_params.get("logout") == "1"
     
-    # Fetch storage tokens without blocking execution
+    # Fetch storage tokens and read/generate device UUID
     stored_auth_bundle = st_javascript("""
-        JSON.stringify({
-            legacy: localStorage.getItem('court_villa_lock') || 'no_lock',
-            refreshToken: localStorage.getItem('supabase_refresh_token') || 'no_token',
-            claimInfo: localStorage.getItem('verified_claim_info') || 'no_claim'
-        });
+        (function() {
+            let uuid = localStorage.getItem('court_device_uuid');
+            if (!uuid) {
+                uuid = (typeof crypto !== 'undefined' && crypto.randomUUID) ? crypto.randomUUID() : ('dev_' + Math.random().toString(36).substring(2, 15));
+                localStorage.setItem('court_device_uuid', uuid);
+            }
+            return JSON.stringify({
+                legacy: localStorage.getItem('court_villa_lock') || 'no_lock',
+                refreshToken: localStorage.getItem('supabase_refresh_token') || 'no_token',
+                claimInfo: localStorage.getItem('verified_claim_info') || 'no_claim',
+                deviceUuid: uuid
+            });
+        })()
     """)
     
     auth_data = {}
@@ -575,6 +597,7 @@ if not st.session_state.authenticated:
     legacy_lock = auth_data.get("legacy", "no_lock")
     refresh_token = auth_data.get("refreshToken", "no_token")
     claim_info = auth_data.get("claimInfo", "no_claim")
+    device_uuid = auth_data.get("deviceUuid", "no_uuid")
 
     # 1. Primary: Silent session restore from Supabase Refresh Token
     if not logout_mode and refresh_token and refresh_token != "no_token":
@@ -591,6 +614,7 @@ if not st.session_state.authenticated:
                         st.session_state.sub_community = c_parts[0]
                         st.session_state.villa = c_parts[1]
                         st.session_state.verified_email = user_email
+                        st.session_state.device_uuid = device_uuid
                         st.session_state.authenticated = True
                         st.rerun()
         except Exception:
@@ -601,6 +625,7 @@ if not st.session_state.authenticated:
         try:
             locked_sub, locked_villa = legacy_lock.split("-")
             st.session_state.sub_community, st.session_state.villa = locked_sub, locked_villa
+            st.session_state.device_uuid = device_uuid
             st.session_state.authenticated = True
             st.rerun()
         except Exception:
@@ -647,9 +672,10 @@ if not st.session_state.authenticated:
                 current_choice = f"{sub_community_input}-{villa_input}"
                 st_javascript(f"localStorage.setItem('court_villa_lock', '{current_choice}');")
                 st.session_state.sub_community, st.session_state.villa = sub_community_input, villa_input
+                st.session_state.device_uuid = device_uuid
                 st.session_state.authenticated = True
                 st.query_params.clear()
-                add_log("Device Registered", f"New login for {sub_community_input} Villa {villa_input}")
+                add_log("Device Registered", f"New login for {sub_community_input} Villa {villa_input}", fingerprint=device_uuid)
                 st.rerun()
 
     with login_tab2:
@@ -678,18 +704,28 @@ if not st.session_state.authenticated:
                     current_claims_count = get_villa_claims_count(otp_sub, otp_villa)
                     email_villas_count = get_email_claimed_villas_count(otp_email_input)
                     
+                    # Check distinct villas associated with this persistent device UUID
+                    target_pair = f"{otp_sub}::{otp_villa}"
+                    uuid_villas = get_uuid_claimed_villas(device_uuid)
+                    
                     if not existing_claim and current_claims_count >= 2:
                         st.error(
                             f"🚫 This villa ({otp_sub} - Villa {otp_villa}) already has 2 verified resident emails attached. "
                             "If you recently moved in or need to update your registered email, please reach out via the contact channels in Court Maintenance."
                         )
                     elif not existing_claim and email_villas_count >= 3:
-                        # Undisclosed limit of 3 villas per email: generic contact prompt
                         st.error(
                             "Unable to register this villa to your email address. "
                             "Please contact Dev via the contact details in Court Maintenance for assistance."
                         )
-                        add_log("Access Denied", f"Email {otp_email_input} attempted to claim 4th villa ({otp_sub} Villa {otp_villa})")
+                        add_log("Access Denied", f"Email {otp_email_input} exceeded 3-villa cap attempting {otp_sub} Villa {otp_villa}", fingerprint=device_uuid)
+                    elif not existing_claim and target_pair not in uuid_villas and len(uuid_villas) >= 3:
+                        # Device UUID cap: block OTP generation for a 4th villa from this browser
+                        st.error(
+                            "This device has reached the maximum allowed registered villas. "
+                            "Please contact Dev via Court Maintenance if you require an exception."
+                        )
+                        add_log("Access Denied", f"Device UUID {device_uuid} blocked from requesting OTP for 4th villa ({otp_sub} Villa {otp_villa})", fingerprint=device_uuid)
                     else:
                         try:
                             supabase.auth.sign_in_with_otp({"email": otp_email_input})
@@ -697,6 +733,7 @@ if not st.session_state.authenticated:
                             st.session_state.otp_email = otp_email_input
                             st.session_state.otp_target_sub = otp_sub
                             st.session_state.otp_target_villa = otp_villa
+                            st.session_state.device_uuid = device_uuid
                             st.success(f"6-digit code sent to {otp_email_input}!")
                             st.rerun()
                         except Exception as e:
@@ -722,6 +759,7 @@ if not st.session_state.authenticated:
                                 target_villa = st.session_state.otp_target_villa
                                 verified_email = st.session_state.otp_email
                                 refresh_tok = res.session.refresh_token
+                                active_uuid = st.session_state.get("device_uuid", device_uuid)
 
                                 existing = get_existing_claim(target_sub, target_villa, verified_email)
                                 now_ts = get_utc_plus_4().isoformat()
@@ -731,13 +769,15 @@ if not st.session_state.authenticated:
                                         "sub_community": target_sub,
                                         "villa": target_villa,
                                         "email": verified_email,
+                                        "fingerprint": active_uuid,
                                         "status": "approved",
                                         "verified_at": now_ts
                                     }))
-                                    add_log("Villa Claim", f"{target_sub} Villa {target_villa} claimed by {verified_email}")
+                                    add_log("Villa Claim", f"{target_sub} Villa {target_villa} claimed by {verified_email}", fingerprint=active_uuid)
                                 else:
                                     run_query(supabase.table("villa_claims").update({
                                         "verified_at": now_ts,
+                                        "fingerprint": active_uuid,
                                         "status": "approved"
                                     }).eq("id", existing["id"]))
 
@@ -1288,7 +1328,7 @@ with tab5:
     if is_admin:
         st.success("Admin Access Granted")
         
-        # --- NEW SECTION: Villa Email-Claims Management (Reset / Reclaim) ---
+        # Villa Email-Claims Management (Reset / Reclaim)
         st.markdown("### 🛡️ Villa Claims & Verification Management")
         
         all_claimed = get_all_claimed_villas()
@@ -1317,7 +1357,8 @@ with tab5:
                                     v_time = v_dt.strftime('%b %d, %Y %I:%M %p')
                                 except:
                                     pass
-                            st.info(f"📧 **{claim['email']}**  \n*Status:* `{claim['status']}` | *Verified:* {v_time}")
+                            fp_sub = f" | *Device UUID:* `{claim['fingerprint'][:8]}...`" if claim.get('fingerprint') else ""
+                            st.info(f"📧 **{claim['email']}**  \n*Status:* `{claim['status']}` | *Verified:* {v_time}{fp_sub}")
                         with c_box2:
                             st.write("")
                             if st.button(f"🗑️ Release / Reset", key=f"del_claim_{claim['id']}", type="secondary", width="stretch"):
@@ -1357,6 +1398,7 @@ with tab5:
                             "sub_community": man_sub,
                             "villa": man_villa,
                             "email": man_email,
+                            "fingerprint": "admin_manual_grant",
                             "status": "approved",
                             "verified_at": now_ts
                         }))
