@@ -444,6 +444,29 @@ h1, h2, h3, .stTitle { font-family: 'Audiowide', cursive !important; color: #2c3
 </style>
 """, unsafe_allow_html=True)
 
+# --- FLOATING ANNOUNCEMENT DIALOG ---
+@st.dialog("🎾 Notice: A Fairer Booking System for Everyone!")
+def show_migration_dialog():
+    st.markdown("""
+    Hi neighbors! 👋
+
+    To keep court bookings fair and stop people from booking under fake or multiple villas, we are introducing a simple **one-time email verification**[cite: 2].
+
+    **What this means for you:**
+    * **Fair access for real residents:** Keeps slots open for those who actually live here[cite: 2].
+    * **One-time only:** Just enter your email and a 6-digit code once — your device will remember you automatically after that[cite: 2]!
+    * **Family friendly:** Up to 2 emails can be linked to your villa (e.g. partners or housemates)[cite: 2].
+
+    ---
+    **🗓️ Starting next week:**  
+    The quick dropdown login will be switched off, and everyone will need to use email login[cite: 2]. You can set it up right now under the **🛡️ Verify Villa via Email (New)** tab[cite: 2]!
+
+    💬 *Please DM Dev in case you have any queries.*[cite: 1]
+    """)
+    if st.button("Got it — Continue 🎾", type="primary", use_container_width=True):
+        st.session_state.seen_migration_notice = True
+        st.rerun()
+
 # --- LOGIC FOR FULL FRAME PAGE ---
 if st.query_params.get("view") == "full":
     st.title("📅 Full 14-Day Schedule")
@@ -510,7 +533,7 @@ if 'authenticated' not in st.session_state:
 if not st.session_state.authenticated:
     logout_mode = st.query_params.get("logout") == "1"
     
-    # Read browser storage via JS bridge
+    # Fetch storage tokens without blocking execution
     stored_auth_bundle = st_javascript("""
         JSON.stringify({
             legacy: localStorage.getItem('court_villa_lock') || 'no_lock',
@@ -561,26 +584,12 @@ if not st.session_state.authenticated:
             st_javascript("localStorage.removeItem('court_villa_lock');")
             st.rerun()
 
-    # Friendly, unmissable announcement banner right above the login options
-    st.markdown("""
-    <div style="background-color: #0d5384; padding: 18px; border-radius: 12px; border-left: 6px solid #ccff00; margin-bottom: 20px;">
-        <h4 style="color: #ccff00; margin: 0 0 8px 0;">🎾 Notice: A Fairer Booking System for Everyone!</h4>
-        <p style="color: white; font-size: 0.95rem; margin: 0 0 6px 0;">
-            Hi neighbors! To keep court bookings fair and prevent bookings under fake or multiple villas, we are introducing a simple <b>one-time email verification</b>.
-        </p>
-        <ul style="color: white; font-size: 0.9rem; margin: 0 0 8px 18px; padding: 0;">
-            <li><b>Fair court access:</b> Keeps slots open for real residents.</li>
-            <li><b>One-time only:</b> Just enter your email and a 6-digit code once — your device will remember you!</li>
-            <li><b>Family friendly:</b> Up to 2 emails can be linked to your villa.</li>
-        </ul>
-        <p style="color: #ccff00; font-size: 0.9rem; font-weight: bold; margin: 0 0 4px 0;">
-            🗓️ Starting next week, the quick dropdown login will be switched off. You can set up your verified login today under the "🛡️ Verify Villa via Email (New)" tab below!
-        </p>
-        <p style="color: rgba(255,255,255,0.75); font-size: 0.85rem; margin: 0;">
-            💬 Please DM Dev in case you have any queries.
-        </p>
-    </div>
-    """, unsafe_allow_html=True)
+    # Trigger Floating Announcement Dialog once per session
+    if "seen_migration_notice" not in st.session_state:
+        st.session_state.seen_migration_notice = False
+
+    if not st.session_state.seen_migration_notice:
+        show_migration_dialog()
 
     # Initialize OTP form state
     if "otp_sent" not in st.session_state:
