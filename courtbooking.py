@@ -446,24 +446,25 @@ h1, h2, h3, .stTitle { font-family: 'Audiowide', cursive !important; color: #2c3
 
 # --- ANNOUNCEMENT DIALOG (MIGRATION NOTICE) ---
 if hasattr(st, "dialog"):
-    @st.dialog("📢 Notice: Transition to Email-Verified Logins")
+    @st.dialog("🎾 Notice: A Fairer Booking System for Everyone!")
     def show_announcement_dialog():
         st.markdown("""
-        ### 🛡️ Why We Are Making This Change
-        Our court booking system currently uses an unverified villa dropdown login. 
-        Unfortunately, a few users have been taking advantage of this by claiming multiple different villas to bypass community booking caps.
+        Hi neighbors! 👋
 
-        ### 🎾 The Advantages for You
-        * **Guaranteed Fair Court Access:** Prevents villa impersonation and keeps court slots genuinely available for residents[cite: 2].
-        * **Zero Daily Hassle:** You only need to verify via a 6-digit email code **once**[cite: 2]. Your browser securely remembers your login[cite: 2].
-        * **Household Flexibility:** Up to 2 verified resident emails can be attached to each villa[cite: 2].
+        To keep court bookings fair and stop people from booking under fake or multiple villas, we are introducing a simple **one-time email verification**[cite: 2].
+
+        **What this means for you:**
+        * **Fair access for real residents:** Keeps slots open for those who actually live here[cite: 2].
+        * **One-time only:** Just enter your email and a 6-digit code once[cite: 2]. Your phone or computer will remember you automatically after that[cite: 2]!
+        * **Family friendly:** Up to 2 emails can be linked to your villa (e.g., partners or housemates)[cite: 2].
 
         ---
-        **🗓️ Transition Timeline:**  
-        Next week, the legacy fast dropdown login will be **fully retired**[cite: 2]. All residents will be required to log in using the email-verified method[cite: 2].  
-        You can verify your villa right now under the **🛡️ Verify Villa via Email (New)** tab[cite: 2]!
+        **🗓️ Starting next week:**  
+        The quick dropdown login will be switched off, and everyone will need to use email login[cite: 2]. You can set it up right now under the **🛡️ Verify Villa via Email (New)** tab[cite: 2]!
+
+        💬 *Please DM Dev in case you have any queries or need help.*[cite: 1]
         """)
-        if st.button("I Understand — Continue to App", type="primary", use_container_width=True):
+        if st.button("Got it — Take me to the courts! 🎾", type="primary", use_container_width=True):
             st.session_state.seen_migration_notice = True
             st.rerun()
 else:
