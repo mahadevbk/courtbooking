@@ -209,6 +209,16 @@ def get_existing_claim(sub_community, villa, email):
                     .ilike("email", email.strip().lower()))
     return res.data[0] if res and res.data else None
 
+def get_email_claimed_villas_count(email):
+    """Counts how many distinct approved villas are associated with an email."""
+    res = run_query(supabase.table("villa_claims").select("sub_community, villa")
+                    .ilike("email", email.strip().lower())
+                    .eq("status", "approved"))
+    if not res or not res.data:
+        return 0
+    unique_villas = set([f"{r['sub_community']}::{r['villa']}" for r in res.data])
+    return len(unique_villas)
+
 def get_claims_for_villa(sub_community, villa):
     res = run_query(supabase.table("villa_claims").select("*")
                     .eq("sub_community", sub_community)
@@ -666,12 +676,20 @@ if not st.session_state.authenticated:
                 else:
                     existing_claim = get_existing_claim(otp_sub, otp_villa, otp_email_input)
                     current_claims_count = get_villa_claims_count(otp_sub, otp_villa)
+                    email_villas_count = get_email_claimed_villas_count(otp_email_input)
                     
                     if not existing_claim and current_claims_count >= 2:
                         st.error(
                             f"🚫 This villa ({otp_sub} - Villa {otp_villa}) already has 2 verified resident emails attached. "
                             "If you recently moved in or need to update your registered email, please reach out via the contact channels in Court Maintenance."
                         )
+                    elif not existing_claim and email_villas_count >= 3:
+                        # Undisclosed limit of 3 villas per email: generic contact prompt
+                        st.error(
+                            "Unable to register this villa to your email address. "
+                            "Please contact Dev via the contact details in Court Maintenance for assistance."
+                        )
+                        add_log("Access Denied", f"Email {otp_email_input} attempted to claim 4th villa ({otp_sub} Villa {otp_villa})")
                     else:
                         try:
                             supabase.auth.sign_in_with_otp({"email": otp_email_input})
@@ -1328,8 +1346,11 @@ with tab5:
                     st.error("Please provide valid villa and email details.")
                 else:
                     curr_c = get_villa_claims_count(man_sub, man_villa)
+                    email_v_count = get_email_claimed_villas_count(man_email)
                     if curr_c >= 2:
                         st.error(f"Cannot add: {man_sub} Villa {man_villa} already has 2 verified claims.")
+                    elif email_v_count >= 3:
+                        st.error(f"Cannot add: {man_email} already holds claims for 3 villas (maximum cap reached).")
                     else:
                         now_ts = get_utc_plus_4().isoformat()
                         run_query(supabase.table("villa_claims").insert({
