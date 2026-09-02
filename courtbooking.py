@@ -94,24 +94,6 @@ def render_donor_ticker(names):
 
 render_donor_ticker(DONOR_NAMES)
 
-# --- AUTO-REFRESH ---
-AUTO_REFRESH_MINUTES = 30
-
-def enable_auto_refresh(minutes):
-    interval_ms = int(minutes * 60 * 1000)
-    st.iframe(
-        f"""
-        <script>
-        setTimeout(function() {{
-            window.top.location.reload();
-        }}, {interval_ms});
-        </script>
-        """,
-        height=1,
-    )
-
-enable_auto_refresh(AUTO_REFRESH_MINUTES)
-
 # --- DATABASE SETUP (SUPABASE) ---
 @st.cache_resource
 def init_supabase():
