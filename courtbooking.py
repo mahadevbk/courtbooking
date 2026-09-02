@@ -1,5 +1,6 @@
 import time
 import streamlit as st
+import streamlit.components.v1 as components
 from supabase import create_client, Client
 from datetime import datetime, timedelta, timezone
 import pandas as pd
@@ -422,74 +423,19 @@ def get_available_hours(court, date_str):
             available.append(h)
     return available
 
-COOKIE_NAME = "mira_claim"
-COOKIE_MAX_AGE_SECONDS = 60 * 60 * 24 * 365  # 1 year
-
-def get_cookie_claim():
-    """Read verified-login cookie via st.context.cookies directly off HTTP headers."""
-    try:
-        raw = st.context.cookies.get(COOKIE_NAME)
-    except Exception:
-        raw = None
-        
-    if not raw:
-        return None
-    try:
-        decoded = urllib.parse.unquote(raw)
-        parts = decoded.split("::")
-        if len(parts) >= 2 and parts[0] and parts[1]:
-            email = parts[2] if len(parts) > 2 else ""
-            return {"sub_community": parts[0], "villa": parts[1], "email": email}
-    except Exception:
-        pass
-    return None
-
-def set_claim_cookie_js(sub_community, villa, email=""):
-    """Returns executable JS to set cookie reliably across top-level and iframe contexts."""
-    raw_val = f"{sub_community}::{villa}::{email or ''}"
-    encoded_val = urllib.parse.quote(raw_val)
-    return f"""
-        (function() {{
-            const val = '{encoded_val}';
-            const maxAge = {COOKIE_MAX_AGE_SECONDS};
-            const cookieStr = '{COOKIE_NAME}=' + val + '; max-age=' + maxAge + '; path=/; SameSite=Lax';
-            document.cookie = cookieStr;
-            try {{ if (window.parent && window.parent.document) window.parent.document.cookie = cookieStr; }} catch(e) {{}}
-            return true;
-        }})();
-    """
-
-def clear_claim_cookie_js():
-    """Returns executable JS to erase cookie across top-level and iframe contexts."""
-    return f"""
-        (function() {{
-            const cookieStr = '{COOKIE_NAME}=; max-age=0; path=/; SameSite=Lax';
-            document.cookie = cookieStr;
-            try {{ if (window.parent && window.parent.document) window.parent.document.cookie = cookieStr; }} catch(e) {{}}
-            return true;
-        }})();
-    """
-
 def logout_action():
-    """Centrally handles logout, clears session, cookie, and legacy localStorage."""
-    js_clear = f"""
-        (function() {{
-            {clear_claim_cookie_js()}
-            localStorage.removeItem('court_villa_lock');
-            localStorage.removeItem('supabase_refresh_token');
-            localStorage.removeItem('verified_claim_info');
-            setTimeout(() => {{
-                window.location.href = window.location.origin + window.location.pathname;
-            }}, 200);
-        }})()
-    """
-    st_javascript(js_clear)
+    """Centrally handles logout, clears session and localStorage."""
+    st_javascript("""
+        localStorage.removeItem('court_villa_lock');
+        localStorage.removeItem('supabase_refresh_token');
+        localStorage.removeItem('verified_claim_info');
+        setTimeout(() => { window.location.href = window.location.origin + window.location.pathname + '?logout=1'; }, 300);
+    """)
     for key in ["authenticated", "sub_community", "villa", "verified_email", "otp_sent", "otp_email", "otp_target_villa", "otp_target_sub"]:
         if key in st.session_state:
             del st.session_state[key]
-    st.query_params.clear()
     st.info("Logging out... Please wait.")
-    time.sleep(1.0)
+    time.sleep(1.2)
     st.rerun()
 
 # --- UI STYLING ---
@@ -591,36 +537,10 @@ if 'authenticated' not in st.session_state:
 # --- AUTHENTICATION LOGIC ---
 if not st.session_state.authenticated:
     logout_mode = st.query_params.get("logout") == "1"
-    if logout_mode:
-        st.query_params.clear()
 
-    # Step 1: Synchronous check from incoming HTTP request headers
-    if not logout_mode:
-        cookie_claim = get_cookie_claim()
-        if cookie_claim:
-            st.session_state.sub_community = cookie_claim["sub_community"]
-            st.session_state.villa = cookie_claim["villa"]
-            if cookie_claim.get("email"):
-                st.session_state.verified_email = cookie_claim["email"]
-            st.session_state.authenticated = True
-            st.query_params.clear()
-            st.rerun()
-
-    # Step 2: Client-side probe (reads live document.cookie directly + localStorage backup)
+    # Query client localStorage
     stored_auth_bundle = st_javascript("""
         (function() {
-            function getCookie(name) {
-                let matches = document.cookie.match(new RegExp("(?:^|; )" + name.replace(/([\.$?*|{}\(\)\[\]\\\/\+^])/g, '\\$1') + "=([^;]*)"));
-                if (matches) return decodeURIComponent(matches[1]);
-                try {
-                    if (window.parent && window.parent.document) {
-                        let pMatches = window.parent.document.cookie.match(new RegExp("(?:^|; )" + name.replace(/([\.$?*|{}\(\)\[\]\\\/\+^])/g, '\\$1') + "=([^;]*)"));
-                        if (pMatches) return decodeURIComponent(pMatches[1]);
-                    }
-                } catch(e) {}
-                return null;
-            }
-
             let uuid = localStorage.getItem('court_device_uuid');
             if (!uuid || uuid === 'no_uuid') {
                 try {
@@ -630,9 +550,7 @@ if not st.session_state.authenticated:
                     uuid = 'dev_' + Math.random().toString(36).substring(2, 15);
                 }
             }
-
             return JSON.stringify({
-                cookieClaim: getCookie('mira_claim') || 'no_cookie',
                 legacy: localStorage.getItem('court_villa_lock') || 'no_lock',
                 refreshToken: localStorage.getItem('supabase_refresh_token') || 'no_token',
                 claimInfo: localStorage.getItem('verified_claim_info') || 'no_claim',
@@ -641,17 +559,13 @@ if not st.session_state.authenticated:
         })()
     """)
     
-    # Gate the render cycle so browser refresh does not render the registration form before client storage responds
+    # EXACT CRITICAL CHECK FROM PREVIOUS VERSION:
+    # On manual refresh, st_javascript returns 0 or None on the initial script pass.
+    # We MUST stop execution here so Streamlit never falls through to the registration form!
     if stored_auth_bundle is None or stored_auth_bundle == 0:
-        retries = st.session_state.get("_restore_retries", 0)
-        if retries < 5:
-            st.session_state._restore_retries = retries + 1
-            st.info("Restoring your session…")
-            time.sleep(0.2)
-            st.rerun()
-        stored_auth_bundle = "{}"
-    else:
-        st.session_state._restore_retries = 0
+        st.markdown("### 🔒 Loading...")
+        st.info("Restoring session, please wait...")
+        st.stop()
 
     auth_data = {}
     try:
@@ -659,7 +573,6 @@ if not st.session_state.authenticated:
     except Exception:
         auth_data = {}
 
-    client_cookie_claim = auth_data.get("cookieClaim", "no_cookie")
     legacy_lock = auth_data.get("legacy", "no_lock")
     refresh_token = auth_data.get("refreshToken", "no_token")
     claim_info = auth_data.get("claimInfo", "no_claim")
@@ -670,30 +583,15 @@ if not st.session_state.authenticated:
     elif "device_uuid" not in st.session_state:
         st.session_state.device_uuid = "device_pending"
 
-    # Step 3: Recover from client-side cookie if st.context.cookies missed it on HTTP pass
-    if not logout_mode and client_cookie_claim and client_cookie_claim != "no_cookie":
-        c_parts = client_cookie_claim.split("::")
-        if len(c_parts) >= 2 and c_parts[0] and c_parts[1]:
-            st.session_state.sub_community = c_parts[0]
-            st.session_state.villa = c_parts[1]
-            if len(c_parts) > 2 and c_parts[2]:
-                st.session_state.verified_email = c_parts[2]
-            st.session_state.authenticated = True
-            st.query_params.clear()
-            st.rerun()
-
-    # Step 4: Recover from LocalStorage verified_claim_info and self-heal the cookie
+    # 1. Restore from verified claim
     if not logout_mode and claim_info and claim_info != "no_claim":
         c_parts = claim_info.split("::")
-        if len(c_parts) >= 2:
+        if len(c_parts) == 2:
             st.session_state.sub_community = c_parts[0]
             st.session_state.villa = c_parts[1]
             st.session_state.authenticated = True
-            st_javascript(set_claim_cookie_js(c_parts[0], c_parts[1], st.session_state.get("verified_email", "")))
-            st.query_params.clear()
-            st.rerun()
 
-    # Step 5: Best-effort refresh for Supabase auth session
+    # 2. Try restoring/refreshing token
     if not logout_mode and refresh_token and refresh_token != "no_token":
         try:
             refresh_res = supabase.auth.refresh_session(refresh_token=refresh_token)
@@ -705,22 +603,18 @@ if not st.session_state.authenticated:
         except Exception:
             pass
 
-    if st.session_state.authenticated:
-        st.query_params.clear()
-        st.rerun()
-
-    # Step 6: Fallback legacy auto-login
+    # 3. Fallback: Legacy Auto-Login (localStorage lock)
     if not logout_mode and not st.session_state.authenticated and legacy_lock and legacy_lock != "no_lock":
         try:
             locked_sub, locked_villa = legacy_lock.split("-")
             st.session_state.sub_community, st.session_state.villa = locked_sub, locked_villa
             st.session_state.authenticated = True
-            st_javascript(set_claim_cookie_js(locked_sub, locked_villa, ""))
-            st.query_params.clear()
-            st.rerun()
         except Exception:
             st_javascript("localStorage.removeItem('court_villa_lock');")
-            st.rerun()
+
+    if st.session_state.authenticated:
+        st.query_params.clear()
+        st.rerun()
 
     if "seen_migration_notice" not in st.session_state:
         st.session_state.seen_migration_notice = False
@@ -847,15 +741,12 @@ if not st.session_state.authenticated:
 
                                 claim_bundle = f"{target_sub}::{target_villa}"
                                 fallback_choice = f"{target_sub}-{target_villa}"
-                                
-                                # Write cookie and localStorage simultaneously
-                                js_persist = f"""
-                                    {set_claim_cookie_js(target_sub, target_villa, verified_email)}
-                                    localStorage.setItem('supabase_refresh_token', {json.dumps(refresh_tok)});
-                                    localStorage.setItem('verified_claim_info', {json.dumps(claim_bundle)});
-                                    localStorage.setItem('court_villa_lock', {json.dumps(fallback_choice)});
-                                    localStorage.setItem('court_device_uuid', {json.dumps(resolved_uuid)});
-                                """
+                                js_persist = (
+                                    f"localStorage.setItem('supabase_refresh_token', {json.dumps(refresh_tok)}); "
+                                    f"localStorage.setItem('verified_claim_info', {json.dumps(claim_bundle)}); "
+                                    f"localStorage.setItem('court_villa_lock', {json.dumps(fallback_choice)}); "
+                                    f"localStorage.setItem('court_device_uuid', {json.dumps(resolved_uuid)});"
+                                )
                                 st_javascript(js_persist)
 
                                 st.session_state.sub_community = target_sub
@@ -905,11 +796,7 @@ if not st.session_state.authenticated:
                     st.error("Please select a sub-community and enter your villa number.")
             else:
                 current_choice = f"{sub_community_input}-{villa_input}"
-                js_legacy = f"""
-                    {set_claim_cookie_js(sub_community_input, villa_input, "")}
-                    localStorage.setItem('court_villa_lock', {json.dumps(current_choice)});
-                """
-                st_javascript(js_legacy)
+                st_javascript(f"localStorage.setItem('court_villa_lock', {json.dumps(current_choice)});")
                 st.session_state.sub_community, st.session_state.villa = sub_community_input, villa_input
                 st.session_state.authenticated = True
                 st.query_params.clear()
