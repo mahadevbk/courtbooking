@@ -563,12 +563,28 @@ if not st.session_state.authenticated:
         })()
     """)
     
+    # The JS read above is async: on the very first script pass right after a
+    # page load, the component can report back before the browser has actually
+    # returned the stored values, showing up here as a falsy/0 result. Treat
+    # that as "still loading" rather than "nothing stored" - but cap the
+    # retries so a genuine error (e.g. JS blocked) can't spin forever and trap
+    # a real first-time visitor.
+    if not stored_auth_bundle:
+        retries = st.session_state.get("_restore_retries", 0)
+        if retries < 4:
+            st.session_state._restore_retries = retries + 1
+            st.info("Restoring your session…")
+            time.sleep(0.3)
+            st.rerun()
+        stored_auth_bundle = "{}"
+    else:
+        st.session_state._restore_retries = 0
+
     auth_data = {}
-    if stored_auth_bundle and stored_auth_bundle != 0:
-        try:
-            auth_data = json.loads(stored_auth_bundle)
-        except Exception:
-            auth_data = {}
+    try:
+        auth_data = json.loads(stored_auth_bundle)
+    except Exception:
+        auth_data = {}
 
     legacy_lock = auth_data.get("legacy", "no_lock")
     refresh_token = auth_data.get("refreshToken", "no_token")
@@ -580,35 +596,37 @@ if not st.session_state.authenticated:
     elif "device_uuid" not in st.session_state:
         st.session_state.device_uuid = "device_pending"
 
-    # 1. Primary: Silent restore using refresh_token parameter
+    # 1. Primary: restore straight from the verified claim, which never
+    # expires and doesn't depend on any live Supabase session. This is the
+    # thing that actually matters (which villa this browser is verified for),
+    # so it must not be gated on a token refresh succeeding.
+    if not logout_mode and claim_info and claim_info != "no_claim":
+        c_parts = claim_info.split("::")
+        if len(c_parts) == 2:
+            st.session_state.sub_community = c_parts[0]
+            st.session_state.villa = c_parts[1]
+            st.session_state.authenticated = True
+
+    # 2. Best-effort only: try to refresh the underlying Supabase auth session
+    # (e.g. to pick up the verified email for display) and opportunistically
+    # rotate the stored token. Supabase refresh tokens are single-use, so this
+    # can legitimately fail (e.g. if a previous rotation's write-back to
+    # localStorage didn't land) - that must never undo the restore above.
     if not logout_mode and refresh_token and refresh_token != "no_token":
         try:
-            # Pass refresh_token as a keyword argument to prevent SDK invocation errors
             refresh_res = supabase.auth.refresh_session(refresh_token=refresh_token)
             if refresh_res and refresh_res.session:
                 new_refresh = refresh_res.session.refresh_token
-                user_email = refresh_res.user.email
                 st_javascript(f"localStorage.setItem('supabase_refresh_token', {json.dumps(new_refresh)});")
-
-                if claim_info and claim_info != "no_claim":
-                    c_parts = claim_info.split("::")
-                    if len(c_parts) == 2:
-                        st.session_state.sub_community = c_parts[0]
-                        st.session_state.villa = c_parts[1]
-                        st.session_state.verified_email = user_email
-                        st.session_state.authenticated = True
-                        st.rerun()
+                if st.session_state.authenticated:
+                    st.session_state.verified_email = refresh_res.user.email
         except Exception:
-            # Fall back to claimInfo and legacy lock instead of deleting tokens immediately
-            if claim_info and claim_info != "no_claim":
-                c_parts = claim_info.split("::")
-                if len(c_parts) == 2:
-                    st.session_state.sub_community = c_parts[0]
-                    st.session_state.villa = c_parts[1]
-                    st.session_state.authenticated = True
-                    st.rerun()
+            pass
 
-    # 2. Fallback: Legacy Auto-Login (localStorage lock)
+    if st.session_state.authenticated:
+        st.rerun()
+
+    # 3. Fallback: Legacy Auto-Login (localStorage lock)
     if not logout_mode and not st.session_state.authenticated and legacy_lock and legacy_lock != "no_lock":
         try:
             locked_sub, locked_villa = legacy_lock.split("-")
