@@ -6,6 +6,7 @@ import pandas as pd
 import zipfile
 import io
 import random
+import json
 from postgrest.exceptions import APIError 
 from PIL import Image # For image resizing
 # NEW IMPORT: For browser-side storage execution
@@ -38,7 +39,7 @@ def render_donor_ticker(names):
     # Lightweight SVG of a standalone tennis ball (rendered inline)
     tennis_ball_svg = (
         '<svg style="vertical-align: middle; margin: 0 12px; display: inline-block;" '
-        'width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#ccff00" '
+        'width="16" height="16" viewBox="0 24 24" fill="none" stroke="#ccff00" '
         'stroke-width="2" stroke-linecap="round" stroke-linejoin="round">'
         '<circle cx="12" cy="12" r="10" fill="#ccff00" stroke="#0d5384"/>'
         '<path d="M2 12a10 10 0 0 0 10 10" stroke="#0d5384"/>'
@@ -97,10 +98,6 @@ def render_donor_ticker(names):
 render_donor_ticker(DONOR_NAMES)
 
 # --- AUTO-REFRESH ---
-# Reloads the whole tab periodically so it picks up any code/donor-list
-# changes even if a user leaves the tab open in the background.
-# NOTE: this is a full page reload, so it will clear any half-filled form
-# fields on the page at the moment it fires.
 AUTO_REFRESH_MINUTES = 30
 
 def enable_auto_refresh(minutes):
@@ -139,6 +136,15 @@ sub_community_list = [
 ]
 
 courts = ["Mira 2", "Mira 4", "Mira 5A", "Mira 5B", "Mira Oasis 1", "Mira Oasis 2", "Mira Oasis 3A", "Mira Oasis 3B", "Mira Oasis 3C"]
+
+DISPOSABLE_DOMAINS = {
+    "mailinator.com", "tempmail.com", "10minutemail.com", "guerrillamail.com",
+    "trashmail.com", "yopmail.com", "sharklasers.com", "getairmail.com", "throwawaymail.com"
+}
+
+def is_disposable_email(email_str):
+    domain = email_str.split("@")[-1].lower() if "@" in email_str else ""
+    return domain in DISPOSABLE_DOMAINS
 
 def get_start_hours_for_date(date_str):
     """Returns the list of start hours for a given date.
@@ -189,6 +195,20 @@ def add_log(event_type, details):
     except:
         pass 
 
+def get_villa_claims_count(sub_community, villa):
+    res = run_query(supabase.table("villa_claims").select("id", count="exact")
+                    .eq("sub_community", sub_community)
+                    .eq("villa", villa)
+                    .eq("status", "approved"))
+    return res.count if res and res.count is not None else 0
+
+def get_existing_claim(sub_community, villa, email):
+    res = run_query(supabase.table("villa_claims").select("*")
+                    .eq("sub_community", sub_community)
+                    .eq("villa", villa)
+                    .ilike("email", email.strip().lower()))
+    return res.data[0] if res and res.data else None
+
 def get_bookings_for_day_with_details(date_str):
     response = run_query(supabase.table("bookings").select("court, start_hour, sub_community, villa").eq("date", date_str))
     if not response or not response.data: return {}
@@ -236,17 +256,13 @@ def get_daily_bookings_count(villa, sub_community, date_str):
     is_mira1_group = (sub_community == "Mira 1" and villa in mira1_group)
 
     if is_mira1_group:
-        # Rule: Only ONE villa from the group can book per day.
-        # Check if anyone ELSE in the group has a booking.
         other_villas = [v for v in mira1_group if v != villa]
         res_others = run_query(supabase.table("bookings").select("id", count="exact").eq("sub_community", "Mira 1").in_("villa", other_villas).eq("date", date_str))
         others_count = res_others.count if res_others and res_others.count is not None else 0
         
         if others_count > 0:
-            # If someone else booked, this villa's daily limit is effectively exceeded (return 2 or more)
             return 99 
         
-        # If no one else booked, check this villa's own daily count (Limit 2)
         res_self = run_query(supabase.table("bookings").select("id", count="exact").eq("sub_community", "Mira 1").eq("villa", villa).eq("date", date_str))
         return res_self.count if res_self and res_self.count is not None else 0
     else:
@@ -402,9 +418,14 @@ def get_available_hours(court, date_str):
 
 def logout_action():
     """Centrally handles logout, clears session and localStorage."""
-    # Use JS to clear localStorage and force a clean reload with a logout flag
-    st_javascript("localStorage.removeItem('court_villa_lock'); setTimeout(() => { window.location.href = window.location.origin + window.location.pathname + '?logout=1'; }, 300);")
-    for key in ["authenticated", "sub_community", "villa"]:
+    js_clear = (
+        "localStorage.removeItem('court_villa_lock'); "
+        "localStorage.removeItem('supabase_refresh_token'); "
+        "localStorage.removeItem('verified_claim_info'); "
+        "setTimeout(() => { window.location.href = window.location.origin + window.location.pathname + '?logout=1'; }, 300);"
+    )
+    st_javascript(js_clear)
+    for key in ["authenticated", "sub_community", "villa", "verified_email", "otp_sent", "otp_email", "otp_target_villa", "otp_target_sub"]:
         if key in st.session_state:
             del st.session_state[key]
     st.info("Logging out... Please wait.")
@@ -422,6 +443,32 @@ h1, h2, h3, .stTitle { font-family: 'Audiowide', cursive !important; color: #2c3
 .stDataFrame th { font-family: 'Audiowide', cursive; font-size: 12px; background-color: #2c3e50 !important; color: white !important; }
 </style>
 """, unsafe_allow_html=True)
+
+# --- ANNOUNCEMENT DIALOG (MIGRATION NOTICE) ---
+if hasattr(st, "dialog"):
+    @st.dialog("📢 Notice: Transition to Email-Verified Logins")
+    def show_announcement_dialog():
+        st.markdown("""
+        ### 🛡️ Why We Are Making This Change
+        Our court booking system currently uses an unverified villa dropdown login. 
+        Unfortunately, a few users have been taking advantage of this by claiming multiple different villas to bypass community booking caps.
+
+        ### 🎾 The Advantages for You
+        * **Guaranteed Fair Court Access:** Prevents villa impersonation and keeps court slots genuinely available for residents[cite: 2].
+        * **Zero Daily Hassle:** You only need to verify via a 6-digit email code **once**[cite: 2]. Your browser securely remembers your login[cite: 2].
+        * **Household Flexibility:** Up to 2 verified resident emails can be attached to each villa[cite: 2].
+
+        ---
+        **🗓️ Transition Timeline:**  
+        Next week, the legacy fast dropdown login will be **fully retired**[cite: 2]. All residents will be required to log in using the email-verified method[cite: 2].  
+        You can verify your villa right now under the **🛡️ Verify Villa via Email (New)** tab[cite: 2]!
+        """)
+        if st.button("I Understand — Continue to App", type="primary", use_container_width=True):
+            st.session_state.seen_migration_notice = True
+            st.rerun()
+else:
+    def show_announcement_dialog():
+        pass
 
 # --- LOGIC FOR FULL FRAME PAGE ---
 if st.query_params.get("view") == "full":
@@ -462,6 +509,13 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
+# Trigger Floating Announcement Dialog once per session
+if "seen_migration_notice" not in st.session_state:
+    st.session_state.seen_migration_notice = False
+
+if not st.session_state.seen_migration_notice:
+    show_announcement_dialog()
+
 try:
     _process_background_tasks()
     villas_active = get_villas_with_active_bookings()
@@ -487,22 +541,58 @@ if 'authenticated' not in st.session_state:
 
 # --- AUTHENTICATION LOGIC ---
 if not st.session_state.authenticated:
-    # Use query params to detect manual logout
     logout_mode = st.query_params.get("logout") == "1"
     
-    # Simple auto-login from localStorage (legacy)
-    stored_lock = st_javascript("localStorage.getItem('court_villa_lock') || 'no_lock';")
+    # Fetch storage tokens
+    stored_auth_bundle = st_javascript("""
+        JSON.stringify({
+            legacy: localStorage.getItem('court_villa_lock') || 'no_lock',
+            refreshToken: localStorage.getItem('supabase_refresh_token') || 'no_token',
+            claimInfo: localStorage.getItem('verified_claim_info') || 'no_claim'
+        });
+    """)
     
-    # Wait for signals to stabilize
-    if stored_lock == 0:
+    # Wait for JS bridge
+    if stored_auth_bundle == 0:
         st.markdown("### 🔒 Loading...")
         st.info("Please wait...")
         st.stop()
 
-    # 1. Primary Auto-Login (localStorage legacy lock)
-    if not logout_mode and stored_lock and stored_lock != "no_lock":
+    auth_data = {}
+    try:
+        if stored_auth_bundle and stored_auth_bundle != 0:
+            auth_data = json.loads(stored_auth_bundle)
+    except:
+        auth_data = {}
+
+    legacy_lock = auth_data.get("legacy", "no_lock")
+    refresh_token = auth_data.get("refreshToken", "no_token")
+    claim_info = auth_data.get("claimInfo", "no_claim")
+
+    # 1. Primary: Silent session restore from Supabase Refresh Token
+    if not logout_mode and refresh_token and refresh_token != "no_token":
         try:
-            locked_sub, locked_villa = stored_lock.split("-")
+            refresh_res = supabase.auth.refresh_session(refresh_token)
+            if refresh_res and refresh_res.session:
+                new_refresh = refresh_res.session.refresh_token
+                user_email = refresh_res.user.email
+                st_javascript(f"localStorage.setItem('supabase_refresh_token', '{new_refresh}');")
+
+                if claim_info and claim_info != "no_claim":
+                    c_parts = claim_info.split("::")
+                    if len(c_parts) == 2:
+                        st.session_state.sub_community = c_parts[0]
+                        st.session_state.villa = c_parts[1]
+                        st.session_state.verified_email = user_email
+                        st.session_state.authenticated = True
+                        st.rerun()
+        except Exception:
+            st_javascript("localStorage.removeItem('supabase_refresh_token'); localStorage.removeItem('verified_claim_info');")
+
+    # 2. Fallback: Legacy Auto-Login (localStorage lock)
+    if not logout_mode and not st.session_state.authenticated and legacy_lock and legacy_lock != "no_lock":
+        try:
+            locked_sub, locked_villa = legacy_lock.split("-")
             st.session_state.sub_community, st.session_state.villa = locked_sub, locked_villa
             st.session_state.authenticated = True
             st.rerun()
@@ -510,7 +600,7 @@ if not st.session_state.authenticated:
             st_javascript("localStorage.removeItem('court_villa_lock');")
             st.rerun()
 
-    # Initialize OTP state flags
+    # Initialize OTP form state
     if "otp_sent" not in st.session_state:
         st.session_state.otp_sent = False
     if "otp_email" not in st.session_state:
@@ -520,7 +610,6 @@ if not st.session_state.authenticated:
     if "otp_target_sub" not in st.session_state:
         st.session_state.otp_target_sub = None
 
-    # --- TABBED LOGIN UI: Fast Track vs Verified ---
     login_tab1, login_tab2 = st.tabs(["⚡ Fast Login (Legacy)", "🛡️ Verify Villa via Email (New)"])
 
     with login_tab1:
@@ -551,7 +640,7 @@ if not st.session_state.authenticated:
 
     with login_tab2:
         st.subheader("Email-Verified Access")
-        st.caption("Receive a 6-digit one-time code to secure your villa.")
+        st.caption("Verify via a 6-digit email code. Max 2 verified emails per villa.")
 
         if not st.session_state.otp_sent:
             col_v1, col_v2 = st.columns(2)
@@ -568,18 +657,28 @@ if not st.session_state.authenticated:
                     st.error("Please specify your Sub-Community and Villa Number.")
                 elif not otp_email_input or "@" not in otp_email_input:
                     st.error("Please provide a valid email address.")
+                elif is_disposable_email(otp_email_input):
+                    st.error("Disposable/temporary email domains are not allowed. Please use a personal or work email.")
                 else:
-                    try:
-                        # Request Supabase OTP
-                        supabase.auth.sign_in_with_otp({"email": otp_email_input})
-                        st.session_state.otp_sent = True
-                        st.session_state.otp_email = otp_email_input
-                        st.session_state.otp_target_sub = otp_sub
-                        st.session_state.otp_target_villa = otp_villa
-                        st.success(f"Code sent to {otp_email_input}!")
-                        st.rerun()
-                    except Exception as e:
-                        st.error(f"Failed to send code: {str(e)}")
+                    existing_claim = get_existing_claim(otp_sub, otp_villa, otp_email_input)
+                    current_claims_count = get_villa_claims_count(otp_sub, otp_villa)
+                    
+                    if not existing_claim and current_claims_count >= 2:
+                        st.error(
+                            f"🚫 This villa ({otp_sub} - Villa {otp_villa}) already has 2 verified resident emails attached. "
+                            "If you recently moved in or need to update your registered email, please reach out via the contact channels in Court Maintenance."
+                        )
+                    else:
+                        try:
+                            supabase.auth.sign_in_with_otp({"email": otp_email_input})
+                            st.session_state.otp_sent = True
+                            st.session_state.otp_email = otp_email_input
+                            st.session_state.otp_target_sub = otp_sub
+                            st.session_state.otp_target_villa = otp_villa
+                            st.success(f"6-digit code sent to {otp_email_input}!")
+                            st.rerun()
+                        except Exception as e:
+                            st.error(f"Failed to send code: {str(e)}")
         else:
             st.info(f"Enter the 6-digit code sent to **{st.session_state.otp_email}** for **{st.session_state.otp_target_sub} - Villa {st.session_state.otp_target_villa}**.")
             token_input = st.text_input("Enter 6-digit code", max_chars=6, key="otp_token_text").strip()
@@ -591,22 +690,50 @@ if not st.session_state.authenticated:
                         st.error("Please enter a 6-digit verification code.")
                     else:
                         try:
-                            # Verify OTP with Supabase
                             res = supabase.auth.verify_otp({
                                 "email": st.session_state.otp_email,
                                 "token": token_input,
                                 "type": "email"
                             })
                             if res and res.session:
-                                # Successful verification test
-                                st.session_state.sub_community = st.session_state.otp_target_sub
-                                st.session_state.villa = st.session_state.otp_target_villa
-                                st.session_state.authenticated = True
+                                target_sub = st.session_state.otp_target_sub
+                                target_villa = st.session_state.otp_target_villa
+                                verified_email = st.session_state.otp_email
+                                refresh_tok = res.session.refresh_token
+
+                                existing = get_existing_claim(target_sub, target_villa, verified_email)
+                                now_ts = get_utc_plus_4().isoformat()
                                 
-                                # Reset OTP state
+                                if not existing:
+                                    run_query(supabase.table("villa_claims").insert({
+                                        "sub_community": target_sub,
+                                        "villa": target_villa,
+                                        "email": verified_email,
+                                        "status": "approved",
+                                        "verified_at": now_ts
+                                    }))
+                                    add_log("Villa Claim", f"{target_sub} Villa {target_villa} claimed by {verified_email}")
+                                else:
+                                    run_query(supabase.table("villa_claims").update({
+                                        "verified_at": now_ts,
+                                        "status": "approved"
+                                    }).eq("id", existing["id"]))
+
+                                claim_bundle = f"{target_sub}::{target_villa}"
+                                js_persist = (
+                                    f"localStorage.setItem('supabase_refresh_token', '{refresh_tok}'); "
+                                    f"localStorage.setItem('verified_claim_info', '{claim_bundle}');"
+                                )
+                                st_javascript(js_persist)
+
+                                st.session_state.sub_community = target_sub
+                                st.session_state.villa = target_villa
+                                st.session_state.verified_email = verified_email
+                                st.session_state.authenticated = True
                                 st.session_state.otp_sent = False
+                                
                                 st.balloons()
-                                st.success("Verified successfully! Logging you in...")
+                                st.success("✅ Verified and registered successfully! Logging you in...")
                                 time.sleep(1.5)
                                 st.rerun()
                             else:
@@ -689,7 +816,6 @@ with tab1:
                 slots_to_book = list(range(start_h, start_h + q_slots))
                 valid_hours = get_start_hours_for_date(selected_date)
                 
-                # Check availability and limits for all requested slots
                 unavailable = []
                 for h in slots_to_book:
                     if h not in valid_hours or is_slot_booked(q_court, selected_date, h) or is_slot_in_past(selected_date, h):
@@ -743,7 +869,6 @@ with tab1:
         try:
             st.dataframe(heatmap_data.style.background_gradient(cmap="YlGnBu"), width="stretch")
         except Exception:
-            # Fallback if matplotlib/gradient fails
             st.dataframe(heatmap_data, width="stretch")
     else: st.info("Charts will appear here once more bookings are made!")
 
@@ -767,7 +892,6 @@ with tab2:
     selected_date_full = st.selectbox("Date:", date_options)
     date_choice = selected_date_full.split(" (")[0]
     
-    # Dynamic timing info for the selected date
     if date_choice <= "2026-03-22":
         timing_msg = "7AM to 12AM slots."
     else:
@@ -806,7 +930,6 @@ with tab2:
     with col_status2: st.info(f"Bookings for {date_choice}: **{daily_count} / 2**")
     
     if st.button("Book This Slot", type="primary"):
-        # RE-CALCULATE latest counts to prevent stale limit issues
         active_count_latest = get_active_bookings_count(villa, sub_community)
         daily_count_latest = get_daily_bookings_count(villa, sub_community, date_choice)
         
@@ -817,7 +940,6 @@ with tab2:
             slots_to_book = list(range(start_h, start_h + slots_choice))
             valid_hours = get_start_hours_for_date(date_choice)
 
-            # Check availability and limits
             unavailable = []
             for h in slots_to_book:
                 if h not in valid_hours or is_slot_booked(court_choice, date_choice, h) or is_slot_in_past(date_choice, h):
@@ -868,7 +990,7 @@ with tab3:
             vb = get_user_bookings(v_num, "Mira 1")
             for b in vb: b['orig_v'] = v_num; b['orig_sc'] = "Mira 1"
             my_b.extend(vb)
-        limit_val = 6 # Individual limit for Mira 1 villas
+        limit_val = 6
     else:
         my_b = get_user_bookings(villa, sub_community)
         for b in my_b: b['orig_v'] = villa; b['orig_sc'] = sub_community
@@ -908,21 +1030,15 @@ with tab3:
             day_name = b_date.strftime('%A')
             formatted_date = b_date.strftime('%b %d, %Y')
             
-            # Calculate time range
             start_time = min(b['start_hours'])
             end_time = max(b['start_hours']) + 1
             time_display = f"{start_time:02d}:00 - {end_time:02d}:00"
             
-            # ID Display logic
             id_list = sorted(b['ids'])
             id_display = f"#{id_list[0]}" if len(id_list) == 1 else f"#{id_list[0]}-{id_list[-1]}"
-            
-            # Get location URL
             map_url = court_locations.get(b['court'], "#")
             
-            # Use a container to group the card and the button
             with st.container():
-                # CSS Card Styling (Location link moved under court name)
                 st.markdown(f"""
                     <div style="
                         background-color: #0d5384; 
@@ -954,7 +1070,6 @@ with tab3:
                     </div>
                 """, unsafe_allow_html=True)
                 
-                # Integrated Action Button
                 if st.button(f"❌ Cancel Booking {id_display}", key=f"cancel_{i}", width='stretch'):
                     for bid in b['ids']: delete_booking(bid, b['v'], b['sc'])
                     st.success(f"Successfully cancelled booking {id_display}")
@@ -984,7 +1099,6 @@ with tab4:
     </div>
     """, unsafe_allow_html=True)
 
-    # 1. Reporting Form
     with st.expander("📝 Report a New Issue", expanded=False):
         m_court = st.selectbox("Select Court", options=courts, key="maint_court")
         m_desc = st.text_area("Issue Description", placeholder="Please describe the issue in detail...")
@@ -994,16 +1108,13 @@ with tab4:
         if m_photo:
             try:
                 img = Image.open(m_photo)
-                # Ensure RGB mode for JPEG
                 if img.mode in ("RGBA", "P"):
                     img = img.convert("RGB")
                 
-                # Resize proportionally if any dimension > 640px
                 max_res = 640
                 if img.width > max_res or img.height > max_res:
                     img.thumbnail((max_res, max_res))
                 
-                # Compress and encode
                 buffer = io.BytesIO()
                 img.save(buffer, format="JPEG", quality=40)
                 m_image_b64 = base64.b64encode(buffer.getvalue()).decode()
@@ -1025,7 +1136,7 @@ with tab4:
                         "is_fixed": False
                     }))
                     add_log("Maintenance Reported", f"Issue reported for {m_court} by {sub_community} Villa {villa}")
-                    st.cache_data.clear() # Reset cache so new report is visible
+                    st.cache_data.clear()
                     st.success("✅ Maintenance report submitted successfully!")
                     time.sleep(1)
                     st.rerun()
@@ -1034,7 +1145,6 @@ with tab4:
 
     st.divider()
     
-    # 2. Contact Resources
     st.markdown("### 📞 Contact Resources")
     c_col1, c_col2, c_col3 = st.columns(3)
     with c_col1:
@@ -1055,11 +1165,9 @@ with tab4:
 
     st.divider()
     
-    # 3. Court Issues
     st.markdown("### 📋 Court Issues")
     maint_data = get_maintenance_data()
     if maint_data and maint_data.data:
-        # --- NEW: Bulk WhatsApp Share Button ---
         open_issues = [item for item in maint_data.data if not item.get('is_fixed')]
         if open_issues:
             phone_number = "+971562069871"
@@ -1090,7 +1198,6 @@ with tab4:
                 l_col1, l_col2, l_col3 = st.columns([1, 2, 1])
                 with l_col1:
                     if item.get("image_url"):
-                        # Use width='stretch' to scale image proportionally
                         st.image(f"data:image/png;base64,{item['image_url']}", width='stretch')
                     else:
                         st.info("No Photo")
@@ -1111,53 +1218,42 @@ with tab4:
                                 "is_fixed": True,
                                 "fixed_at": now_ts
                             }).eq("id", item['id']))
-                            st.cache_data.clear() # Reset cache on fix
+                            st.cache_data.clear()
                             st.rerun()
     else:
         st.info("No maintenance issues reported yet.")
 
 with tab5:
     st.subheader("Community Activity Log")
-
-    #st.subheader("Community Activity Log (Last 14 Days)")
     st.caption("Timezone: UTC+4")
     
-    # Check for admin status via session state (from the password field at the bottom)
     admin_pass_val = st.session_state.get("log_admin_pass", "")
     is_admin = admin_pass_val == st.secrets.get("ADMIN_PASSWORD", "admin123")
 
     logs = get_logs_last_14_days()
     if logs:
-        # Include Fingerprint in the DataFrame
         log_df = pd.DataFrame(logs, columns=["timestamp", "event_type", "Fingerprint", "details"])
         
-        # Standard filters
         filters = (
             (log_df['event_type'] != "Debug") &
             (log_df['event_type'] != "System Maintenance") &
             (~log_df['details'].str.contains("System-Synced", case=False, na=False))
         )
         
-        # If NOT admin, also filter out "Limit Enforcement"
         if not is_admin:
             filters &= (log_df['event_type'] != "Limit Enforcement")
             
         display_df = log_df[filters].copy()        
-        
-        # Clean up the details column (remove the duplicate FP/IP tags for display)
-        # Using a more robust regex that covers both tags and the trailing space
         display_df['details'] = display_df['details'].str.replace(r'⟦FP:.*?⟧⟦IP:.*?⟧ ', '', regex=True)
 
-        # Hide the Fingerprint column for a cleaner UI
         cols = ['timestamp', 'event_type', 'details']
-
         display_df['timestamp'] = pd.to_datetime(display_df['timestamp'], format='ISO8601').dt.strftime('%b %d, %H:%M')
         
         def style_rows(row):
             styles = [''] * len(row)
-            if row.event_type == "Booking Created": styles[1] = 'background-color: #d4edda; color: #155724; font-weight: bold;'
+            if row.event_type in ["Booking Created", "Villa Claim"]: styles[1] = 'background-color: #d4edda; color: #155724; font-weight: bold;'
             elif row.event_type in ["Booking Deleted", "Booking Cancelled"]: styles[1] = 'background-color: #f8d7da; color: #721c24; font-weight: bold;'
-            elif row.event_type == "Access Denied": styles[1] = 'background-color: #ffcc00; color: black; font-weight: bold;'
+            elif row.event_type in ["Access Denied", "Claim Held for Review"]: styles[1] = 'background-color: #ffcc00; color: black; font-weight: bold;'
             return styles
             
         st.dataframe(display_df[cols].style.apply(style_rows, axis=1), hide_index=True, width="stretch")
@@ -1179,16 +1275,12 @@ with tab5:
                 sub_comm, villa_num = selected_villa.split(" - ")
                 bookings = get_bookings_for_villa(villa_num, sub_comm)
                 if bookings:
-                    # Create a copy with a "Delete" column
                     df_bookings = pd.DataFrame(bookings)
-                    # For UI display: Format the date and time
                     df_bookings['Time'] = df_bookings['start_hour'].apply(lambda x: f"{x:02d}:00")
-                    # Prepare for selection
                     df_bookings.insert(0, "Select", False)
                     
                     st.write(f"Showing bookings for **{selected_villa}**:")
                     
-                    # Use data_editor for selection
                     edited_df = st.data_editor(
                         df_bookings[["Select", "id", "date", "Time", "court"]],
                         column_config={
@@ -1230,7 +1322,6 @@ with tab5:
     st.subheader("💾 Data Backup")
     def get_zip_data():
         try:
-            # Fetch bookings in chunks
             b_data = []
             chunk_size = 1000
             offset = 0
@@ -1241,7 +1332,6 @@ with tab5:
                 if len(res.data) < chunk_size: break
                 offset += chunk_size
                 
-            # Fetch logs in chunks
             l_data = []
             offset = 0
             while True:
