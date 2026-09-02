@@ -427,8 +427,45 @@ def get_available_hours(court, date_str):
             available.append(h)
     return available
 
+COOKIE_NAME = "mira_claim"
+COOKIE_MAX_AGE_SECONDS = 60 * 60 * 24 * 365  # 1 year
+
+def get_cookie_claim():
+    """Read the verified-login cookie directly from the incoming HTTP request via
+    st.context.cookies. This is synchronous - available on the very first script
+    execution, with no async JS round-trip and no retry/race condition. This is
+    the primary session-restore mechanism."""
+    try:
+        raw = st.context.cookies.get(COOKIE_NAME)
+    except Exception:
+        raw = None
+    if not raw:
+        return None
+    try:
+        decoded = urllib.parse.unquote(raw)
+        parts = decoded.split("::")
+        if len(parts) == 3 and parts[0] and parts[1]:
+            return {"sub_community": parts[0], "villa": parts[1], "email": parts[2]}
+    except Exception:
+        pass
+    return None
+
+def set_claim_cookie(sub_community, villa, email):
+    """Write the verified-login cookie. This still requires one JS call, but it
+    only ever runs once, at the moment of an explicit user action (completing
+    OTP verification or legacy login) - not on every automatic page load - so
+    it isn't exposed to the same timing race as the old localStorage restore."""
+    value = urllib.parse.quote(f"{sub_community}::{villa}::{email or ''}")
+    st_javascript(
+        f"document.cookie = '{COOKIE_NAME}={value}; max-age={COOKIE_MAX_AGE_SECONDS}; path=/; SameSite=Lax'; 1;"
+    )
+
+def clear_claim_cookie():
+    st_javascript(f"document.cookie = '{COOKIE_NAME}=; max-age=0; path=/; SameSite=Lax'; 1;")
+
 def logout_action():
-    """Centrally handles logout, clears session and localStorage."""
+    """Centrally handles logout, clears session, cookie, and legacy localStorage."""
+    clear_claim_cookie()
     js_clear = (
         "localStorage.removeItem('court_villa_lock'); "
         "localStorage.removeItem('supabase_refresh_token'); "
@@ -542,7 +579,23 @@ if 'authenticated' not in st.session_state:
 # --- AUTHENTICATION LOGIC ---
 if not st.session_state.authenticated:
     logout_mode = st.query_params.get("logout") == "1"
-    
+
+    # 1. Primary restore path: read the login cookie directly off the incoming
+    # HTTP request via st.context.cookies. This is synchronous - no JS
+    # round-trip, no timing race, works identically on every browser/OS since
+    # the browser sends cookies automatically on every request (including a
+    # plain manual refresh). This replaces the old localStorage-based restore
+    # as the main mechanism.
+    if not logout_mode:
+        cookie_claim = get_cookie_claim()
+        if cookie_claim:
+            st.session_state.sub_community = cookie_claim["sub_community"]
+            st.session_state.villa = cookie_claim["villa"]
+            if cookie_claim.get("email"):
+                st.session_state.verified_email = cookie_claim["email"]
+            st.session_state.authenticated = True
+            st.rerun()
+
     stored_auth_bundle = st_javascript("""
         (function() {
             let uuid = localStorage.getItem('court_device_uuid');
@@ -568,7 +621,10 @@ if not st.session_state.authenticated:
     # returned the stored values, showing up here as a falsy/0 result. Treat
     # that as "still loading" rather than "nothing stored" - but cap the
     # retries so a genuine error (e.g. JS blocked) can't spin forever and trap
-    # a real first-time visitor.
+    # a real first-time visitor. This whole block is now only a MIGRATION
+    # BRIDGE for people who logged in before the cookie became the primary
+    # mechanism - anyone with the cookie already returned above and never
+    # reaches here.
     if not stored_auth_bundle:
         retries = st.session_state.get("_restore_retries", 0)
         if retries < 4:
@@ -596,22 +652,21 @@ if not st.session_state.authenticated:
     elif "device_uuid" not in st.session_state:
         st.session_state.device_uuid = "device_pending"
 
-    # 1. Primary: restore straight from the verified claim, which never
-    # expires and doesn't depend on any live Supabase session. This is the
-    # thing that actually matters (which villa this browser is verified for),
-    # so it must not be gated on a token refresh succeeding.
+    # 2. Migration bridge: restore from the old localStorage claim (set before
+    # this update) and immediately upgrade the person to a cookie so every
+    # future load goes through the fast, reliable path above instead.
     if not logout_mode and claim_info and claim_info != "no_claim":
         c_parts = claim_info.split("::")
         if len(c_parts) == 2:
             st.session_state.sub_community = c_parts[0]
             st.session_state.villa = c_parts[1]
             st.session_state.authenticated = True
+            set_claim_cookie(c_parts[0], c_parts[1], st.session_state.get("verified_email", ""))
 
-    # 2. Best-effort only: try to refresh the underlying Supabase auth session
-    # (e.g. to pick up the verified email for display) and opportunistically
-    # rotate the stored token. Supabase refresh tokens are single-use, so this
-    # can legitimately fail (e.g. if a previous rotation's write-back to
-    # localStorage didn't land) - that must never undo the restore above.
+    # 3. Best-effort only: try to refresh the underlying Supabase auth session
+    # (e.g. to pick up the verified email for display). Supabase refresh
+    # tokens are single-use, so this can legitimately fail - that must never
+    # undo the restore above.
     if not logout_mode and refresh_token and refresh_token != "no_token":
         try:
             refresh_res = supabase.auth.refresh_session(refresh_token=refresh_token)
@@ -626,12 +681,13 @@ if not st.session_state.authenticated:
     if st.session_state.authenticated:
         st.rerun()
 
-    # 3. Fallback: Legacy Auto-Login (localStorage lock)
+    # 4. Fallback: Legacy Auto-Login (localStorage lock), also upgraded to a cookie
     if not logout_mode and not st.session_state.authenticated and legacy_lock and legacy_lock != "no_lock":
         try:
             locked_sub, locked_villa = legacy_lock.split("-")
             st.session_state.sub_community, st.session_state.villa = locked_sub, locked_villa
             st.session_state.authenticated = True
+            set_claim_cookie(locked_sub, locked_villa, "")
             st.rerun()
         except Exception:
             st_javascript("localStorage.removeItem('court_villa_lock');")
@@ -760,10 +816,10 @@ if not st.session_state.authenticated:
                                         "status": "approved"
                                     }).eq("id", existing["id"]))
 
-                                # Persist all tokens: session, claimInfo, and the persistent villa lock.
-                                # Use json.dumps to safely encode each value for embedding in JS -
-                                # avoids breaking (or injecting into) the script if a token or value
-                                # ever contains a quote or special character.
+                                # Persist the primary cookie (synchronous restore going forward)
+                                # plus the legacy localStorage values for backward compatibility.
+                                set_claim_cookie(target_sub, target_villa, verified_email)
+
                                 claim_bundle = f"{target_sub}::{target_villa}"
                                 fallback_choice = f"{target_sub}-{target_villa}"
                                 js_persist = (
@@ -819,6 +875,7 @@ if not st.session_state.authenticated:
                     st.error("Please select a sub-community and enter your villa number.")
             else:
                 current_choice = f"{sub_community_input}-{villa_input}"
+                set_claim_cookie(sub_community_input, villa_input, "")
                 st_javascript(f"localStorage.setItem('court_villa_lock', {json.dumps(current_choice)});")
                 st.session_state.sub_community, st.session_state.villa = sub_community_input, villa_input
                 st.session_state.authenticated = True
