@@ -1,13 +1,11 @@
 import time
 import streamlit as st
-import streamlit.components.v1 as components
 from supabase import create_client, Client
 from datetime import datetime, timedelta, timezone
 import pandas as pd
 import zipfile
 import io
 import random
-import json
 from postgrest.exceptions import APIError 
 from PIL import Image # For image resizing
 from streamlit_javascript import st_javascript
@@ -427,15 +425,17 @@ def logout_action():
     """Centrally handles logout, clears session and localStorage."""
     st_javascript("""
         localStorage.removeItem('court_villa_lock');
-        localStorage.removeItem('supabase_refresh_token');
+        localStorage.removeItem('court_verified_email');
         localStorage.removeItem('verified_claim_info');
-        setTimeout(() => { window.location.href = window.location.origin + window.location.pathname + '?logout=1'; }, 300);
+        localStorage.removeItem('supabase_refresh_token');
+        setTimeout(() => { window.location.href = window.location.origin + window.location.pathname; }, 200);
     """)
     for key in ["authenticated", "sub_community", "villa", "verified_email", "otp_sent", "otp_email", "otp_target_villa", "otp_target_sub"]:
         if key in st.session_state:
             del st.session_state[key]
+    st.query_params.clear()
     st.info("Logging out... Please wait.")
-    time.sleep(1.2)
+    time.sleep(0.8)
     st.rerun()
 
 # --- UI STYLING ---
@@ -534,87 +534,43 @@ except Exception:
 if 'authenticated' not in st.session_state:
     st.session_state.authenticated = False
 
+# Ensure device UUID exists in memory
+if "device_uuid" not in st.session_state:
+    st.session_state.device_uuid = f"dev_{random.randint(10000000, 99999999)}_{int(time.time())}"
+
 # --- AUTHENTICATION LOGIC ---
 if not st.session_state.authenticated:
     logout_mode = st.query_params.get("logout") == "1"
 
-    # Query client localStorage
-    stored_auth_bundle = st_javascript("""
-        (function() {
-            let uuid = localStorage.getItem('court_device_uuid');
-            if (!uuid || uuid === 'no_uuid') {
-                try {
-                    uuid = (typeof crypto !== 'undefined' && crypto.randomUUID) ? crypto.randomUUID() : ('dev_' + Math.random().toString(36).substring(2, 15) + Date.now().toString(36));
-                    localStorage.setItem('court_device_uuid', uuid);
-                } catch(e) {
-                    uuid = 'dev_' + Math.random().toString(36).substring(2, 15);
-                }
-            }
-            return JSON.stringify({
-                legacy: localStorage.getItem('court_villa_lock') || 'no_lock',
-                refreshToken: localStorage.getItem('supabase_refresh_token') || 'no_token',
-                claimInfo: localStorage.getItem('verified_claim_info') || 'no_claim',
-                deviceUuid: uuid
-            });
-        })()
-    """)
-    
-    # EXACT CRITICAL CHECK FROM PREVIOUS VERSION:
-    # On manual refresh, st_javascript returns 0 or None on the initial script pass.
-    # We MUST stop execution here so Streamlit never falls through to the registration form!
-    if stored_auth_bundle is None or stored_auth_bundle == 0:
+    # Single-line, error-free synchronous localStorage probe (proven pattern from previous working version)
+    stored_bundle = st_javascript("(localStorage.getItem('court_villa_lock') || 'no_lock') + ':::' + (localStorage.getItem('court_verified_email') || '');")
+
+    # On initial browser refresh, st_javascript returns 0 while the component initializes.
+    # We halt execution here for this single tick so Streamlit never falls through to the registration form.
+    if stored_bundle == 0:
         st.markdown("### 🔒 Loading...")
         st.info("Restoring session, please wait...")
         st.stop()
 
-    auth_data = {}
-    try:
-        auth_data = json.loads(stored_auth_bundle)
-    except Exception:
-        auth_data = {}
+    lock_val = "no_lock"
+    saved_email = ""
+    if isinstance(stored_bundle, str) and ":::" in stored_bundle:
+        lock_val, saved_email = stored_bundle.split(":::", 1)
 
-    legacy_lock = auth_data.get("legacy", "no_lock")
-    refresh_token = auth_data.get("refreshToken", "no_token")
-    claim_info = auth_data.get("claimInfo", "no_claim")
-    
-    fresh_uuid = auth_data.get("deviceUuid")
-    if fresh_uuid and fresh_uuid not in ("no_uuid", "0", ""):
-        st.session_state.device_uuid = fresh_uuid
-    elif "device_uuid" not in st.session_state:
-        st.session_state.device_uuid = "device_pending"
-
-    # 1. Restore from verified claim
-    if not logout_mode and claim_info and claim_info != "no_claim":
-        c_parts = claim_info.split("::")
-        if len(c_parts) == 2:
-            st.session_state.sub_community = c_parts[0]
-            st.session_state.villa = c_parts[1]
-            st.session_state.authenticated = True
-
-    # 2. Try restoring/refreshing token
-    if not logout_mode and refresh_token and refresh_token != "no_token":
+    # 1. Restore saved session
+    if not logout_mode and lock_val and lock_val != "no_lock":
         try:
-            refresh_res = supabase.auth.refresh_session(refresh_token=refresh_token)
-            if refresh_res and refresh_res.session:
-                new_refresh = refresh_res.session.refresh_token
-                st_javascript(f"localStorage.setItem('supabase_refresh_token', {json.dumps(new_refresh)});")
-                if st.session_state.authenticated:
-                    st.session_state.verified_email = refresh_res.user.email
-        except Exception:
-            pass
-
-    # 3. Fallback: Legacy Auto-Login (localStorage lock)
-    if not logout_mode and not st.session_state.authenticated and legacy_lock and legacy_lock != "no_lock":
-        try:
-            locked_sub, locked_villa = legacy_lock.split("-")
-            st.session_state.sub_community, st.session_state.villa = locked_sub, locked_villa
+            locked_sub, locked_villa = lock_val.rsplit("-", 1)
+            st.session_state.sub_community = locked_sub
+            st.session_state.villa = locked_villa
+            if saved_email:
+                st.session_state.verified_email = saved_email
             st.session_state.authenticated = True
+            st.query_params.clear()
+            st.rerun()
         except Exception:
-            st_javascript("localStorage.removeItem('court_villa_lock');")
-
-    if st.session_state.authenticated:
-        st.query_params.clear()
-        st.rerun()
+            st_javascript("localStorage.removeItem('court_villa_lock'); localStorage.removeItem('court_verified_email');")
+            st.rerun()
 
     if "seen_migration_notice" not in st.session_state:
         st.session_state.seen_migration_notice = False
@@ -713,11 +669,7 @@ if not st.session_state.authenticated:
                                 target_villa = st.session_state.otp_target_villa
                                 verified_email = st.session_state.otp_email
                                 refresh_tok = res.session.refresh_token
-                                
-                                resolved_uuid = st.session_state.get("device_uuid")
-                                if not resolved_uuid or resolved_uuid in ("no_uuid", "device_pending"):
-                                    resolved_uuid = f"dev_{random.randint(10000000, 99999999)}_{int(time.time())}"
-                                    st.session_state.device_uuid = resolved_uuid
+                                resolved_uuid = st.session_state.device_uuid
 
                                 existing = get_existing_claim(target_sub, target_villa, verified_email)
                                 now_ts = get_utc_plus_4().isoformat()
@@ -739,22 +691,21 @@ if not st.session_state.authenticated:
                                         "status": "approved"
                                     }).eq("id", existing["id"]))
 
-                                claim_bundle = f"{target_sub}::{target_villa}"
                                 fallback_choice = f"{target_sub}-{target_villa}"
-                                js_persist = (
-                                    f"localStorage.setItem('supabase_refresh_token', {json.dumps(refresh_tok)}); "
-                                    f"localStorage.setItem('verified_claim_info', {json.dumps(claim_bundle)}); "
-                                    f"localStorage.setItem('court_villa_lock', {json.dumps(fallback_choice)}); "
-                                    f"localStorage.setItem('court_device_uuid', {json.dumps(resolved_uuid)});"
-                                )
-                                st_javascript(js_persist)
+                                claim_bundle = f"{target_sub}::{target_villa}"
+                                
+                                st_javascript(f"""
+                                    localStorage.setItem('court_villa_lock', '{fallback_choice}');
+                                    localStorage.setItem('court_verified_email', '{verified_email}');
+                                    localStorage.setItem('verified_claim_info', '{claim_bundle}');
+                                    localStorage.setItem('supabase_refresh_token', '{refresh_tok}');
+                                """)
 
                                 st.session_state.sub_community = target_sub
                                 st.session_state.villa = target_villa
                                 st.session_state.verified_email = verified_email
                                 st.session_state.authenticated = True
                                 st.session_state.otp_sent = False
-                                
                                 st.query_params.clear()
                                 
                                 st.balloons()
@@ -796,8 +747,12 @@ if not st.session_state.authenticated:
                     st.error("Please select a sub-community and enter your villa number.")
             else:
                 current_choice = f"{sub_community_input}-{villa_input}"
-                st_javascript(f"localStorage.setItem('court_villa_lock', {json.dumps(current_choice)});")
-                st.session_state.sub_community, st.session_state.villa = sub_community_input, villa_input
+                st_javascript(f"""
+                    localStorage.setItem('court_villa_lock', '{current_choice}');
+                    localStorage.removeItem('court_verified_email');
+                """)
+                st.session_state.sub_community = sub_community_input
+                st.session_state.villa = villa_input
                 st.session_state.authenticated = True
                 st.query_params.clear()
                 add_log("Device Registered", f"New login for {sub_community_input} Villa {villa_input}", fingerprint=st.session_state.get("device_uuid"))
