@@ -86,7 +86,7 @@ def render_donor_ticker(names):
         </style>
         <div class="donor-ticker-wrap">
             <div class="donor-ticker-move">
-                {tennis_ball_svg} Huge thanks to these legends for their support ! {tennis_ball_svg} {ticker_text}
+                {tennis_ball_svg} Huge thanks to these legends for their support ! {tennis_ball_svg} {ticker_text} {tennis_ball_svg}
             </div>
         </div>
         <div class="donor-ticker-spacer"></div>
