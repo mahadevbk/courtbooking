@@ -214,6 +214,30 @@ def get_claims_for_villa(sub_community, villa):
                     .order("created_at"))
     return res.data if res and res.data else []
 
+def get_recent_claim_cooldown(sub_community, villa, requesting_email):
+    """Checks if this villa was verified by a different email within the last 72 hours."""
+    claims = get_claims_for_villa(sub_community, villa)
+    if not claims:
+        return False, None
+
+    now = get_utc_plus_4()
+    req_email_clean = requesting_email.strip().lower()
+
+    for c in claims:
+        c_email = c.get("email", "").strip().lower()
+        if c_email and c_email != req_email_clean:
+            v_time_str = c.get("verified_at") or c.get("created_at")
+            if v_time_str:
+                try:
+                    v_dt = datetime.fromisoformat(v_time_str.replace("Z", "+00:00")).replace(tzinfo=None)
+                    delta = now - v_dt
+                    if delta < timedelta(hours=72):
+                        remaining_hours = max(1, int((timedelta(hours=72) - delta).total_seconds() // 3600))
+                        return True, remaining_hours
+                except Exception:
+                    pass
+    return False, None
+
 def get_all_claimed_villas():
     res = run_query(supabase.table("villa_claims").select("sub_community, villa"))
     if not res or not res.data: return []
@@ -665,11 +689,21 @@ if not st.session_state.authenticated:
                 current_claims_count = get_villa_claims_count(otp_sub, otp_villa)
                 email_villas_count = get_email_claimed_villas_count(otp_email_input)
                 
+                # Check 72-Hour Cooldown for this villa
+                is_on_cooldown, hours_left = get_recent_claim_cooldown(otp_sub, otp_villa, otp_email_input)
+                
                 target_pair = f"{otp_sub}::{otp_villa}"
                 current_uuid = st.session_state.get("device_uuid", "device_pending")
                 uuid_villas = get_uuid_claimed_villas(current_uuid)
                 
-                if not existing_claim and current_claims_count >= 2:
+                if not existing_claim and is_on_cooldown:
+                    st.error(
+                        f"🚫 Security Lockout: This villa ({otp_sub} - Villa {otp_villa}) was recently verified by another resident. "
+                        f"Villa changes have a 72-hour security cooldown ({hours_left} hours remaining). "
+                        "Please contact Dev in Court Maintenance for urgent reassignment."
+                    )
+                    add_log("Access Denied", f"Villa {otp_sub} Villa {otp_villa} 72h cooldown triggered by {otp_email_input} ({hours_left}h left)", fingerprint=current_uuid)
+                elif not existing_claim and current_claims_count >= 2:
                     st.error(
                         f"🚫 This villa ({otp_sub} - Villa {otp_villa}) already has 2 verified resident emails attached. "
                         "If you recently moved in or need to update your registered email, please reach out via the contact channels in Court Maintenance."
@@ -1406,10 +1440,10 @@ with tab5:
                             st.info(f"📧 **{claim['email']}**  \n*Status:* `{claim['status']}` | *Verified:* {v_time}{fp_sub}")
                         with c_box2:
                             st.write("")
-                            if st.button(f"🗑️ Release / Reset", key=f"del_claim_{claim['id']}", type="secondary", width="stretch"):
+                            if st.button(f"🔓 Clear Cooldown & Release", key=f"del_claim_{claim['id']}", type="secondary", width="stretch"):
                                 run_query(supabase.table("villa_claims").delete().eq("id", claim['id']))
-                                add_log("Villa Claim Removed", f"Admin released claim for {c_sub} Villa {c_villa} ({claim['email']})")
-                                st.success(f"Released claim for {claim['email']}")
+                                add_log("Villa Claim Removed", f"Admin cleared cooldown and released claim for {c_sub} Villa {c_villa} ({claim['email']})")
+                                st.success(f"Released {claim['email']} and cleared 72h cooldown for {claim_inspect_villa}!")
                                 time.sleep(1.2)
                                 st.rerun()
                 else:
