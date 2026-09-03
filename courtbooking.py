@@ -424,7 +424,7 @@ def get_available_hours(court, date_str):
             available.append(h)
     return available
 
-# --- FLOATING ANNOUNCEMENT DIALOG (RESTORED) ---
+# --- FLOATING ANNOUNCEMENT DIALOG (CORRECTED WITH APP SCOPE DISMISSAL) ---
 @st.dialog("🎾 Notice: A Fairer Booking System for Everyone!")
 def show_migration_dialog():
     st.markdown("""
@@ -444,7 +444,7 @@ def show_migration_dialog():
     """)
     if st.button("Got it — Continue 🎾", type="primary", use_container_width=True):
         st.session_state.seen_migration_notice = True
-        st.rerun()
+        st.rerun(scope="app")
 
 # --- ZERO-LATENCY TOKEN AUTH (PERSISTS SYNCHRONOUSLY ACROSS BROWSER REFRESH) ---
 AUTH_SALT = "mira_court_booking_salt_2026"
