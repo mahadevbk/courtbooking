@@ -28,25 +28,29 @@ DONOR_NAMES = [
     "Melissa", "Mustafa", "Nikki", "Rena", "Riin", "Saket", "Sheila", "Sofia", "Vik", "Yousef",
 ]
 
+
 def render_donor_ticker(names):
     """Renders a fixed, auto-scrolling ticker of uppercase donor names separated by tennis ball icons."""
     if not names:
         return
 
-    uppercase_names = [name.upper() for name in names]
+    # Wrap each name in white, bold styling
+    formatted_names = [
+        f'<span style="color: #ffffff; font-weight: 700;">{name.upper()}</span>'
+        for name in names
+    ]
 
-    
     tennis_ball_svg = (
-            '<svg style="vertical-align: middle; margin: 0 10px; display: inline-block;" '
-            'width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#0d5384" '
-            'stroke-width="2" stroke-linecap="round" stroke-linejoin="round">'
-            '<circle cx="12" cy="12" r="10" fill="#ccff00" stroke="#0d5384"/>'
-            '<path d="M5.64 5.64a9 9 0 0 1 0 12.72"/>'
-            '<path d="M18.36 5.64a9 9 0 0 0 0 12.72"/>'
-            '</svg>'
-        )
+        '<svg style="vertical-align: middle; margin: 0 10px; display: inline-block;" '
+        'width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#0d5384" '
+        'stroke-width="2" stroke-linecap="round" stroke-linejoin="round">'
+        '<circle cx="12" cy="12" r="10" fill="#ccff00" stroke="#0d5384"/>'
+        '<path d="M5.64 5.64a9 9 0 0 1 0 12.72"/>'
+        '<path d="M18.36 5.64a9 9 0 0 0 0 12.72"/>'
+        '</svg>'
+    )
 
-    ticker_text = tennis_ball_svg.join(uppercase_names)
+    ticker_text = tennis_ball_svg.join(formatted_names)
 
     st.markdown(
         f"""
@@ -93,8 +97,6 @@ def render_donor_ticker(names):
         """,
         unsafe_allow_html=True,
     )
-
-render_donor_ticker(DONOR_NAMES)
 
 # --- DATABASE SETUP (SUPABASE) ---
 @st.cache_resource
