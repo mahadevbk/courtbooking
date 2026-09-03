@@ -97,6 +97,9 @@ def render_donor_ticker(names):
         unsafe_allow_html=True,
     )
 
+render_donor_ticker(DONOR_NAMES)
+
+
 # --- DATABASE SETUP (SUPABASE) ---
 @st.cache_resource
 def init_supabase():
