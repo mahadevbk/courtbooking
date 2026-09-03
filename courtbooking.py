@@ -424,6 +424,28 @@ def get_available_hours(court, date_str):
             available.append(h)
     return available
 
+# --- FLOATING ANNOUNCEMENT DIALOG (RESTORED) ---
+@st.dialog("🎾 Notice: A Fairer Booking System for Everyone!")
+def show_migration_dialog():
+    st.markdown("""
+    Hi neighbors! 👋
+
+    To keep court bookings fair and stop people from booking under fake or multiple villas, we are introducing a simple **one-time email verification**[cite: 1].
+
+    **What this means for you:**
+    * **Fair access for real residents:** Keeps slots open for those who actually live here[cite: 1].
+    * **One-time only:** Just enter your email and a 6-digit code once — your device will remember you automatically after that![cite: 1]
+    * **Family friendly:** Up to 2 emails can be linked to your villa (e.g. partners or housemates)[cite: 1].
+
+    ---
+    Please enter your resident email below to receive your 6-digit verification code[cite: 1].
+
+    💬 *Please reach out to Dev in case you have any queries.*
+    """)
+    if st.button("Got it — Continue 🎾", type="primary", use_container_width=True):
+        st.session_state.seen_migration_notice = True
+        st.rerun()
+
 # --- ZERO-LATENCY TOKEN AUTH (PERSISTS SYNCHRONOUSLY ACROSS BROWSER REFRESH) ---
 AUTH_SALT = "mira_court_booking_salt_2026"
 
@@ -596,8 +618,13 @@ if not st.session_state.authenticated:
 
 # --- REGISTRATION & VERIFICATION GATE ---
 if not st.session_state.authenticated:
-    st.info("🎾 **Email Verification Required:** To keep bookings fair and enforce rules across all residences, every villa must be linked to a verified resident email. Please verify once below to continue.")
-    
+    # Trigger the floating modal dialog on first unauthenticated visit
+    if "seen_migration_notice" not in st.session_state:
+        st.session_state.seen_migration_notice = False
+
+    if not st.session_state.seen_migration_notice:
+        show_migration_dialog()
+
     if "otp_sent" not in st.session_state:
         st.session_state.otp_sent = False
     if "otp_email" not in st.session_state:
