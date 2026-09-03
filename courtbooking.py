@@ -35,15 +35,16 @@ def render_donor_ticker(names):
 
     uppercase_names = [name.upper() for name in names]
 
+    
     tennis_ball_svg = (
-        '<svg style="vertical-align: middle; margin: 0 12px; display: inline-block;" '
-        'width="16" height="16" viewBox="0 24 24" fill="none" stroke="#ccff00" '
-        'stroke-width="2" stroke-linecap="round" stroke-linejoin="round">'
-        '<circle cx="12" cy="12" r="10" fill="#ccff00" stroke="#0d5384"/>'
-        '<path d="M2 12a10 10 0 0 0 10 10" stroke="#0d5384"/>'
-        '<path d="M12 2a10 10 0 0 1 10 10" stroke="#0d5384"/>'
-        '</svg>'
-    )
+            '<svg style="vertical-align: middle; margin: 0 10px; display: inline-block;" '
+            'width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#0d5384" '
+            'stroke-width="2" stroke-linecap="round" stroke-linejoin="round">'
+            '<circle cx="12" cy="12" r="10" fill="#ccff00" stroke="#0d5384"/>'
+            '<path d="M5.64 5.64a9 9 0 0 1 0 12.72"/>'
+            '<path d="M18.36 5.64a9 9 0 0 0 0 12.72"/>'
+            '</svg>'
+        )
 
     ticker_text = tennis_ball_svg.join(uppercase_names)
 
