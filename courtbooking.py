@@ -34,11 +34,7 @@ def render_donor_ticker(names):
     if not names:
         return
 
-    # Wrap each name in white, bold styling
-    formatted_names = [
-        f'<span style="color: #ffffff; font-weight: 700;">{name.upper()}</span>'
-        for name in names
-    ]
+    uppercase_names = [name.upper() for name in names]
 
     tennis_ball_svg = (
         '<svg style="vertical-align: middle; margin: 0 10px; display: inline-block;" '
@@ -50,51 +46,54 @@ def render_donor_ticker(names):
         '</svg>'
     )
 
-    ticker_text = tennis_ball_svg.join(formatted_names)
+    # Wrap names in <b> tags
+    ticker_text = tennis_ball_svg.join(f"<b>{n}</b>" for n in uppercase_names)
 
     st.markdown(
-        f"""
-        <style>
-        .donor-ticker-wrap {{
-            position: fixed;
-            top: 0;
-            left: 0;
-            width: 100%;
-            z-index: 1000000;
-            background-color: #0d5384;
-            color: #ccff00;
-            overflow: hidden;
-            white-space: nowrap;
-            padding: 6px 0;
-            border-bottom: 2px solid #fff500;
-            box-sizing: border-box;
-        }}
-        .donor-ticker-move {{
-            display: inline-block;
-            white-space: nowrap;
-            padding-left: 100%;
-            font-size: 0.9rem;
-            font-weight: 600;
-            animation: donor-ticker-scroll 30s linear infinite;
-        }}
-        .donor-ticker-move:hover {{
-            animation-play-state: paused;
-        }}
-        @keyframes donor-ticker-scroll {{
-            0%   {{ transform: translate(0, 0); }}
-            100% {{ transform: translate(-100%, 0); }}
-        }}
-        .donor-ticker-spacer {{
-            height: 34px;
-        }}
-        </style>
-        <div class="donor-ticker-wrap">
-            <div class="donor-ticker-move">
-                {tennis_ball_svg} Huge thanks to these legends for their support ! {tennis_ball_svg} {ticker_text} {tennis_ball_svg}
-            </div>
-        </div>
-        <div class="donor-ticker-spacer"></div>
-        """,
+        f"""<style>
+.donor-ticker-wrap {{
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 100%;
+    z-index: 1000000;
+    background-color: #0d5384;
+    color: #ccff00;
+    overflow: hidden;
+    white-space: nowrap;
+    padding: 6px 0;
+    border-bottom: 2px solid #fff500;
+    box-sizing: border-box;
+}}
+.donor-ticker-move {{
+    display: inline-block;
+    white-space: nowrap;
+    padding-left: 100%;
+    font-size: 0.9rem;
+    font-weight: 600;
+    animation: donor-ticker-scroll 30s linear infinite;
+}}
+.donor-ticker-move b {{
+    color: #ffffff !important;
+    font-weight: 700 !important;
+}}
+.donor-ticker-move:hover {{
+    animation-play-state: paused;
+}}
+@keyframes donor-ticker-scroll {{
+    0%   {{ transform: translate(0, 0); }}
+    100% {{ transform: translate(-100%, 0); }}
+}}
+.donor-ticker-spacer {{
+    height: 34px;
+}}
+</style>
+<div class="donor-ticker-wrap">
+    <div class="donor-ticker-move">
+        {tennis_ball_svg} Huge thanks to these legends for their support ! {tennis_ball_svg} {ticker_text} {tennis_ball_svg}
+    </div>
+</div>
+<div class="donor-ticker-spacer"></div>""",
         unsafe_allow_html=True,
     )
 
