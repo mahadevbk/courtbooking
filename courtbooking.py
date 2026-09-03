@@ -424,7 +424,7 @@ def get_available_hours(court, date_str):
             available.append(h)
     return available
 
-# --- FLOATING ANNOUNCEMENT DIALOG (CORRECTED WITH APP SCOPE DISMISSAL) ---
+# --- FLOATING ANNOUNCEMENT DIALOG (DISMISSAL WITH APP SCOPE) ---
 @st.dialog("🎾 Notice: A Fairer Booking System for Everyone!")
 def show_migration_dialog():
     st.markdown("""
@@ -687,16 +687,18 @@ if not st.session_state.authenticated:
                     )
                     add_log("Access Denied", f"Device UUID {current_uuid} blocked from requesting OTP for 4th villa ({otp_sub} Villa {otp_villa})", fingerprint=current_uuid)
                 else:
-                    try:
-                        supabase.auth.sign_in_with_otp({"email": otp_email_input})
-                        st.session_state.otp_sent = True
-                        st.session_state.otp_email = otp_email_input
-                        st.session_state.otp_target_sub = otp_sub
-                        st.session_state.otp_target_villa = otp_villa
-                        st.success(f"6-digit code sent to {otp_email_input}!")
-                        st.rerun()
-                    except Exception as e:
-                        st.error(f"Failed to send code: {str(e)}")
+                    with st.spinner("Sending 6-digit verification code..."):
+                        try:
+                            supabase.auth.sign_in_with_otp({"email": otp_email_input})
+                            st.session_state.otp_sent = True
+                            st.session_state.otp_email = otp_email_input
+                            st.session_state.otp_target_sub = otp_sub
+                            st.session_state.otp_target_villa = otp_villa
+                            st.success(f"✅ Code sent! Please check your inbox at {otp_email_input}")
+                            time.sleep(1.2)
+                            st.rerun()
+                        except Exception as e:
+                            st.error(f"Failed to send code: {str(e)}")
         
         st.write("")
         if st.button("🚪 Reset / Clear Details", width='stretch', key="reg_logout_presend"):
@@ -712,73 +714,75 @@ if not st.session_state.authenticated:
                 if not token_input or len(token_input) != 6:
                     st.error("Please enter a 6-digit verification code.")
                 else:
-                    try:
-                        res = supabase.auth.verify_otp({
-                            "email": st.session_state.otp_email,
-                            "token": token_input,
-                            "type": "email"
-                        })
-                        if res and res.session:
-                            target_sub = st.session_state.otp_target_sub
-                            target_villa = st.session_state.otp_target_villa
-                            verified_email = st.session_state.otp_email
-                            refresh_tok = res.session.refresh_token
-                            resolved_uuid = st.session_state.device_uuid
+                    with st.spinner("Verifying code..."):
+                        try:
+                            res = supabase.auth.verify_otp({
+                                "email": st.session_state.otp_email,
+                                "token": token_input,
+                                "type": "email"
+                            })
+                            if res and res.session:
+                                target_sub = st.session_state.otp_target_sub
+                                target_villa = st.session_state.otp_target_villa
+                                verified_email = st.session_state.otp_email
+                                refresh_tok = res.session.refresh_token
+                                resolved_uuid = st.session_state.device_uuid
 
-                            existing = get_existing_claim(target_sub, target_villa, verified_email)
-                            now_ts = get_utc_plus_4().isoformat()
-                            
-                            if not existing:
-                                run_query(supabase.table("villa_claims").insert({
-                                    "sub_community": target_sub,
-                                    "villa": target_villa,
-                                    "email": verified_email,
-                                    "fingerprint": resolved_uuid,
-                                    "status": "approved",
-                                    "verified_at": now_ts
-                                }))
-                                add_log("Villa Claim", f"{target_sub} Villa {target_villa} claimed by {verified_email}", fingerprint=resolved_uuid)
+                                existing = get_existing_claim(target_sub, target_villa, verified_email)
+                                now_ts = get_utc_plus_4().isoformat()
+                                
+                                if not existing:
+                                    run_query(supabase.table("villa_claims").insert({
+                                        "sub_community": target_sub,
+                                        "villa": target_villa,
+                                        "email": verified_email,
+                                        "fingerprint": resolved_uuid,
+                                        "status": "approved",
+                                        "verified_at": now_ts
+                                    }))
+                                    add_log("Villa Claim", f"{target_sub} Villa {target_villa} claimed by {verified_email}", fingerprint=resolved_uuid)
+                                else:
+                                    run_query(supabase.table("villa_claims").update({
+                                        "verified_at": now_ts,
+                                        "fingerprint": resolved_uuid,
+                                        "status": "approved"
+                                    }).eq("id", existing["id"]))
+
+                                fallback_choice = f"{target_sub}-{target_villa}"
+                                claim_bundle = f"{target_sub}::{target_villa}"
+                                
+                                st_javascript(f"""
+                                    localStorage.setItem('court_villa_lock', '{fallback_choice}');
+                                    localStorage.setItem('court_verified_email', '{verified_email}');
+                                    localStorage.setItem('verified_claim_info', '{claim_bundle}');
+                                    localStorage.setItem('supabase_refresh_token', '{refresh_tok}');
+                                """)
+
+                                # Save synchronous signed token in URL to survive refreshes
+                                st.query_params["auth"] = encode_auth_token(target_sub, target_villa, verified_email)
+
+                                st.session_state.sub_community = target_sub
+                                st.session_state.villa = target_villa
+                                st.session_state.verified_email = verified_email
+                                st.session_state.authenticated = True
+                                st.session_state.otp_sent = False
+                                
+                                st.balloons()
+                                st.success("✅ Verified and registered successfully! Logging you in...")
+                                time.sleep(1.2)
+                                st.rerun()
                             else:
-                                run_query(supabase.table("villa_claims").update({
-                                    "verified_at": now_ts,
-                                    "fingerprint": resolved_uuid,
-                                    "status": "approved"
-                                }).eq("id", existing["id"]))
-
-                            fallback_choice = f"{target_sub}-{target_villa}"
-                            claim_bundle = f"{target_sub}::{target_villa}"
-                            
-                            st_javascript(f"""
-                                localStorage.setItem('court_villa_lock', '{fallback_choice}');
-                                localStorage.setItem('court_verified_email', '{verified_email}');
-                                localStorage.setItem('verified_claim_info', '{claim_bundle}');
-                                localStorage.setItem('supabase_refresh_token', '{refresh_tok}');
-                            """)
-
-                            # Save synchronous signed token in URL to survive refreshes
-                            st.query_params["auth"] = encode_auth_token(target_sub, target_villa, verified_email)
-
-                            st.session_state.sub_community = target_sub
-                            st.session_state.villa = target_villa
-                            st.session_state.verified_email = verified_email
-                            st.session_state.authenticated = True
-                            st.session_state.otp_sent = False
-                            
-                            st.balloons()
-                            st.success("✅ Verified and registered successfully! Logging you in...")
-                            time.sleep(1.2)
-                            st.rerun()
-                        else:
-                            st.error("Verification failed. Please check the code.")
-                    except Exception as e:
-                        st.error(f"Invalid code or verification error: {str(e)}")
+                                st.error("Verification failed. Please check the code.")
+                        except Exception as e:
+                            st.error(f"Invalid code or verification error: {str(e)}")
         with c2:
             if st.button("🔄 Resend Code", width='stretch'):
-                try:
-                    supabase.auth.sign_in_with_otp({"email": st.session_state.otp_email})
-                    st.toast(f"A new 6-digit code has been sent to {st.session_state.otp_email}!")
-                except Exception as e:
-                    st.error(f"Could not resend code: {str(e)}")
+                with st.spinner("Resending code..."):
+                    try:
+                        supabase.auth.sign_in_with_otp({"email": st.session_state.otp_email})
+                        st.toast(f"A new 6-digit code has been sent to {st.session_state.otp_email}!")
+                    except Exception as e:
+                        st.error(f"Could not resend code: {str(e)}")
         with c3:
             if st.button("Cancel / Change", width='stretch'):
                 st.session_state.otp_sent = False
