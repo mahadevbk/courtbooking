@@ -28,7 +28,6 @@ DONOR_NAMES = [
     "Melissa", "Mustafa", "Nikki", "Rena", "Riin", "Saket", "Sheila", "Sofia", "Vik", "Yousef",
 ]
 
-
 def render_donor_ticker(names):
     """Renders a fixed, auto-scrolling ticker of uppercase donor names separated by tennis ball icons."""
     if not names:
@@ -46,59 +45,55 @@ def render_donor_ticker(names):
         '</svg>'
     )
 
-    # Wrap names in <b> tags
-    ticker_text = tennis_ball_svg.join(f"<b>{n}</b>" for n in uppercase_names)
+    ticker_text = tennis_ball_svg.join(uppercase_names)
 
     st.markdown(
-        f"""<style>
-.donor-ticker-wrap {{
-    position: fixed;
-    top: 0;
-    left: 0;
-    width: 100%;
-    z-index: 1000000;
-    background-color: #0d5384;
-    color: #ccff00;
-    overflow: hidden;
-    white-space: nowrap;
-    padding: 6px 0;
-    border-bottom: 2px solid #fff500;
-    box-sizing: border-box;
-}}
-.donor-ticker-move {{
-    display: inline-block;
-    white-space: nowrap;
-    padding-left: 100%;
-    font-size: 0.9rem;
-    font-weight: 600;
-    animation: donor-ticker-scroll 30s linear infinite;
-}}
-.donor-ticker-move b {{
-    color: #ffffff !important;
-    font-weight: 700 !important;
-}}
-.donor-ticker-move:hover {{
-    animation-play-state: paused;
-}}
-@keyframes donor-ticker-scroll {{
-    0%   {{ transform: translate(0, 0); }}
-    100% {{ transform: translate(-100%, 0); }}
-}}
-.donor-ticker-spacer {{
-    height: 34px;
-}}
-</style>
-<div class="donor-ticker-wrap">
-    <div class="donor-ticker-move">
-        {tennis_ball_svg} Huge thanks to these legends for their support ! {tennis_ball_svg} {ticker_text} {tennis_ball_svg}
-    </div>
-</div>
-<div class="donor-ticker-spacer"></div>""",
+        f"""
+        <style>
+        .donor-ticker-wrap {{
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            z-index: 1000000;
+            background-color: #0d5384;
+            color: #ccff00;
+            overflow: hidden;
+            white-space: nowrap;
+            padding: 6px 0;
+            border-bottom: 2px solid #fff500;
+            box-sizing: border-box;
+        }}
+        .donor-ticker-move {{
+            display: inline-block;
+            white-space: nowrap;
+            padding-left: 100%;
+            font-size: 0.9rem;
+            font-weight: 600;
+            animation: donor-ticker-scroll 30s linear infinite;
+        }}
+        .donor-ticker-move:hover {{
+            animation-play-state: paused;
+        }}
+        @keyframes donor-ticker-scroll {{
+            0%   {{ transform: translate(0, 0); }}
+            100% {{ transform: translate(-100%, 0); }}
+        }}
+        .donor-ticker-spacer {{
+            height: 34px;
+        }}
+        </style>
+        <div class="donor-ticker-wrap">
+            <div class="donor-ticker-move">
+                {tennis_ball_svg} Huge thanks to these legends for their support ! {tennis_ball_svg} {ticker_text} {tennis_ball_svg}
+            </div>
+        </div>
+        <div class="donor-ticker-spacer"></div>
+        """,
         unsafe_allow_html=True,
     )
 
 render_donor_ticker(DONOR_NAMES)
-
 
 # --- DATABASE SETUP (SUPABASE) ---
 @st.cache_resource
@@ -432,9 +427,11 @@ def get_available_hours(court, date_str):
 # --- ZERO-LATENCY TOKEN AUTH (PERSISTS SYNCHRONOUSLY ACROSS BROWSER REFRESH) ---
 AUTH_SALT = "mira_court_booking_salt_2026"
 
-def encode_auth_token(sub_community, villa, email=""):
-    """Encodes credentials into a tamper-proof URL token that survives hard browser refreshes."""
-    payload = f"{sub_community}::{villa}::{email or ''}"
+def encode_auth_token(sub_community, villa, email):
+    """Encodes credentials into a signed URL token. Strict enforcement: email must be present."""
+    if not email:
+        return ""
+    payload = f"{sub_community}::{villa}::{email}"
     sig = hashlib.sha256(f"{payload}:{AUTH_SALT}".encode()).hexdigest()[:10]
     raw = f"{payload}::{sig}".encode()
     return base64.urlsafe_b64encode(raw).decode()
@@ -446,6 +443,8 @@ def decode_auth_token(token_str):
         parts = raw.split("::")
         if len(parts) == 4:
             sub, villa, email, sig = parts
+            if not email:
+                return None
             expected_sig = hashlib.sha256(f"{sub}::{villa}::{email}:{AUTH_SALT}".encode()).hexdigest()[:10]
             if sig == expected_sig:
                 return {"sub_community": sub, "villa": villa, "email": email}
@@ -462,7 +461,7 @@ def logout_action():
         localStorage.removeItem('supabase_refresh_token');
         setTimeout(() => { window.location.href = window.location.origin + window.location.pathname; }, 150);
     """)
-    for key in ["authenticated", "sub_community", "villa", "verified_email", "otp_sent", "otp_email", "otp_target_villa", "otp_target_sub"]:
+    for key in ["authenticated", "sub_community", "villa", "verified_email", "otp_sent", "otp_email", "otp_target_villa", "otp_target_sub", "prefill_sub", "prefill_villa"]:
         if key in st.session_state:
             del st.session_state[key]
     st.query_params.clear()
@@ -482,34 +481,10 @@ h1, h2, h3, .stTitle { font-family: 'Audiowide', cursive !important; color: #2c3
 </style>
 """, unsafe_allow_html=True)
 
-# --- FLOATING ANNOUNCEMENT DIALOG ---
-@st.dialog("🎾 Notice: A Fairer Booking System for Everyone!")
-def show_migration_dialog():
-    st.markdown("""
-    Hi neighbors! 👋
-
-    To keep court bookings fair and stop people from booking under fake or multiple villas, we are introducing a simple **one-time email verification**.
-
-    **What this means for you:**
-    * **Fair access for real residents:** Keeps slots open for those who actually live here.
-    * **One-time only:** Just enter your email and a 6-digit code once — your device will remember you automatically after that!
-    * **Family friendly:** Up to 2 emails can be linked to your villa (e.g. partners or housemates).
-
-    ---
-    **🗓️ Starting next week:**  
-    The quick dropdown login will be switched off, and everyone will need to use email login. You can set it up right now under the **🛡️ Verify Villa via Email (Standard)** tab!
-
-    💬 *Please DM Dev in case you have any queries.*
-    """)
-    if st.button("Got it — Continue 🎾", type="primary", use_container_width=True):
-        st.session_state.seen_migration_notice = True
-        st.rerun()
-
 # --- LOGIC FOR FULL FRAME PAGE ---
 if st.query_params.get("view") == "full":
     st.title("📅 Full 14-Day Schedule")
     if st.button("⬅️ Back to Booking App"):
-        # Preserve auth token if returning from full view
         curr_auth = st.query_params.get("auth")
         st.query_params.clear()
         if curr_auth:
@@ -542,7 +517,7 @@ st.caption("An Un-Official & Community Driven Booking Solution.")
 st.markdown(
     "<p style='color:#ccff00; font-weight:700; margin-top:-8px;'>"
     "Serving about 2,350 active users, the operation costs of this app "
-    "(DB & SaaS hosting) are shared by the legends of the Mira Tennis Community.  "
+    "(DB & SaaS hosting) are shared by the legends of the Mira Tennis Community. "
     "Reach out to Dev, if you'd like to help."
     "</p>",
     unsafe_allow_html=True,
@@ -573,39 +548,56 @@ if 'authenticated' not in st.session_state:
 if "device_uuid" not in st.session_state:
     st.session_state.device_uuid = f"dev_{random.randint(10000000, 99999999)}_{int(time.time())}"
 
-# --- SYNCHRONOUS INSTANT AUTH (SURVIVES MANUAL REFRESH IMMEDIATELY) ---
+# 1. SYNCHRONOUS URL TOKEN AUTH (ONLY ACCEPTS VERIFIED TOKENS CONTAINING EMAIL)
 url_token = st.query_params.get("auth")
 if url_token and not st.session_state.authenticated:
     verified_claim = decode_auth_token(url_token)
-    if verified_claim:
+    if verified_claim and verified_claim.get("email"):
         st.session_state.sub_community = verified_claim["sub_community"]
         st.session_state.villa = verified_claim["villa"]
-        if verified_claim.get("email"):
-            st.session_state.verified_email = verified_claim["email"]
+        st.session_state.verified_email = verified_claim["email"]
         st.session_state.authenticated = True
 
-# --- FALLBACK ASYNC RESTORE (MIGRATION BRIDGE FOR PREVIOUS LOCALSTORAGE) ---
+# 2. LOCALSTORAGE INSPECTION (EXTRACT PRE-FILLS, DO NOT AUTO-LOG IN WITHOUT EMAIL)
 if not st.session_state.authenticated:
-    stored_lock = st_javascript("localStorage.getItem('court_villa_lock') || 'no_lock';")
+    stored_bundle = st_javascript("(localStorage.getItem('court_villa_lock') || 'no_lock') + ':::' + (localStorage.getItem('court_verified_email') || '') + ':::' + (localStorage.getItem('verified_claim_info') || '');")
     
-    if isinstance(stored_lock, str) and stored_lock not in ("no_lock", "0", ""):
-        try:
-            locked_sub, locked_villa = stored_lock.rsplit("-", 1)
-            st.session_state.sub_community = locked_sub
-            st.session_state.villa = locked_villa
-            st.session_state.authenticated = True
-            # Upgrade user to URL token authentication
-            st.query_params["auth"] = encode_auth_token(locked_sub, locked_villa, "")
-            st.rerun()
-        except Exception:
-            pass
+    if isinstance(stored_bundle, str) and ":::" in stored_bundle:
+        parts = stored_bundle.split(":::")
+        s_lock = parts[0] if len(parts) > 0 else ""
+        s_email = parts[1] if len(parts) > 1 else ""
+        s_claim = parts[2] if len(parts) > 2 else ""
+        
+        # If user ALREADY verified previously with email in localStorage, restore them and upgrade to signed URL token
+        if s_email and s_email != "":
+            target_sub = None
+            target_villa = None
+            if s_claim and "::" in s_claim:
+                target_sub, target_villa = s_claim.split("::", 1)
+            elif s_lock and s_lock != "no_lock" and "-" in s_lock:
+                target_sub, target_villa = s_lock.rsplit("-", 1)
+                
+            if target_sub and target_villa:
+                st.session_state.sub_community = target_sub
+                st.session_state.villa = target_villa
+                st.session_state.verified_email = s_email
+                st.session_state.authenticated = True
+                st.query_params["auth"] = encode_auth_token(target_sub, target_villa, s_email)
+                st.rerun()
 
-    if "seen_migration_notice" not in st.session_state:
-        st.session_state.seen_migration_notice = False
+        # If phone only had a legacy lock WITHOUT verified email, PRE-FILL but do NOT authenticate
+        elif s_lock and s_lock != "no_lock" and "-" in s_lock:
+            try:
+                locked_sub, locked_villa = s_lock.rsplit("-", 1)
+                st.session_state.prefill_sub = locked_sub
+                st.session_state.prefill_villa = locked_villa
+            except Exception:
+                pass
 
-    if not st.session_state.seen_migration_notice:
-        show_migration_dialog()
-
+# --- REGISTRATION & VERIFICATION GATE ---
+if not st.session_state.authenticated:
+    st.info("🎾 **Email Verification Required:** To keep bookings fair and enforce rules across all residences, every villa must be linked to a verified resident email. Please verify once below to continue.")
+    
     if "otp_sent" not in st.session_state:
         st.session_state.otp_sent = False
     if "otp_email" not in st.session_state:
@@ -615,186 +607,165 @@ if not st.session_state.authenticated:
     if "otp_target_sub" not in st.session_state:
         st.session_state.otp_target_sub = None
 
-    login_tab1, login_tab2 = st.tabs(["🛡️ Verify Villa via Email (Standard)", "⚡ Fast Login (Legacy Fallback)"])
+    default_sub_idx = None
+    prefill_sub = st.session_state.get("prefill_sub")
+    if prefill_sub in sub_community_list:
+        default_sub_idx = sub_community_list.index(prefill_sub)
+    default_villa = st.session_state.get("prefill_villa", "")
 
-    with login_tab1:
-        st.subheader("Email-Verified Access")
-        st.caption("Verify via a 6-digit email code. Max 2 verified emails per villa.")
+    st.subheader("🛡️ Resident Email Verification")
+    st.caption("One-time 6-digit verification code. Max 2 resident emails per villa.")
 
-        if not st.session_state.otp_sent:
-            col_v1, col_v2 = st.columns(2)
-            with col_v1:
-                otp_sub = st.selectbox("Sub-Community", options=sub_community_list, index=None, key="otp_sub_select")
-            with col_v2:
-                otp_villa_raw = st.text_input("Villa Number", key="otp_villa_text").strip()
-                otp_villa = "".join(filter(str.isdigit, otp_villa_raw))
+    if not st.session_state.otp_sent:
+        col_v1, col_v2 = st.columns(2)
+        with col_v1:
+            otp_sub = st.selectbox("Sub-Community", options=sub_community_list, index=default_sub_idx, key="otp_sub_select")
+        with col_v2:
+            otp_villa_raw = st.text_input("Villa Number", value=default_villa, key="otp_villa_text").strip()
+            otp_villa = "".join(filter(str.isdigit, otp_villa_raw))
 
-            otp_email_input = st.text_input("Email Address", placeholder="name@example.com", key="otp_email_text").strip().lower()
+        otp_email_input = st.text_input("Email Address", placeholder="name@example.com", key="otp_email_text").strip().lower()
 
-            if st.button("Send 6-Digit Code", type="primary", width='stretch'):
-                if not otp_sub or not otp_villa:
-                    st.error("Please specify your Sub-Community and Villa Number.")
-                elif not otp_email_input or "@" not in otp_email_input:
-                    st.error("Please provide a valid email address.")
-                elif is_disposable_email(otp_email_input):
-                    st.error("Disposable/temporary email domains are not allowed. Please use a personal or work email.")
-                else:
-                    existing_claim = get_existing_claim(otp_sub, otp_villa, otp_email_input)
-                    current_claims_count = get_villa_claims_count(otp_sub, otp_villa)
-                    email_villas_count = get_email_claimed_villas_count(otp_email_input)
-                    
-                    target_pair = f"{otp_sub}::{otp_villa}"
-                    current_uuid = st.session_state.get("device_uuid", "device_pending")
-                    uuid_villas = get_uuid_claimed_villas(current_uuid)
-                    
-                    if not existing_claim and current_claims_count >= 2:
-                        st.error(
-                            f"🚫 This villa ({otp_sub} - Villa {otp_villa}) already has 2 verified resident emails attached. "
-                            "If you recently moved in or need to update your registered email, please reach out via the contact channels in Court Maintenance."
-                        )
-                    elif not existing_claim and email_villas_count >= 3:
-                        st.error(
-                            "Unable to register this villa to your email address. "
-                            "Please contact Dev via the contact details in Court Maintenance for assistance."
-                        )
-                        add_log("Access Denied", f"Email {otp_email_input} exceeded 3-villa cap attempting {otp_sub} Villa {otp_villa}", fingerprint=current_uuid)
-                    elif not existing_claim and target_pair not in uuid_villas and len(uuid_villas) >= 3:
-                        st.error(
-                            "This device has reached the maximum allowed registered villas. "
-                            "Please contact Dev via Court Maintenance if you require an exception."
-                        )
-                        add_log("Access Denied", f"Device UUID {current_uuid} blocked from requesting OTP for 4th villa ({otp_sub} Villa {otp_villa})", fingerprint=current_uuid)
-                    else:
-                        try:
-                            supabase.auth.sign_in_with_otp({"email": otp_email_input})
-                            st.session_state.otp_sent = True
-                            st.session_state.otp_email = otp_email_input
-                            st.session_state.otp_target_sub = otp_sub
-                            st.session_state.otp_target_villa = otp_villa
-                            st.success(f"6-digit code sent to {otp_email_input}!")
-                            st.rerun()
-                        except Exception as e:
-                            st.error(f"Failed to send code: {str(e)}")
-        else:
-            st.info(f"Enter the 6-digit code sent to **{st.session_state.otp_email}** for **{st.session_state.otp_target_sub} - Villa {st.session_state.otp_target_villa}**.")
-            st.caption("Check your spam/junk folder if the email does not appear in your inbox within a minute.")
-            token_input = st.text_input("Enter 6-digit code", max_chars=6, key="otp_token_text").strip()
-            
-            c1, c2, c3 = st.columns([1.5, 1.2, 1.2])
-            with c1:
-                if st.button("Verify Code", type="primary", width='stretch'):
-                    if not token_input or len(token_input) != 6:
-                        st.error("Please enter a 6-digit verification code.")
-                    else:
-                        try:
-                            res = supabase.auth.verify_otp({
-                                "email": st.session_state.otp_email,
-                                "token": token_input,
-                                "type": "email"
-                            })
-                            if res and res.session:
-                                target_sub = st.session_state.otp_target_sub
-                                target_villa = st.session_state.otp_target_villa
-                                verified_email = st.session_state.otp_email
-                                refresh_tok = res.session.refresh_token
-                                resolved_uuid = st.session_state.device_uuid
-
-                                existing = get_existing_claim(target_sub, target_villa, verified_email)
-                                now_ts = get_utc_plus_4().isoformat()
-                                
-                                if not existing:
-                                    run_query(supabase.table("villa_claims").insert({
-                                        "sub_community": target_sub,
-                                        "villa": target_villa,
-                                        "email": verified_email,
-                                        "fingerprint": resolved_uuid,
-                                        "status": "approved",
-                                        "verified_at": now_ts
-                                    }))
-                                    add_log("Villa Claim", f"{target_sub} Villa {target_villa} claimed by {verified_email}", fingerprint=resolved_uuid)
-                                else:
-                                    run_query(supabase.table("villa_claims").update({
-                                        "verified_at": now_ts,
-                                        "fingerprint": resolved_uuid,
-                                        "status": "approved"
-                                    }).eq("id", existing["id"]))
-
-                                fallback_choice = f"{target_sub}-{target_villa}"
-                                
-                                # Backup in localStorage
-                                st_javascript(f"""
-                                    localStorage.setItem('court_villa_lock', '{fallback_choice}');
-                                    localStorage.setItem('court_verified_email', '{verified_email}');
-                                    localStorage.setItem('supabase_refresh_token', '{refresh_tok}');
-                                """)
-
-                                # Bind instant URL token
-                                st.query_params["auth"] = encode_auth_token(target_sub, target_villa, verified_email)
-
-                                st.session_state.sub_community = target_sub
-                                st.session_state.villa = target_villa
-                                st.session_state.verified_email = verified_email
-                                st.session_state.authenticated = True
-                                st.session_state.otp_sent = False
-                                
-                                st.balloons()
-                                st.success("✅ Verified and registered successfully! Logging you in...")
-                                time.sleep(1.2)
-                                st.rerun()
-                            else:
-                                st.error("Verification failed. Please check the code.")
-                        except Exception as e:
-                            st.error(f"Invalid code or verification error: {str(e)}")
-            with c2:
-                if st.button("🔄 Resend Code", width='stretch'):
-                    try:
-                        supabase.auth.sign_in_with_otp({"email": st.session_state.otp_email})
-                        st.toast(f"A new 6-digit code has been sent to {st.session_state.otp_email}!")
-                    except Exception as e:
-                        st.error(f"Could not resend code: {str(e)}")
-            with c3:
-                if st.button("Cancel / Change", width='stretch'):
-                    st.session_state.otp_sent = False
-                    st.rerun()
-
-    with login_tab2:
-        st.subheader("Villa Login (Legacy Fallback)")
-        st.caption("Standard direct login without email verification.")
-        
-        col1, col2 = st.columns(2)
-        with col1:
-            sub_community_input = st.selectbox("Select Your Sub-Community", options=sub_community_list, index=None, key="leg_sub")
-        with col2:
-            villa_input_raw = st.text_input("Enter Villa Number", key="leg_villa").strip()
-            villa_input = "".join(filter(str.isdigit, villa_input_raw))
-
-        if st.button("Login (Legacy)", type="secondary", width='stretch', key="leg_btn"):
-            if not sub_community_input or not villa_input:
-                if villa_input_raw and not villa_input:
-                    st.error("Please enter a numeric villa number (e.g. 255).")
-                else:
-                    st.error("Please select a sub-community and enter your villa number.")
+        if st.button("Send 6-Digit Code", type="primary", width='stretch'):
+            if not otp_sub or not otp_villa:
+                st.error("Please specify your Sub-Community and Villa Number.")
+            elif not otp_email_input or "@" not in otp_email_input:
+                st.error("Please provide a valid email address.")
+            elif is_disposable_email(otp_email_input):
+                st.error("Disposable/temporary email domains are not allowed. Please use a personal or work email.")
             else:
-                current_choice = f"{sub_community_input}-{villa_input}"
-                st_javascript(f"localStorage.setItem('court_villa_lock', '{current_choice}');")
+                existing_claim = get_existing_claim(otp_sub, otp_villa, otp_email_input)
+                current_claims_count = get_villa_claims_count(otp_sub, otp_villa)
+                email_villas_count = get_email_claimed_villas_count(otp_email_input)
                 
-                # Bind instant URL token
-                st.query_params["auth"] = encode_auth_token(sub_community_input, villa_input, "")
+                target_pair = f"{otp_sub}::{otp_villa}"
+                current_uuid = st.session_state.get("device_uuid", "device_pending")
+                uuid_villas = get_uuid_claimed_villas(current_uuid)
                 
-                st.session_state.sub_community = sub_community_input
-                st.session_state.villa = villa_input
-                st.session_state.authenticated = True
-                add_log("Device Registered", f"New login for {sub_community_input} Villa {villa_input}", fingerprint=st.session_state.get("device_uuid"))
-                st.rerun()
+                if not existing_claim and current_claims_count >= 2:
+                    st.error(
+                        f"🚫 This villa ({otp_sub} - Villa {otp_villa}) already has 2 verified resident emails attached. "
+                        "If you recently moved in or need to update your registered email, please reach out via the contact channels in Court Maintenance."
+                    )
+                elif not existing_claim and email_villas_count >= 3:
+                    st.error(
+                        "Unable to register this villa to your email address. "
+                        "Please contact Dev via the contact details in Court Maintenance for assistance."
+                    )
+                    add_log("Access Denied", f"Email {otp_email_input} exceeded 3-villa cap attempting {otp_sub} Villa {otp_villa}", fingerprint=current_uuid)
+                elif not existing_claim and target_pair not in uuid_villas and len(uuid_villas) >= 3:
+                    st.error(
+                        "This device has reached the maximum allowed registered villas. "
+                        "Please contact Dev via Court Maintenance if you require an exception."
+                    )
+                    add_log("Access Denied", f"Device UUID {current_uuid} blocked from requesting OTP for 4th villa ({otp_sub} Villa {otp_villa})", fingerprint=current_uuid)
+                else:
+                    try:
+                        supabase.auth.sign_in_with_otp({"email": otp_email_input})
+                        st.session_state.otp_sent = True
+                        st.session_state.otp_email = otp_email_input
+                        st.session_state.otp_target_sub = otp_sub
+                        st.session_state.otp_target_villa = otp_villa
+                        st.success(f"6-digit code sent to {otp_email_input}!")
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"Failed to send code: {str(e)}")
+        
+        st.write("")
+        if st.button("🚪 Reset / Clear Details", width='stretch', key="reg_logout_presend"):
+            logout_action()
+    else:
+        st.info(f"Enter the 6-digit code sent to **{st.session_state.otp_email}** for **{st.session_state.otp_target_sub} - Villa {st.session_state.otp_target_villa}**.")
+        st.caption("Check your spam/junk folder if the email does not appear in your inbox within a minute.")
+        token_input = st.text_input("Enter 6-digit code", max_chars=6, key="otp_token_text").strip()
+        
+        c1, c2, c3 = st.columns([1.5, 1.2, 1.2])
+        with c1:
+            if st.button("Verify Code", type="primary", width='stretch'):
+                if not token_input or len(token_input) != 6:
+                    st.error("Please enter a 6-digit verification code.")
+                else:
+                    try:
+                        res = supabase.auth.verify_otp({
+                            "email": st.session_state.otp_email,
+                            "token": token_input,
+                            "type": "email"
+                        })
+                        if res and res.session:
+                            target_sub = st.session_state.otp_target_sub
+                            target_villa = st.session_state.otp_target_villa
+                            verified_email = st.session_state.otp_email
+                            refresh_tok = res.session.refresh_token
+                            resolved_uuid = st.session_state.device_uuid
 
-    st.write("")
-    if st.button("🚪 Reset / Change Villa", width='stretch', key="reg_logout"):
-        logout_action()
+                            existing = get_existing_claim(target_sub, target_villa, verified_email)
+                            now_ts = get_utc_plus_4().isoformat()
+                            
+                            if not existing:
+                                run_query(supabase.table("villa_claims").insert({
+                                    "sub_community": target_sub,
+                                    "villa": target_villa,
+                                    "email": verified_email,
+                                    "fingerprint": resolved_uuid,
+                                    "status": "approved",
+                                    "verified_at": now_ts
+                                }))
+                                add_log("Villa Claim", f"{target_sub} Villa {target_villa} claimed by {verified_email}", fingerprint=resolved_uuid)
+                            else:
+                                run_query(supabase.table("villa_claims").update({
+                                    "verified_at": now_ts,
+                                    "fingerprint": resolved_uuid,
+                                    "status": "approved"
+                                }).eq("id", existing["id"]))
+
+                            fallback_choice = f"{target_sub}-{target_villa}"
+                            claim_bundle = f"{target_sub}::{target_villa}"
+                            
+                            st_javascript(f"""
+                                localStorage.setItem('court_villa_lock', '{fallback_choice}');
+                                localStorage.setItem('court_verified_email', '{verified_email}');
+                                localStorage.setItem('verified_claim_info', '{claim_bundle}');
+                                localStorage.setItem('supabase_refresh_token', '{refresh_tok}');
+                            """)
+
+                            # Save synchronous signed token in URL to survive refreshes
+                            st.query_params["auth"] = encode_auth_token(target_sub, target_villa, verified_email)
+
+                            st.session_state.sub_community = target_sub
+                            st.session_state.villa = target_villa
+                            st.session_state.verified_email = verified_email
+                            st.session_state.authenticated = True
+                            st.session_state.otp_sent = False
+                            
+                            st.balloons()
+                            st.success("✅ Verified and registered successfully! Logging you in...")
+                            time.sleep(1.2)
+                            st.rerun()
+                        else:
+                            st.error("Verification failed. Please check the code.")
+                    except Exception as e:
+                        st.error(f"Invalid code or verification error: {str(e)}")
+        with c2:
+            if st.button("🔄 Resend Code", width='stretch'):
+                try:
+                    supabase.auth.sign_in_with_otp({"email": st.session_state.otp_email})
+                    st.toast(f"A new 6-digit code has been sent to {st.session_state.otp_email}!")
+                except Exception as e:
+                    st.error(f"Could not resend code: {str(e)}")
+        with c3:
+            if st.button("Cancel / Change", width='stretch'):
+                st.session_state.otp_sent = False
+                st.rerun()
+        
+        st.write("")
+        if st.button("🚪 Reset / Clear Details", width='stretch', key="reg_logout_postsend"):
+            logout_action()
     
     st.stop()
 
 sub_community, villa = st.session_state.sub_community, st.session_state.villa
-st.success(f"✅ Logged in as: **{sub_community} - Villa {villa}**")
+verified_user_email = st.session_state.get("verified_email", "Verified")
+st.success(f"✅ Logged in as: **{sub_community} - Villa {villa}** (`{verified_user_email}`)")
 
 tab1, tab2, tab3, tab4, tab5 = st.tabs(["📅 Availability", "➕ Book", "📋 My Bookings", "🛠️ Court Maint.", "📜 Activity Log"])
 
@@ -1266,6 +1237,68 @@ with tab4:
                             st.rerun()
     else:
         st.info("No maintenance issues reported yet.")
+
+    st.divider()
+
+    # --- ADMIN CONTROLS IN TAB 4 ---
+    st.markdown("### 🛠️ Admin Maintenance Controls")
+    admin_maint_pwd = st.text_input("Enter Admin Password to Unlock Controls", type="password", key="tab4_admin_pass")
+    
+    if admin_maint_pwd:
+        if admin_maint_pwd == st.secrets.get("ADMIN_PASSWORD", "admin123"):
+            st.success("Admin Access Granted")
+            with st.expander("🔑 Admin Resident Bypass (Authorize & Switch Active Resident)", expanded=True):
+                st.caption("Directly authorize a resident email without OTP and immediately switch this session to them.")
+                b_col1, b_col2 = st.columns(2)
+                with b_col1:
+                    bypass_sub = st.selectbox("Sub-Community", options=sub_community_list, key="tab4_bypass_sub")
+                with b_col2:
+                    bypass_villa_raw = st.text_input("Villa Number", key="tab4_bypass_villa").strip()
+                    bypass_villa = "".join(filter(str.isdigit, bypass_villa_raw))
+                    
+                bypass_email = st.text_input("Resident Email Address", placeholder="resident@example.com", key="tab4_bypass_email").strip().lower()
+
+                if st.button("Authorize & Switch Session to Resident", type="primary", width='stretch', key="tab4_bypass_btn"):
+                    if not bypass_sub or not bypass_villa or not bypass_email or "@" not in bypass_email:
+                        st.error("Please specify a valid Sub-Community, Villa, and Email Address.")
+                    else:
+                        now_ts = get_utc_plus_4().isoformat()
+                        existing = get_existing_claim(bypass_sub, bypass_villa, bypass_email)
+                        if not existing:
+                            run_query(supabase.table("villa_claims").insert({
+                                "sub_community": bypass_sub,
+                                "villa": bypass_villa,
+                                "email": bypass_email,
+                                "fingerprint": "admin_bypass_grant",
+                                "status": "approved",
+                                "verified_at": now_ts
+                            }))
+                            add_log("Villa Claim", f"Admin directly authorized {bypass_sub} Villa {bypass_villa} for {bypass_email}")
+                        else:
+                            run_query(supabase.table("villa_claims").update({
+                                "verified_at": now_ts,
+                                "status": "approved"
+                            }).eq("id", existing["id"]))
+
+                        fallback_choice = f"{bypass_sub}-{bypass_villa}"
+                        claim_bundle = f"{bypass_sub}::{bypass_villa}"
+                        st_javascript(f"""
+                            localStorage.setItem('court_villa_lock', '{fallback_choice}');
+                            localStorage.setItem('court_verified_email', '{bypass_email}');
+                            localStorage.setItem('verified_claim_info', '{claim_bundle}');
+                        """)
+
+                        st.session_state.sub_community = bypass_sub
+                        st.session_state.villa = bypass_villa
+                        st.session_state.verified_email = bypass_email
+                        st.session_state.authenticated = True
+                        st.query_params["auth"] = encode_auth_token(bypass_sub, bypass_villa, bypass_email)
+                        
+                        st.success(f"Granted access! Switched active session to {bypass_sub} Villa {bypass_villa} ({bypass_email}).")
+                        time.sleep(1.0)
+                        st.rerun()
+        else:
+            st.error("Incorrect Password")
 
 with tab5:
     st.subheader("Community Activity Log")
