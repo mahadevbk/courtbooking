@@ -288,7 +288,7 @@ def get_recent_claim_cooldown(sub_community, villa, requesting_email):
 
 def check_device_sniping_status(device_uuid, current_email, current_sub, current_villa):
     """
-    Evaluates cross-villa hopping within the past 24 hours without raw URL filter syntax errors.
+    Evaluates cross-villa hopping within the past 24 hours safely in Python.
     Allows up to 3 villas per email/device without penalty.
     Returns:
         level: 0 (Normal), 1 (Tier 1 Warning - cross-villa hop), 2 (Tier 2 Lockout - 4 or more villas)
@@ -322,7 +322,6 @@ def check_device_sniping_status(device_uuid, current_email, current_sub, current
         details = entry.get("details") or ""
         fp = entry.get("Fingerprint") or ""
 
-        # Only evaluate entries matching this device or email
         if fp != device_uuid and req_email_clean not in details.lower():
             continue
 
@@ -331,20 +330,17 @@ def check_device_sniping_status(device_uuid, current_email, current_sub, current
         except Exception:
             continue
 
-        # Detect admin resets
         if entry.get("event_type") == "Admin Reset":
             details_lower = details.lower()
             if any(term in details_lower for term in ["cleared cooldown", "reset cooldown", "cleared restrictions"]):
                 if not cooldown_cleared_at or ts > cooldown_cleared_at:
                     cooldown_cleared_at = ts
 
-        # Detect active penalties
         if entry.get("event_type") == "Sniping Penalty" and ts >= (now - timedelta(hours=96)):
             expiry = ts + timedelta(hours=96)
             if not penalized_until or expiry > penalized_until:
                 penalized_until = expiry
 
-        # Extract villa mentions from logs within past 24h
         match = re.search(r"(Mira(?:\s+Oasis)?\s+\d+)\s+Villa\s+(\d+)", details)
         if match:
             v_tag = f"{match.group(1)} - {match.group(2)}"
@@ -448,7 +444,12 @@ def get_all_claimed_villas():
     return unique_villas
 
 def get_bookings_for_day_with_details(date_str):
-    response = run_query(supabase.table("bookings").select("court, start_hour, sub_community, villa").eq("date", date_str))
+    response = run_query(
+        supabase.table("bookings")
+        .select("court, start_hour, sub_community, villa")
+        .eq("date", date_str)
+        .limit(500)
+    )
     if not response or not response.data: return {}
     return {(row['court'], row['start_hour']): f"{row['sub_community']} - {row['villa']}" for row in response.data}
 
@@ -1200,7 +1201,7 @@ with tab1:
                 daily_count = get_daily_bookings_count(villa, sub_community, selected_date)
                 
                 start_h = int(q_time.split(":")[0])
-                slots_to_book = list(range(start_h, start_h + slots_choice))
+                slots_to_book = list(range(start_h, start_h + q_slots))
                 valid_hours = get_start_hours_for_date(selected_date)
                 
                 unavailable = []
