@@ -290,7 +290,7 @@ def check_device_sniping_status(device_uuid, current_email, current_sub, current
     """
     Evaluates cross-villa hopping within the past 24 hours.
     Returns:
-        level: 0 (Normal), 1 (Tier 1 Warning - 2nd villa), 2 (Tier 2 Lockout - 3+ villas)
+        level: 0 (Normal), 1 (Tier 1 Warning - cross-villa hop), 2 (Tier 2 Lockout - persistent hopping)
         other_villas: List of distinct other villas interacted with
         lockout_hours: Remaining cooldown hours if locked out
     """
@@ -594,7 +594,7 @@ def show_sniping_warning_dialog(other_villas):
 
     Please do not abuse the booking system by hopping across multiple properties. **All villas associated with your account have been flagged for review.**
 
-    🚨 **Notice:** If you log out and attempt to book with a 3rd villa, an automatic **4-day security cooldown** will be imposed on all properties linked to your account.
+    🚨 **Notice:** If you log out and switch to another residence to reserve courts, an automatic **4-day security cooldown** will be imposed on all properties linked to your account.
 
     ---
     *If you believe this is incorrect, please contact Dev in Court Maintenance.*
@@ -607,7 +607,7 @@ def show_sniping_warning_dialog(other_villas):
 def show_sniping_lockout_dialog(hours_remaining):
     st.error(
         f"### 4-Day Security Cooldown Imposed\n\n"
-        f"Cross-villa sniping was detected from this device across 3 or more properties within 24 hours.\n\n"
+        f"Cross-villa sniping was detected from this device across multiple residences within 24 hours.\n\n"
         f"In accordance with community fair-use rules, **all bookings and access for your associated villas are locked for the next {hours_remaining} hours**.\n\n"
         f"💬 *If you believe this is an error or require an exception, please contact Dev directly via Court Maintenance.*"
     )
@@ -1080,7 +1080,7 @@ with tab1:
                 daily_count = get_daily_bookings_count(villa, sub_community, selected_date)
                 
                 start_h = int(q_time.split(":")[0])
-                slots_to_book = list(range(start_h, start_h + q_slots))
+                slots_to_book = list(range(start_h, start_h + slots_choice))
                 valid_hours = get_start_hours_for_date(selected_date)
                 
                 unavailable = []
@@ -1599,7 +1599,7 @@ with tab5:
     if is_admin:
         st.success("Admin Access Granted")
         
-        # --- NEW: EMAIL-BASED LOCKOUT & COOLDOWN RESET DASHBOARD ---
+        # --- EMAIL-BASED LOCKOUT & COOLDOWN RESET DASHBOARD ---
         st.markdown("### 🔓 Email-Based Lockout & Cooldown Reset")
         st.caption("Lookup all properties claimed under a resident's email and reset their cooldown lockout period directly.")
 
@@ -1625,7 +1625,6 @@ with tab5:
 
                 st.write("")
                 if st.button(f"🔓 Reset Cooldown & Restore Clean Access for `{reset_email_input}`", type="primary", use_container_width=True):
-                    # Write administrative reset logs to clear both 72h villa and 4-day device penalties
                     now_ts = get_utc_plus_4().isoformat()
                     for c in email_claims:
                         run_query(supabase.table("villa_claims").update({
