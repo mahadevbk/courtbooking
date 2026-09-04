@@ -29,7 +29,6 @@ DONOR_NAMES = [
     "Melissa", "Mustafa", "Nikki", "Rena", "Riin", "Saket", "Sheila", "Sofia", "Vik", "Yousef",
 ]
 
-
 def render_donor_ticker(names):
     """Renders a fixed, auto-scrolling ticker of uppercase donor names separated by tennis ball icons."""
     if not names:
@@ -47,54 +46,51 @@ def render_donor_ticker(names):
         '</svg>'
     )
 
-    # Wrap names in <b> tags
-    ticker_text = tennis_ball_svg.join(f"<b>{n}</b>" for n in uppercase_names)
+    ticker_text = tennis_ball_svg.join(uppercase_names)
 
     st.markdown(
-        f"""<style>
-.donor-ticker-wrap {{
-    position: fixed;
-    top: 0;
-    left: 0;
-    width: 100%;
-    z-index: 1000000;
-    background-color: #0d5384;
-    color: #ccff00;
-    overflow: hidden;
-    white-space: nowrap;
-    padding: 6px 0;
-    border-bottom: 2px solid #fff500;
-    box-sizing: border-box;
-}}
-.donor-ticker-move {{
-    display: inline-block;
-    white-space: nowrap;
-    padding-left: 100%;
-    font-size: 0.9rem;
-    font-weight: 600;
-    animation: donor-ticker-scroll 30s linear infinite;
-}}
-.donor-ticker-move b {{
-    color: #ffffff !important;
-    font-weight: 700 !important;
-}}
-.donor-ticker-move:hover {{
-    animation-play-state: paused;
-}}
-@keyframes donor-ticker-scroll {{
-    0%   {{ transform: translate(0, 0); }}
-    100% {{ transform: translate(-100%, 0); }}
-}}
-.donor-ticker-spacer {{
-    height: 34px;
-}}
-</style>
-<div class="donor-ticker-wrap">
-    <div class="donor-ticker-move">
-        {tennis_ball_svg} Huge thanks to these legends for their support ! {tennis_ball_svg} {ticker_text} {tennis_ball_svg}
-    </div>
-</div>
-<div class="donor-ticker-spacer"></div>""",
+        f"""
+        <style>
+        .donor-ticker-wrap {{
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            z-index: 1000000;
+            background-color: #0d5384;
+            color: #ccff00;
+            overflow: hidden;
+            white-space: nowrap;
+            padding: 6px 0;
+            border-bottom: 2px solid #fff500;
+            box-sizing: border-box;
+        }}
+        .donor-ticker-move {{
+            display: inline-block;
+            white-space: nowrap;
+            padding-left: 100%;
+            font-size: 0.9rem;
+            font-weight: 600;
+            animation: donor-ticker-scroll 30s linear infinite;
+        }}
+        .donor-ticker-move:hover {{
+            animation-play-state: paused;
+        }}
+        @keyframes donor-ticker-scroll {{
+            0%   {{ transform: translate(0, 0); }}
+            100% {{ transform: translate(-100%, 0); }}
+        }}
+        .donor-ticker-spacer {{
+            height: 34px;
+        }}
+        </style>
+        <div class="donor-ticker-wrap">
+            <div class="donor-ticker-move">
+                {tennis_ball_svg} Huge thanks to these legends for their support ! {tennis_ball_svg} {ticker_text} {tennis_ball_svg}
+            </div>
+        </div>
+        <div class="donor-ticker-spacer"></div>
+        """,
         unsafe_allow_html=True,
     )
 
@@ -241,27 +237,43 @@ def get_claims_for_villa(sub_community, villa):
     return res.data if res and res.data else []
 
 def get_recent_claim_cooldown(sub_community, villa, requesting_email):
-    """Checks if this villa was verified by a different email within the last 72 hours."""
+    """
+    Evaluates 72-hour cooldown fairly:
+    - If the requesting email is already approved on this villa, no cooldown.
+    - Up to 2 distinct resident emails are permitted per villa (partners/housemates).
+    - If the villa already has 2 registered emails or had an active claim reassignment
+      within the last 72 hours, a 3rd distinct identity triggers the cooldown.
+    """
     claims = get_claims_for_villa(sub_community, villa)
     if not claims:
         return False, None
 
-    now = get_utc_plus_4()
     req_email_clean = requesting_email.strip().lower()
+    approved_claims = [c for c in claims if c.get("status") == "approved"]
+    registered_emails = {c.get("email", "").strip().lower() for c in approved_claims if c.get("email")}
 
-    for c in claims:
-        c_email = c.get("email", "").strip().lower()
-        if c_email and c_email != req_email_clean:
-            v_time_str = c.get("verified_at") or c.get("created_at")
-            if v_time_str:
-                try:
-                    v_dt = datetime.fromisoformat(v_time_str.replace("Z", "+00:00")).replace(tzinfo=None)
-                    delta = now - v_dt
-                    if delta < timedelta(hours=72):
-                        remaining_hours = max(1, int((timedelta(hours=72) - delta).total_seconds() // 3600))
-                        return True, remaining_hours
-                except Exception:
-                    pass
+    # Already an approved resident for this villa: allow immediate access / re-verification
+    if req_email_clean in registered_emails:
+        return False, None
+
+    # If villa has fewer than 2 registered emails, allow the 2nd household member
+    if len(registered_emails) < 2:
+        return False, None
+
+    # Villa has 2 active resident emails. Check if either was verified within the 72-hour window
+    now = get_utc_plus_4()
+    for c in approved_claims:
+        v_time_str = c.get("verified_at") or c.get("created_at")
+        if v_time_str:
+            try:
+                v_dt = datetime.fromisoformat(v_time_str.replace("Z", "+00:00")).replace(tzinfo=None)
+                delta = now - v_dt
+                if delta < timedelta(hours=72):
+                    remaining_hours = max(1, int((timedelta(hours=72) - delta).total_seconds() // 3600))
+                    return True, remaining_hours
+            except Exception:
+                pass
+
     return False, None
 
 def get_all_claimed_villas():
@@ -715,7 +727,7 @@ if not st.session_state.authenticated:
                 current_claims_count = get_villa_claims_count(otp_sub, otp_villa)
                 email_villas_count = get_email_claimed_villas_count(otp_email_input)
                 
-                # Check 72-Hour Cooldown for this villa
+                # Check 72-Hour Cooldown for this villa (allows up to 2 distinct household emails)
                 is_on_cooldown, hours_left = get_recent_claim_cooldown(otp_sub, otp_villa, otp_email_input)
                 
                 target_pair = f"{otp_sub}::{otp_villa}"
@@ -724,8 +736,8 @@ if not st.session_state.authenticated:
                 
                 if not existing_claim and is_on_cooldown:
                     st.error(
-                        f"🚫 Security Lockout: This villa ({otp_sub} - Villa {otp_villa}) was recently verified by another resident. "
-                        f"Villa changes have a 72-hour security cooldown ({hours_left} hours remaining). "
+                        f"🚫 Security Lockout: This villa ({otp_sub} - Villa {otp_villa}) already has 2 registered emails, "
+                        f"with an active 72-hour ownership change cooldown ({hours_left} hours remaining). "
                         "Please contact Dev in Court Maintenance for urgent reassignment."
                     )
                     add_log("Access Denied", f"Villa {otp_sub} Villa {otp_villa} 72h cooldown triggered by {otp_email_input} ({hours_left}h left)", fingerprint=current_uuid)
@@ -920,7 +932,7 @@ with tab1:
                 daily_count = get_daily_bookings_count(villa, sub_community, selected_date)
                 
                 start_h = int(q_time.split(":")[0])
-                slots_to_book = list(range(start_h, start_h + q_slots))
+                slots_to_book = list(range(start_h, start_h + slots_choice))
                 valid_hours = get_start_hours_for_date(selected_date)
                 
                 unavailable = []
