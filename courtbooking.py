@@ -9,6 +9,7 @@ import random
 import json
 import base64
 import hashlib
+import re
 from postgrest.exceptions import APIError 
 from PIL import Image # For image resizing
 from streamlit_javascript import st_javascript
@@ -173,6 +174,27 @@ def add_log(event_type, details, fingerprint=None):
         supabase.table("logs").insert(log_entry).execute()
     except Exception:
         pass 
+
+def mask_email(email_str):
+    """Masks an email address using standard conventions (e.g. j***e@domain.com)."""
+    try:
+        user, domain = email_str.split("@", 1)
+        if len(user) <= 1:
+            masked_user = f"{user}*"
+        elif len(user) == 2:
+            masked_user = f"{user[0]}*"
+        else:
+            masked_user = f"{user[0]}{'*' * (len(user) - 2)}{user[-1]}"
+        return f"{masked_user}@{domain}"
+    except Exception:
+        return email_str
+
+def mask_emails_in_text(text):
+    """Detects and masks all email addresses inside a text string."""
+    if not isinstance(text, str):
+        return text
+    email_pattern = r'[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+'
+    return re.sub(email_pattern, lambda m: mask_email(m.group(0)), text)
 
 def get_villa_claims_count(sub_community, villa):
     res = run_query(supabase.table("villa_claims").select("id", count="exact")
@@ -1387,6 +1409,10 @@ with tab5:
             
         display_df = log_df[filters].copy()        
         display_df['details'] = display_df['details'].str.replace(r'⟦FP:.*?⟧⟦IP:.*?⟧ ', '', regex=True)
+
+        # Mask email addresses for public view (unmasked only if admin is logged in)
+        if not is_admin:
+            display_df['details'] = display_df['details'].apply(mask_emails_in_text)
 
         cols = ['timestamp', 'event_type', 'details']
         display_df['timestamp'] = pd.to_datetime(display_df['timestamp'], format='ISO8601').dt.strftime('%b %d, %H:%M')
