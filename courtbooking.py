@@ -319,7 +319,7 @@ def check_device_sniping_status(device_uuid, current_email, current_sub, current
 
         if entry.get("event_type") == "Admin Reset":
             details_lower = details.lower()
-            if any(term in details_lower for term in ["cleared cooldown", "reset cooldown", "cleared restrictions"]):
+            if any(term in details_lower for term in ["cleared cooldown", "reset cooldown", "cleared restrictions", "ownership reset", "wrong villa"]):
                 if not cooldown_cleared_at or ts > cooldown_cleared_at:
                     cooldown_cleared_at = ts
 
@@ -1184,7 +1184,7 @@ with tab1:
                 daily_count = get_daily_bookings_count(villa, sub_community, selected_date)
                 
                 start_h = int(q_time.split(":")[0])
-                slots_to_book = list(range(start_h, start_h + slots_choice))
+                slots_to_book = list(range(start_h, start_h + q_slots))
                 valid_hours = get_start_hours_for_date(selected_date)
                 
                 unavailable = []
@@ -1740,28 +1740,50 @@ with tab5:
                         st.warning("No registered villas currently tied to this email in `villa_claims`.")
 
                     st.write("")
-                    if st.button(
-                        f"🔓 Clear Restrictions & Wipe Slate Clean for {target['email']}", 
-                        type="primary", 
-                        use_container_width=True,
-                        key=f"clear_rest_{idx}"
-                    ):
-                        now_ts = get_utc_plus_4().isoformat()
-                        if target["claims"]:
-                            for c in target["claims"]:
-                                run_query(supabase.table("villa_claims").update({
-                                    "verified_at": now_ts,
-                                    "status": "approved"
-                                }).eq("id", c["id"]))
+                    col_r1, col_r2 = st.columns(2)
+                    with col_r1:
+                        if st.button(
+                            f"🔓 Clear Restrictions & Wipe Slate Clean", 
+                            type="primary", 
+                            use_container_width=True,
+                            key=f"clear_rest_{idx}"
+                        ):
+                            now_ts = get_utc_plus_4().isoformat()
+                            if target["claims"]:
+                                for c in target["claims"]:
+                                    run_query(supabase.table("villa_claims").update({
+                                        "verified_at": now_ts,
+                                        "status": "approved"
+                                    }).eq("id", c["id"]))
 
-                        add_log(
-                            "Admin Reset",
-                            f"Admin cleared restrictions and wiped sniping penalty for {target['email']} (Device: {target['fingerprint']})",
-                            fingerprint=target["fingerprint"]
-                        )
-                        st.success(f"🎉 Restrictions cleared! Slate wiped clean for {target['email']}.")
-                        time.sleep(1.5)
-                        st.rerun()
+                            add_log(
+                                "Admin Reset",
+                                f"Admin cleared restrictions and wiped sniping penalty for {target['email']} (Device: {target['fingerprint']})",
+                                fingerprint=target["fingerprint"]
+                            )
+                            st.success(f"🎉 Restrictions cleared! Slate wiped clean for {target['email']}.")
+                            time.sleep(1.5)
+                            st.rerun()
+                    with col_r2:
+                        if st.button(
+                            f"🔄 Reset Ownership (Wrong Villa Mistake)", 
+                            type="secondary", 
+                            use_container_width=True,
+                            key=f"wrong_villa_rst_{idx}"
+                        ):
+                            now_ts = get_utc_plus_4().isoformat()
+                            if target["claims"]:
+                                for c in target["claims"]:
+                                    run_query(supabase.table("villa_claims").delete().eq("id", c["id"]))
+
+                            add_log(
+                                "Admin Reset",
+                                f"Admin deleted claims and reset ownership for {target['email']} due to wrong villa mistake",
+                                fingerprint=target["fingerprint"]
+                            )
+                            st.success(f"🔄 Villa ownership claims deleted for {target['email']}. User can now register the correct villa without sniping penalty!")
+                            time.sleep(1.5)
+                            st.rerun()
 
         st.divider()
 
@@ -1790,21 +1812,35 @@ with tab5:
                     st.info(f"🏡 **{c_sub} - Villa {c_villa}** | *Status:* `{c_status}` | *Verified:* `{c_ver}` | *Device:* `{c_fp[:10]}...`")
 
                 st.write("")
-                if st.button(f"🔓 Reset Cooldown & Restore Clean Access for `{reset_email_input}`", type="primary", use_container_width=True):
-                    now_ts = get_utc_plus_4().isoformat()
-                    for c in email_claims:
-                        run_query(supabase.table("villa_claims").update({
-                            "verified_at": now_ts,
-                            "status": "approved"
-                        }).eq("id", c["id"]))
+                col_e1, col_e2 = st.columns(2)
+                with col_e1:
+                    if st.button(f"🔓 Reset Cooldown & Restore Clean Access", type="primary", use_container_width=True, key="email_rst_btn_1"):
+                        now_ts = get_utc_plus_4().isoformat()
+                        for c in email_claims:
+                            run_query(supabase.table("villa_claims").update({
+                                "verified_at": now_ts,
+                                "status": "approved"
+                            }).eq("id", c["id"]))
 
-                    add_log(
-                        "Admin Reset",
-                        f"Admin reset cooldown and cleared sniping penalty for email {reset_email_input} across {len(email_claims)} villas"
-                    )
-                    st.success(f"✅ Successfully cleared lockout and reset cooldown for all villas linked to {reset_email_input}!")
-                    time.sleep(1.5)
-                    st.rerun()
+                        add_log(
+                            "Admin Reset",
+                            f"Admin reset cooldown and cleared sniping penalty for email {reset_email_input} across {len(email_claims)} villas"
+                        )
+                        st.success(f"✅ Successfully cleared lockout and reset cooldown for all villas linked to {reset_email_input}!")
+                        time.sleep(1.5)
+                        st.rerun()
+                with col_e2:
+                    if st.button(f"🔄 Reset Ownership (Wrong Villa Mistake)", type="secondary", use_container_width=True, key="email_rst_btn_2"):
+                        for c in email_claims:
+                            run_query(supabase.table("villa_claims").delete().eq("id", c["id"]))
+
+                        add_log(
+                            "Admin Reset",
+                            f"Admin deleted all villa claims for email {reset_email_input} due to wrong villa entry mistake"
+                        )
+                        st.success(f"🔄 All villa claims deleted for {reset_email_input}. They can now register the correct villa!")
+                        time.sleep(1.5)
+                        st.rerun()
             else:
                 st.warning(f"No active property claims found for `{reset_email_input}`.")
 
