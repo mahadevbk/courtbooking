@@ -99,8 +99,8 @@ def render_donor_ticker(names):
 
 render_donor_ticker(DONOR_NAMES)
 
-# --- DATABASE SETUP (SUPABASE) ---
-@st.cache_resource
+# --- DATABASE SETUP (SUPABASE WITH JWT AUTO-RECOVERY) ---
+@st.cache_resource(ttl=1800)
 def init_supabase():
     url: str = st.secrets["SUPABASE_URL"]
     key: str = st.secrets["SUPABASE_KEY"]
@@ -113,7 +113,6 @@ def get_maintenance_data():
     """Fetches maintenance reports with a 1-hour cache."""
     return run_query(supabase.table("court_maintenance").select("*").order("created_at", desc=True))
 
-# Constants
 sub_community_list = [
     "Mira 1", "Mira 2", "Mira 3", "Mira 4", "Mira 5",
     "Mira Oasis 1", "Mira Oasis 2", "Mira Oasis 3"
@@ -135,8 +134,6 @@ def get_start_hours_for_date(date_str):
         return list(range(7, 24))
     return list(range(7, 22))
 
-# --- HELPER FUNCTIONS ---
-
 def get_utc_plus_4():
     return datetime.now(timezone.utc).replace(tzinfo=None) + timedelta(hours=4)
 
@@ -153,6 +150,10 @@ def run_query(query_method):
         try:
             return query_method.execute()
         except APIError as e:
+            if e.code == "PGRST303":  # JWT expired error code
+                st.cache_resource.clear()
+                global supabase
+                supabase = init_supabase()
             if e.code == "23505":
                 raise e
             if attempt == max_retries - 1:
@@ -247,30 +248,20 @@ def get_claims_for_villa(sub_community, villa):
     return res.data if res and res.data else []
 
 def get_recent_claim_cooldown(sub_community, villa, requesting_email):
-    """
-    Evaluates 72-hour cooldown fairly:
-    - Up to 2 distinct resident emails are permitted per villa (partners/housemates).
-    - If the requesting email is already approved on this villa, no cooldown.
-    - If the villa already has 2 registered emails or had an active claim reassignment
-      within the last 72 hours, a 3rd distinct identity triggers the cooldown.
-    """
     claims = get_claims_for_villa(sub_community, villa)
     if not claims:
         return False, None
 
     req_email_clean = requesting_email.strip().lower()
-    approved_claims = [c for c in claims if c.get("status") == "approved"]
+    approved_claims = [c for c in claims if c.get("status"] == "approved"]
     registered_emails = {c.get("email", "").strip().lower() for c in approved_claims if c.get("email")}
 
-    # Already an approved resident for this villa: allow immediate access
     if req_email_clean in registered_emails:
         return False, None
 
-    # If villa has fewer than 2 registered emails, allow the 2nd household member
     if len(registered_emails) < 2:
         return False, None
 
-    # Villa already has 2 active resident emails. Check if either was verified within the 72-hour window
     now = get_utc_plus_4()
     for c in approved_claims:
         v_time_str = c.get("verified_at") or c.get("created_at")
@@ -289,11 +280,7 @@ def get_recent_claim_cooldown(sub_community, villa, requesting_email):
 def check_device_sniping_status(device_uuid, current_email, current_sub, current_villa):
     """
     Evaluates cross-villa hopping within the past 24 hours safely in Python.
-    Allows up to 3 villas per email/device without penalty.
-    Returns:
-        level: 0 (Normal), 1 (Tier 1 Warning - cross-villa hop), 2 (Tier 2 Lockout - 4 or more villas)
-        other_villas: List of distinct other villas interacted with
-        lockout_hours: Remaining cooldown hours if locked out
+    Allows up to 3 villas per email/device without penalty (lockout strictly at 4+ villas).
     """
     if not device_uuid or device_uuid in ("no_uuid", "device_pending"):
         return 0, [], 0
@@ -366,10 +353,6 @@ def check_device_sniping_status(device_uuid, current_email, current_sub, current
     return 0, [], 0
 
 def get_blacklisted_accounts():
-    """
-    Scans logs within the 96-hour window to find currently restricted/blacklisted
-    emails and devices, excluding any that have already received an Admin Reset.
-    """
     now = get_utc_plus_4()
     cutoff_96h = (now - timedelta(hours=96)).isoformat()
     
@@ -1201,7 +1184,7 @@ with tab1:
                 daily_count = get_daily_bookings_count(villa, sub_community, selected_date)
                 
                 start_h = int(q_time.split(":")[0])
-                slots_to_book = list(range(start_h, start_h + q_slots))
+                slots_to_book = list(range(start_h, start_h + slots_choice))
                 valid_hours = get_start_hours_for_date(selected_date)
                 
                 unavailable = []
