@@ -29,7 +29,6 @@ DONOR_NAMES = [
     "Melissa", "Mustafa", "Nikki", "Rena", "Riin", "Saket", "Sheila", "Sofia", "Vik", "Yousef",
 ]
 
-
 def render_donor_ticker(names):
     """Renders a fixed, auto-scrolling ticker of uppercase donor names separated by tennis ball icons."""
     if not names:
@@ -47,7 +46,7 @@ def render_donor_ticker(names):
         '</svg>'
     )
 
-    # Wrap names in <b> tags
+    # Wrap names in <b> tags for white bold styling
     ticker_text = tennis_ball_svg.join(f"<b>{n}</b>" for n in uppercase_names)
 
     st.markdown(
@@ -223,6 +222,13 @@ def get_email_claimed_villas_count(email):
     unique_villas = set([f"{r['sub_community']}::{r['villa']}" for r in res.data])
     return len(unique_villas)
 
+def get_all_villas_for_email(email):
+    """Returns all claims associated with a given email."""
+    res = run_query(supabase.table("villa_claims").select("*")
+                    .eq("email", email.strip().lower())
+                    .order("created_at"))
+    return res.data if res and res.data else []
+
 def get_uuid_claimed_villas(uuid_val):
     if not uuid_val or uuid_val in ("no_uuid", "device_pending"):
         return set()
@@ -243,8 +249,8 @@ def get_claims_for_villa(sub_community, villa):
 def get_recent_claim_cooldown(sub_community, villa, requesting_email):
     """
     Evaluates 72-hour cooldown fairly:
-    - If the requesting email is already approved on this villa, no cooldown.
     - Up to 2 distinct resident emails are permitted per villa (partners/housemates).
+    - If the requesting email is already approved on this villa, no cooldown.
     - If the villa already has 2 registered emails or had an active claim reassignment
       within the last 72 hours, a 3rd distinct identity triggers the cooldown.
     """
@@ -256,7 +262,7 @@ def get_recent_claim_cooldown(sub_community, villa, requesting_email):
     approved_claims = [c for c in claims if c.get("status") == "approved"]
     registered_emails = {c.get("email", "").strip().lower() for c in approved_claims if c.get("email")}
 
-    # Already an approved resident for this villa: allow immediate access / re-verification
+    # Already an approved resident for this villa: allow immediate access
     if req_email_clean in registered_emails:
         return False, None
 
@@ -264,7 +270,7 @@ def get_recent_claim_cooldown(sub_community, villa, requesting_email):
     if len(registered_emails) < 2:
         return False, None
 
-    # Villa has 2 active resident emails. Check if either was verified within the 72-hour window
+    # Villa already has 2 active resident emails. Check if either was verified within the 72-hour window
     now = get_utc_plus_4()
     for c in approved_claims:
         v_time_str = c.get("verified_at") or c.get("created_at")
@@ -279,6 +285,72 @@ def get_recent_claim_cooldown(sub_community, villa, requesting_email):
                 pass
 
     return False, None
+
+def check_device_sniping_status(device_uuid, current_email, current_sub, current_villa):
+    """
+    Evaluates cross-villa hopping within the past 24 hours.
+    Returns:
+        level: 0 (Normal), 1 (Tier 1 Warning - 2nd villa), 2 (Tier 2 Lockout - 3+ villas)
+        other_villas: List of distinct other villas interacted with
+        lockout_hours: Remaining cooldown hours if locked out
+    """
+    if not device_uuid or device_uuid in ("no_uuid", "device_pending"):
+        return 0, [], 0
+
+    now = get_utc_plus_4()
+    cutoff_96h = (now - timedelta(hours=96)).isoformat()
+    current_tag = f"{current_sub} - {current_villa}"
+
+    # Query recent audit logs for booking or access actions tied to this fingerprint or email
+    query = supabase.table("logs").select("timestamp, event_type, details, Fingerprint")\
+        .gte("timestamp", cutoff_96h)\
+        .or_(f"Fingerprint.eq.{device_uuid},details.ilike.%{current_email}%")
+    
+    res = run_query(query)
+    logs = res.data if res and res.data else []
+
+    recent_villas = set()
+    penalized_until = None
+    cooldown_cleared_at = None
+
+    for entry in logs:
+        ts = datetime.fromisoformat(entry["timestamp"].replace("Z", "+00:00")).replace(tzinfo=None)
+        details = entry.get("details", "")
+
+        # Detect admin clears
+        if entry.get("event_type") == "Admin Reset" and ("cleared cooldown" in details.lower() or "reset cooldown" in details.lower()):
+            if not cooldown_cleared_at or ts > cooldown_cleared_at:
+                cooldown_cleared_at = ts
+
+        # Detect active penalties
+        if entry.get("event_type") == "Sniping Penalty" and ts >= (now - timedelta(hours=96)):
+            expiry = ts + timedelta(hours=96)
+            if not penalized_until or expiry > penalized_until:
+                penalized_until = expiry
+
+        # Extract villa mentions from logs within past 24h
+        match = re.search(r"(Mira(?:\s+Oasis)?\s+\d+)\s+Villa\s+(\d+)", details)
+        if match:
+            v_tag = f"{match.group(1)} - {match.group(2)}"
+            if v_tag != current_tag and ts >= (now - timedelta(hours=24)):
+                recent_villas.add(v_tag)
+
+    # If admin cleared cooldown more recently than the penalty was issued, cancel lockout
+    if cooldown_cleared_at and penalized_until and cooldown_cleared_at >= (penalized_until - timedelta(hours=96)):
+        penalized_until = None
+        recent_villas.clear()
+
+    if penalized_until and penalized_until > now:
+        hours_left = max(1, int((penalized_until - now).total_seconds() // 3600))
+        return 2, list(recent_villas), hours_left
+
+    total_distinct = len(recent_villas) + 1  # includes current villa
+    if total_distinct >= 3:
+        return 2, list(recent_villas), 96
+    elif total_distinct == 2:
+        return 1, list(recent_villas), 0
+
+    return 0, [], 0
 
 def get_all_claimed_villas():
     res = run_query(supabase.table("villa_claims").select("sub_community, villa"))
@@ -366,7 +438,7 @@ def is_slot_in_past(date_str, start_hour):
     if start_hour == now.hour and now.minute > 0: return True
     return False
 
-def book_slot(villa, sub_community, court, date_str, start_hour):
+def book_slot(villa, sub_community, court, date_str, start_hour, fingerprint=None):
     try:
         run_query(supabase.table("bookings").insert({
             "villa": villa,
@@ -376,7 +448,7 @@ def book_slot(villa, sub_community, court, date_str, start_hour):
             "start_hour": start_hour
         }))
         log_detail = f"{sub_community} Villa {villa} booked {court} for {date_str} at {start_hour:02d}:00"
-        add_log("Booking Created", log_detail)
+        add_log("Booking Created", log_detail, fingerprint=fingerprint)
         return True
     except APIError as e:
         if e.code == "23505":
@@ -398,12 +470,12 @@ def get_user_bookings(villa, sub_community):
     )
     return response.data if response else []
 
-def delete_booking(booking_id, villa, sub_community):
+def delete_booking(booking_id, villa, sub_community, fingerprint=None):
     record = run_query(supabase.table("bookings").select("court, date, start_hour").eq("id", booking_id).single())
     if record and record.data:
         b = record.data
         log_detail = f"{sub_community} Villa {villa} cancelled {b['court']} for {b['date']} at {b['start_hour']:02d}:00"
-        add_log("Booking Deleted", log_detail)
+        add_log("Booking Deleted", log_detail, fingerprint=fingerprint)
     run_query(supabase.table("bookings").delete().eq("id", booking_id).eq("villa", villa).eq("sub_community", sub_community))
 
 @st.cache_data(ttl=60)
@@ -490,7 +562,7 @@ def get_available_hours(court, date_str):
             available.append(h)
     return available
 
-# --- FLOATING ANNOUNCEMENT DIALOG (DISMISSAL WITH APP SCOPE) ---
+# --- FLOATING ANNOUNCEMENT DIALOGS ---
 @st.dialog("🎾 Notice: A Fairer Booking System for Everyone!")
 def show_migration_dialog():
     st.markdown("""
@@ -511,6 +583,36 @@ def show_migration_dialog():
     if st.button("Got it — Continue 🎾", type="primary", use_container_width=True):
         st.session_state.seen_migration_notice = True
         st.rerun(scope="app")
+
+@st.dialog("⚠️ Villa Sniping Detected")
+def show_sniping_warning_dialog(other_villas):
+    villas_text = ", ".join(other_villas)
+    st.markdown(f"""
+    **Potential Misuse Warning**
+
+    Our system detected that this device has recently reserved court slots across multiple villas (**{villas_text}**) within the last 24 hours.
+
+    Please do not abuse the booking system by hopping across multiple properties. **All villas associated with your account have been flagged for review.**
+
+    🚨 **Notice:** If you log out and attempt to book with a 3rd villa, an automatic **4-day security cooldown** will be imposed on all properties linked to your account.
+
+    ---
+    *If you believe this is incorrect, please contact Dev in Court Maintenance.*
+    """)
+    if st.button("I Understand — Proceed", type="primary", use_container_width=True):
+        st.session_state.seen_sniping_warning = True
+        st.rerun(scope="app")
+
+@st.dialog("🚫 Account Suspended: Villa Sniping Lockout")
+def show_sniping_lockout_dialog(hours_remaining):
+    st.error(
+        f"### 4-Day Security Cooldown Imposed\n\n"
+        f"Cross-villa sniping was detected from this device across 3 or more properties within 24 hours.\n\n"
+        f"In accordance with community fair-use rules, **all bookings and access for your associated villas are locked for the next {hours_remaining} hours**.\n\n"
+        f"💬 *If you believe this is an error or require an exception, please contact Dev directly via Court Maintenance.*"
+    )
+    if st.button("Close / Logout", use_container_width=True):
+        logout_action()
 
 # --- ZERO-LATENCY TOKEN AUTH (PERSISTS SYNCHRONOUSLY ACROSS BROWSER REFRESH) ---
 AUTH_SALT = "mira_court_booking_salt_2026"
@@ -541,15 +643,20 @@ def decode_auth_token(token_str):
     return None
 
 def logout_action():
-    """Centrally handles logout, clears tokens and localStorage."""
+    """Centrally handles logout, clears session tokens while retaining the hardware device fingerprint."""
     st_javascript("""
         localStorage.removeItem('court_villa_lock');
         localStorage.removeItem('court_verified_email');
         localStorage.removeItem('verified_claim_info');
         localStorage.removeItem('supabase_refresh_token');
+        // Hardware device_uuid is preserved to ensure anti-abuse tracking persists across logout
         setTimeout(() => { window.location.href = window.location.origin + window.location.pathname; }, 150);
     """)
-    for key in ["authenticated", "sub_community", "villa", "verified_email", "otp_sent", "otp_email", "otp_target_villa", "otp_target_sub", "prefill_sub", "prefill_villa"]:
+    for key in [
+        "authenticated", "sub_community", "villa", "verified_email", 
+        "otp_sent", "otp_email", "otp_target_villa", "otp_target_sub", 
+        "prefill_sub", "prefill_villa", "seen_sniping_warning"
+    ]:
         if key in st.session_state:
             del st.session_state[key]
     st.query_params.clear()
@@ -633,7 +740,21 @@ except Exception:
 if 'authenticated' not in st.session_state:
     st.session_state.authenticated = False
 
-if "device_uuid" not in st.session_state:
+# Persistent Device Identification in Client LocalStorage
+js_device_fetch = st_javascript("""
+    (function() {
+        let devId = localStorage.getItem('court_device_uuid');
+        if (!devId) {
+            devId = 'dev_' + Math.floor(Math.random() * 89999999 + 10000000) + '_' + Math.floor(Date.now() / 1000);
+            localStorage.setItem('court_device_uuid', devId);
+        }
+        return devId;
+    })();
+""")
+
+if isinstance(js_device_fetch, str) and js_device_fetch.startswith("dev_"):
+    st.session_state.device_uuid = js_device_fetch
+elif "device_uuid" not in st.session_state:
     st.session_state.device_uuid = f"dev_{random.randint(10000000, 99999999)}_{int(time.time())}"
 
 # 1. SYNCHRONOUS URL TOKEN AUTH (ONLY ACCEPTS VERIFIED TOKENS CONTAINING EMAIL)
@@ -832,6 +953,7 @@ if not st.session_state.authenticated:
                                     localStorage.setItem('court_verified_email', '{verified_email}');
                                     localStorage.setItem('verified_claim_info', '{claim_bundle}');
                                     localStorage.setItem('supabase_refresh_token', '{refresh_tok}');
+                                    localStorage.setItem('court_device_uuid', '{resolved_uuid}');
                                 """)
 
                                 # Save synchronous signed token in URL to survive refreshes
@@ -873,6 +995,28 @@ if not st.session_state.authenticated:
 sub_community, villa = st.session_state.sub_community, st.session_state.villa
 verified_user_email = st.session_state.get("verified_email", "Verified")
 st.success(f"✅ Logged in as: **{sub_community} - Villa {villa}** (`{verified_user_email}`)")
+
+# --- VILLA SNIPING INTERCEPTOR & ENFORCEMENT ---
+current_device = st.session_state.get("device_uuid")
+sniping_level, hopping_villas, cooldown_hrs = check_device_sniping_status(
+    current_device, verified_user_email, sub_community, villa
+)
+
+if sniping_level == 2:
+    add_log(
+        "Sniping Penalty",
+        f"4-day penalty active for {sub_community} Villa {villa} (Device: {current_device}, Email: {verified_user_email})",
+        fingerprint=current_device
+    )
+    show_sniping_lockout_dialog(cooldown_hrs)
+    st.stop()
+elif sniping_level == 1 and not st.session_state.get("seen_sniping_warning", False):
+    add_log(
+        "Sniping Warning",
+        f"Cross-villa warning triggered for {sub_community} Villa {villa}. Prior activity on: {', '.join(hopping_villas)}",
+        fingerprint=current_device
+    )
+    show_sniping_warning_dialog(hopping_villas)
 
 tab1, tab2, tab3, tab4, tab5 = st.tabs(["📅 Availability", "➕ Book", "📋 My Bookings", "🛠️ Court Maint.", "📜 Activity Log"])
 
@@ -936,7 +1080,7 @@ with tab1:
                 daily_count = get_daily_bookings_count(villa, sub_community, selected_date)
                 
                 start_h = int(q_time.split(":")[0])
-                slots_to_book = list(range(start_h, start_h + slots_choice))
+                slots_to_book = list(range(start_h, start_h + q_slots))
                 valid_hours = get_start_hours_for_date(selected_date)
                 
                 unavailable = []
@@ -948,15 +1092,15 @@ with tab1:
                     st.error(f"Slot(s) {', '.join(unavailable)} are unavailable.")
                 elif active_count + q_slots > 6:
                     st.error(f"Limit Reached (Max 6 active). You can book {max(0, 6-active_count)} more.")
-                    add_log("Access Denied", f"{sub_community} Villa {villa} reached active booking limit (6)")
+                    add_log("Access Denied", f"{sub_community} Villa {villa} reached active booking limit (6)", fingerprint=current_device)
                 elif daily_count + q_slots > 2:
                     st.error(f"Daily Limit Reached (Max 2 per day). You can book {max(0, 2-daily_count)} more today.")
-                    add_log("Access Denied", f"{sub_community} Villa {villa} reached daily limit (2) for {selected_date}")
+                    add_log("Access Denied", f"{sub_community} Villa {villa} reached daily limit (2) for {selected_date}", fingerprint=current_device)
                 else:
                     success = True
                     booked_slots = []
                     for h in slots_to_book:
-                        if book_slot(villa, sub_community, q_court, selected_date, h):
+                        if book_slot(villa, sub_community, q_court, selected_date, h, fingerprint=current_device):
                             booked_slots.append(h)
                         else:
                             success = False
@@ -1072,15 +1216,15 @@ with tab2:
                 st.error(f"Slot(s) {', '.join(unavailable)} are unavailable.")
             elif active_count_latest + slots_choice > 6: 
                 st.error(f"🚫 Overall limit reached. You can book {max(0, 6-active_count_latest)} more slots.")
-                add_log("Access Denied", f"{sub_community} Villa {villa} reached active booking limit (6)")
+                add_log("Access Denied", f"{sub_community} Villa {villa} reached active booking limit (6)", fingerprint=current_device)
             elif daily_count_latest + slots_choice > 2:
                 st.error(f"🚫 Daily limit reached. You can book {max(0, 2-daily_count_latest)} more on {date_choice}.")
-                add_log("Access Denied", f"{sub_community} Villa {villa} reached daily limit (2) for {date_choice}")
+                add_log("Access Denied", f"{sub_community} Villa {villa} reached daily limit (2) for {date_choice}", fingerprint=current_device)
             else:
                 success = True
                 booked_slots = []
                 for h in slots_to_book:
-                    if book_slot(villa, sub_community, court_choice, date_choice, h):
+                    if book_slot(villa, sub_community, court_choice, date_choice, h, fingerprint=current_device):
                         booked_slots.append(h)
                     else:
                         success = False
@@ -1193,7 +1337,7 @@ with tab3:
                 """, unsafe_allow_html=True)
                 
                 if st.button(f"❌ Cancel Booking {id_display}", key=f"cancel_{i}", width='stretch'):
-                    for bid in b['ids']: delete_booking(bid, b['v'], b['sc'])
+                    for bid in b['ids']: delete_booking(bid, b['v'], b['sc'], fingerprint=current_device)
                     st.success(f"Successfully cancelled booking {id_display}")
                     time.sleep(1.5); st.rerun()
                 st.markdown('<div style="margin-bottom: 25px;"></div>', unsafe_allow_html=True)
@@ -1257,7 +1401,7 @@ with tab4:
                         "reported_by": f"{sub_community} Villa {villa}",
                         "is_fixed": False
                     }))
-                    add_log("Maintenance Reported", f"Issue reported for {m_court} by {sub_community} Villa {villa}")
+                    add_log("Maintenance Reported", f"Issue reported for {m_court} by {sub_community} Villa {villa}", fingerprint=current_device)
                     st.cache_data.clear()
                     st.success("✅ Maintenance report submitted successfully!")
                     time.sleep(1)
@@ -1441,7 +1585,8 @@ with tab5:
             styles = [''] * len(row)
             if row.event_type in ["Booking Created", "Villa Claim"]: styles[1] = 'background-color: #d4edda; color: #155724; font-weight: bold;'
             elif row.event_type in ["Booking Deleted", "Booking Cancelled", "Villa Claim Removed"]: styles[1] = 'background-color: #f8d7da; color: #721c24; font-weight: bold;'
-            elif row.event_type in ["Access Denied", "Claim Held for Review"]: styles[1] = 'background-color: #ffcc00; color: black; font-weight: bold;'
+            elif row.event_type in ["Access Denied", "Claim Held for Review", "Sniping Warning"]: styles[1] = 'background-color: #ffcc00; color: black; font-weight: bold;'
+            elif row.event_type in ["Sniping Penalty"]: styles[1] = 'background-color: #ff4d4d; color: white; font-weight: bold;'
             return styles
             
         st.dataframe(display_df[cols].style.apply(style_rows, axis=1), hide_index=True, width="stretch")
@@ -1454,6 +1599,51 @@ with tab5:
     if is_admin:
         st.success("Admin Access Granted")
         
+        # --- NEW: EMAIL-BASED LOCKOUT & COOLDOWN RESET DASHBOARD ---
+        st.markdown("### 🔓 Email-Based Lockout & Cooldown Reset")
+        st.caption("Lookup all properties claimed under a resident's email and reset their cooldown lockout period directly.")
+
+        col_rst1, col_rst2 = st.columns([3, 1])
+        with col_rst1:
+            reset_email_input = st.text_input("Enter Resident Email Address", placeholder="resident@example.com", key="admin_rst_email").strip().lower()
+        with col_rst2:
+            st.write(""); st.write("")
+            lookup_pressed = st.button("Search Account", type="primary", use_container_width=True)
+
+        if reset_email_input:
+            email_claims = get_all_villas_for_email(reset_email_input)
+            if email_claims:
+                st.markdown(f"**Properties Linked to `{reset_email_input}` ({len(email_claims)} total):**")
+                for c in email_claims:
+                    c_id = c["id"]
+                    c_sub = c["sub_community"]
+                    c_villa = c["villa"]
+                    c_status = c.get("status", "approved")
+                    c_ver = c.get("verified_at", "Unverified")
+                    c_fp = c.get("fingerprint", "N/A")
+                    st.info(f"🏡 **{c_sub} - Villa {c_villa}** | *Status:* `{c_status}` | *Verified:* `{c_ver}` | *Device:* `{c_fp[:10]}...`")
+
+                st.write("")
+                if st.button(f"🔓 Reset Cooldown & Restore Clean Access for `{reset_email_input}`", type="primary", use_container_width=True):
+                    # Write administrative reset logs to clear both 72h villa and 4-day device penalties
+                    now_ts = get_utc_plus_4().isoformat()
+                    for c in email_claims:
+                        run_query(supabase.table("villa_claims").update({
+                            "verified_at": now_ts,
+                            "status": "approved"
+                        }).eq("id", c["id"]))
+
+                    add_log(
+                        "Admin Reset",
+                        f"Admin reset cooldown and cleared sniping penalty for email {reset_email_input} across {len(email_claims)} villas"
+                    )
+                    st.success(f"✅ Successfully cleared lockout and reset cooldown for all villas linked to {reset_email_input}!")
+                    time.sleep(1.5)
+                    st.rerun()
+            else:
+                st.warning(f"No active property claims found for `{reset_email_input}`.")
+
+        st.divider()
         st.markdown("### 🛡️ Villa Claims & Verification Management")
         
         all_claimed = get_all_claimed_villas()
@@ -1489,7 +1679,7 @@ with tab5:
                             if st.button(f"🔓 Clear Cooldown & Release", key=f"del_claim_{claim['id']}", type="secondary", width="stretch"):
                                 run_query(supabase.table("villa_claims").delete().eq("id", claim['id']))
                                 add_log("Villa Claim Removed", f"Admin cleared cooldown and released claim for {c_sub} Villa {c_villa} ({claim['email']})")
-                                st.success(f"Released {claim['email']} and cleared 72h cooldown for {claim_inspect_villa}!")
+                                st.success(f"Released {claim['email']} and cleared cooldown for {claim_inspect_villa}!")
                                 time.sleep(1.2)
                                 st.rerun()
                 else:
@@ -1571,7 +1761,7 @@ with tab5:
                         if not to_delete.empty:
                             with st.spinner(f"Deleting {len(to_delete)} bookings..."):
                                 for _, row in to_delete.iterrows():
-                                    delete_booking(row['id'], villa_num, sub_comm)
+                                    delete_booking(row['id'], villa_num, sub_comm, fingerprint=current_device)
                             st.success(f"Successfully deleted {len(to_delete)} bookings for {selected_villa}.")
                             time.sleep(1.5)
                             st.rerun()
