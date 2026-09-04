@@ -289,8 +289,9 @@ def get_recent_claim_cooldown(sub_community, villa, requesting_email):
 def check_device_sniping_status(device_uuid, current_email, current_sub, current_villa):
     """
     Evaluates cross-villa hopping within the past 24 hours.
+    Allows up to 3 villas per email/device.
     Returns:
-        level: 0 (Normal), 1 (Tier 1 Warning - cross-villa hop), 2 (Tier 2 Lockout - persistent hopping)
+        level: 0 (Normal), 1 (Tier 1 Warning - cross-villa hop), 2 (Tier 2 Lockout - 4 or more villas)
         other_villas: List of distinct other villas interacted with
         lockout_hours: Remaining cooldown hours if locked out
     """
@@ -301,7 +302,6 @@ def check_device_sniping_status(device_uuid, current_email, current_sub, current
     cutoff_96h = (now - timedelta(hours=96)).isoformat()
     current_tag = f"{current_sub} - {current_villa}"
 
-    # Query recent audit logs for booking or access actions tied to this fingerprint or email
     query = supabase.table("logs").select("timestamp, event_type, details, Fingerprint")\
         .gte("timestamp", cutoff_96h)\
         .or_(f"Fingerprint.eq.{device_uuid},details.ilike.%{current_email}%")
@@ -317,7 +317,7 @@ def check_device_sniping_status(device_uuid, current_email, current_sub, current
         ts = datetime.fromisoformat(entry["timestamp"].replace("Z", "+00:00")).replace(tzinfo=None)
         details = entry.get("details", "")
 
-        # Detect admin clears
+        # Detect admin resets
         if entry.get("event_type") == "Admin Reset" and ("cleared cooldown" in details.lower() or "reset cooldown" in details.lower() or "cleared restrictions" in details.lower()):
             if not cooldown_cleared_at or ts > cooldown_cleared_at:
                 cooldown_cleared_at = ts
@@ -335,7 +335,6 @@ def check_device_sniping_status(device_uuid, current_email, current_sub, current
             if v_tag != current_tag and ts >= (now - timedelta(hours=24)):
                 recent_villas.add(v_tag)
 
-    # If admin cleared cooldown more recently than the penalty was issued, cancel lockout
     if cooldown_cleared_at and penalized_until and cooldown_cleared_at >= (penalized_until - timedelta(hours=96)):
         penalized_until = None
         recent_villas.clear()
@@ -345,9 +344,11 @@ def check_device_sniping_status(device_uuid, current_email, current_sub, current
         return 2, list(recent_villas), hours_left
 
     total_distinct = len(recent_villas) + 1  # includes current villa
-    if total_distinct >= 3:
+    
+    # LOCKOUT STRICTLY AT 4 OR MORE VILLAS
+    if total_distinct >= 4:
         return 2, list(recent_villas), 96
-    elif total_distinct == 2:
+    elif total_distinct >= 2:
         return 1, list(recent_villas), 0
 
     return 0, [], 0
@@ -679,7 +680,7 @@ def show_sniping_warning_dialog(other_villas):
 def show_sniping_lockout_dialog(hours_remaining):
     st.error(
         f"### 4-Day Security Cooldown Imposed\n\n"
-        f"Cross-villa sniping was detected from this device across multiple residences within 24 hours.\n\n"
+        f"Cross-villa sniping was detected from this device across 4 or more properties within 24 hours.\n\n"
         f"In accordance with community fair-use rules, **all bookings and access for your associated villas are locked for the next {hours_remaining} hours**.\n\n"
         f"💬 *If you believe this is an error or require an exception, please contact Dev directly via Court Maintenance.*"
     )
@@ -1061,6 +1062,37 @@ if not st.session_state.authenticated:
         st.write("")
         if st.button("🚪 Reset / Clear Details", width='stretch', key="reg_logout_postsend"):
             logout_action()
+
+    # --- EMERGENCY ADMIN CONSOLE (ACCESSIBLE EVEN WHEN LOGGED OUT OR LOCKED OUT) ---
+    st.write("")
+    with st.expander("🛠️ Admin Emergency Console", expanded=(st.query_params.get("admin") == "true")):
+        st.caption("Unlock accounts or clear restrictions if locked out.")
+        login_admin_pwd = st.text_input("Enter Admin Password", type="password", key="login_screen_admin_pwd")
+        if login_admin_pwd:
+            if login_admin_pwd == st.secrets.get("ADMIN_PASSWORD", "admin123"):
+                st.success("Admin Access Granted")
+                rst_email = st.text_input("Resident Email Address to Restore", placeholder="resident@example.com", key="login_rst_email").strip().lower()
+                if st.button("🔓 Clear Restrictions & Restore Clean Access", type="primary", key="login_rst_btn", use_container_width=True):
+                    if not rst_email or "@" not in rst_email:
+                        st.error("Please enter a valid email address.")
+                    else:
+                        now_ts = get_utc_plus_4().isoformat()
+                        claims = get_all_villas_for_email(rst_email)
+                        for c in claims:
+                            run_query(supabase.table("villa_claims").update({
+                                "verified_at": now_ts,
+                                "status": "approved"
+                            }).eq("id", c["id"]))
+
+                        add_log(
+                            "Admin Reset",
+                            f"Admin cleared restrictions and reset cooldown for {rst_email} across {len(claims)} villas via emergency console"
+                        )
+                        st.success(f"✅ Restrictions cleared for {rst_email}! Cooldown reset for all {len(claims)} associated villas.")
+                        time.sleep(1.2)
+                        st.rerun()
+            else:
+                st.error("Incorrect Password")
     
     st.stop()
 
@@ -1673,14 +1705,13 @@ with tab5:
         
         # --- BLACKLISTED ACCOUNTS & SNIPING REVIEW ---
         st.markdown("### 🚫 Blacklisted Accounts & Sniping Lockouts")
-        st.caption("Active 4-day security lockouts triggered by cross-villa sniping or quota abuse.")
+        st.caption("Active 4-day security lockouts triggered by cross-villa sniping (4+ villas) or quota abuse.")
 
         blacklisted = get_blacklisted_accounts()
 
         if not blacklisted:
             st.success("✅ No active account restrictions or blacklisted devices found.")
         else:
-            # Create a selector listing each blacklisted user and their linked villas
             options = ["-- Select Blacklisted User --"] + [
                 f"{b['email']} | Villas: ({', '.join(b['villas']) if b['villas'] else 'No linked villa'}) | {b['hours_left']}h left"
                 for b in blacklisted
@@ -1716,8 +1747,6 @@ with tab5:
                         key=f"clear_rest_{idx}"
                     ):
                         now_ts = get_utc_plus_4().isoformat()
-                        
-                        # 1. Update verification timestamps on all linked properties to wipe 72h cooldowns
                         if target["claims"]:
                             for c in target["claims"]:
                                 run_query(supabase.table("villa_claims").update({
@@ -1725,7 +1754,6 @@ with tab5:
                                     "status": "approved"
                                 }).eq("id", c["id"]))
 
-                        # 2. Write administrative reset record to cancel the 96h device penalty
                         add_log(
                             "Admin Reset",
                             f"Admin cleared restrictions and wiped sniping penalty for {target['email']} (Device: {target['fingerprint']})",
