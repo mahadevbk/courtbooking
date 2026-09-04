@@ -288,8 +288,8 @@ def get_recent_claim_cooldown(sub_community, villa, requesting_email):
 
 def check_device_sniping_status(device_uuid, current_email, current_sub, current_villa):
     """
-    Evaluates cross-villa hopping within the past 24 hours.
-    Allows up to 3 villas per email/device.
+    Evaluates cross-villa hopping within the past 24 hours without raw URL filter syntax errors.
+    Allows up to 3 villas per email/device without penalty.
     Returns:
         level: 0 (Normal), 1 (Tier 1 Warning - cross-villa hop), 2 (Tier 2 Lockout - 4 or more villas)
         other_villas: List of distinct other villas interacted with
@@ -301,26 +301,42 @@ def check_device_sniping_status(device_uuid, current_email, current_sub, current
     now = get_utc_plus_4()
     cutoff_96h = (now - timedelta(hours=96)).isoformat()
     current_tag = f"{current_sub} - {current_villa}"
+    req_email_clean = (current_email or "").strip().lower()
 
-    query = supabase.table("logs").select("timestamp, event_type, details, Fingerprint")\
-        .gte("timestamp", cutoff_96h)\
-        .or_(f"Fingerprint.eq.{device_uuid},details.ilike.%{current_email}%")
-    
-    res = run_query(query)
-    logs = res.data if res and res.data else []
+    try:
+        res = run_query(
+            supabase.table("logs")
+            .select("timestamp, event_type, details, Fingerprint")
+            .gte("timestamp", cutoff_96h)
+            .order("timestamp", desc=True)
+        )
+        all_logs = res.data if res and res.data else []
+    except Exception:
+        return 0, [], 0
 
     recent_villas = set()
     penalized_until = None
     cooldown_cleared_at = None
 
-    for entry in logs:
-        ts = datetime.fromisoformat(entry["timestamp"].replace("Z", "+00:00")).replace(tzinfo=None)
-        details = entry.get("details", "")
+    for entry in all_logs:
+        details = entry.get("details") or ""
+        fp = entry.get("Fingerprint") or ""
+
+        # Only evaluate entries matching this device or email
+        if fp != device_uuid and req_email_clean not in details.lower():
+            continue
+
+        try:
+            ts = datetime.fromisoformat(entry["timestamp"].replace("Z", "+00:00")).replace(tzinfo=None)
+        except Exception:
+            continue
 
         # Detect admin resets
-        if entry.get("event_type") == "Admin Reset" and ("cleared cooldown" in details.lower() or "reset cooldown" in details.lower() or "cleared restrictions" in details.lower()):
-            if not cooldown_cleared_at or ts > cooldown_cleared_at:
-                cooldown_cleared_at = ts
+        if entry.get("event_type") == "Admin Reset":
+            details_lower = details.lower()
+            if any(term in details_lower for term in ["cleared cooldown", "reset cooldown", "cleared restrictions"]):
+                if not cooldown_cleared_at or ts > cooldown_cleared_at:
+                    cooldown_cleared_at = ts
 
         # Detect active penalties
         if entry.get("event_type") == "Sniping Penalty" and ts >= (now - timedelta(hours=96)):
@@ -1066,7 +1082,7 @@ if not st.session_state.authenticated:
     # --- EMERGENCY ADMIN CONSOLE (ACCESSIBLE EVEN WHEN LOGGED OUT OR LOCKED OUT) ---
     st.write("")
     with st.expander("🛠️ Admin Emergency Console", expanded=(st.query_params.get("admin") == "true")):
-        st.caption("Unlock accounts or clear restrictions if locked out.")
+        st.caption("Unlock accounts, reset cooldowns, or clear restrictions if locked out.")
         login_admin_pwd = st.text_input("Enter Admin Password", type="password", key="login_screen_admin_pwd")
         if login_admin_pwd:
             if login_admin_pwd == st.secrets.get("ADMIN_PASSWORD", "admin123"):
