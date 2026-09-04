@@ -253,7 +253,7 @@ def get_recent_claim_cooldown(sub_community, villa, requesting_email):
         return False, None
 
     req_email_clean = requesting_email.strip().lower()
-    approved_claims = [c for c in claims if c.get("status"] == "approved"]
+    approved_claims = [c for c in claims if c.get("status") == "approved"]
     registered_emails = {c.get("email", "").strip().lower() for c in approved_claims if c.get("email")}
 
     if req_email_clean in registered_emails:
