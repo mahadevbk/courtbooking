@@ -318,7 +318,7 @@ def check_device_sniping_status(device_uuid, current_email, current_sub, current
         details = entry.get("details", "")
 
         # Detect admin clears
-        if entry.get("event_type") == "Admin Reset" and ("cleared cooldown" in details.lower() or "reset cooldown" in details.lower()):
+        if entry.get("event_type") == "Admin Reset" and ("cleared cooldown" in details.lower() or "reset cooldown" in details.lower() or "cleared restrictions" in details.lower()):
             if not cooldown_cleared_at or ts > cooldown_cleared_at:
                 cooldown_cleared_at = ts
 
@@ -351,6 +351,78 @@ def check_device_sniping_status(device_uuid, current_email, current_sub, current
         return 1, list(recent_villas), 0
 
     return 0, [], 0
+
+def get_blacklisted_accounts():
+    """
+    Scans logs within the 96-hour window to find currently restricted/blacklisted
+    emails and devices, excluding any that have already received an Admin Reset.
+    """
+    now = get_utc_plus_4()
+    cutoff_96h = (now - timedelta(hours=96)).isoformat()
+    
+    res = run_query(
+        supabase.table("logs").select("timestamp, event_type, details, Fingerprint")
+        .gte("timestamp", cutoff_96h)
+        .in_("event_type", ["Sniping Penalty", "Admin Reset"])
+        .order("timestamp", desc=True)
+    )
+    logs = res.data if res and res.data else []
+    
+    cleared_entities = set()
+    active_penalties = {}
+
+    for entry in logs:
+        ts = datetime.fromisoformat(entry["timestamp"].replace("Z", "+00:00")).replace(tzinfo=None)
+        details = entry.get("details", "")
+        fp = entry.get("Fingerprint")
+
+        if entry.get("event_type") == "Admin Reset":
+            m_email = re.search(r'[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+', details)
+            if m_email:
+                cleared_entities.add((m_email.group(0).lower(), ts))
+            if fp:
+                cleared_entities.add((fp, ts))
+            continue
+
+        if entry.get("event_type") == "Sniping Penalty":
+            m_email = re.search(r'[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+', details)
+            email_val = m_email.group(0).lower() if m_email else None
+            
+            is_cleared = False
+            for cleared_key, reset_time in cleared_entities:
+                if (cleared_key == email_val or (fp and cleared_key == fp)) and reset_time >= ts:
+                    is_cleared = True
+                    break
+            
+            if is_cleared:
+                continue
+
+            expiry = ts + timedelta(hours=96)
+            if expiry > now:
+                hrs_left = max(1, int((expiry - now).total_seconds() // 3600))
+                primary_key = email_val or fp
+                if primary_key not in active_penalties:
+                    active_penalties[primary_key] = {
+                        "email": email_val or "No Email (Hardware Lock)",
+                        "fingerprint": fp or "N/A",
+                        "penalized_at": ts.strftime('%b %d, %H:%M'),
+                        "hours_left": hrs_left,
+                        "details": details
+                    }
+
+    blacklisted_list = []
+    for key, data in active_penalties.items():
+        if data["email"] and "@" in data["email"]:
+            claims = get_all_villas_for_email(data["email"])
+            villas = [f"{c['sub_community']} - {c['villa']}" for c in claims]
+        else:
+            claims = []
+            villas = []
+        data["villas"] = villas
+        data["claims"] = claims
+        blacklisted_list.append(data)
+
+    return blacklisted_list
 
 def get_all_claimed_villas():
     res = run_query(supabase.table("villa_claims").select("sub_community, villa"))
@@ -1599,6 +1671,72 @@ with tab5:
     if is_admin:
         st.success("Admin Access Granted")
         
+        # --- BLACKLISTED ACCOUNTS & SNIPING REVIEW ---
+        st.markdown("### 🚫 Blacklisted Accounts & Sniping Lockouts")
+        st.caption("Active 4-day security lockouts triggered by cross-villa sniping or quota abuse.")
+
+        blacklisted = get_blacklisted_accounts()
+
+        if not blacklisted:
+            st.success("✅ No active account restrictions or blacklisted devices found.")
+        else:
+            # Create a selector listing each blacklisted user and their linked villas
+            options = ["-- Select Blacklisted User --"] + [
+                f"{b['email']} | Villas: ({', '.join(b['villas']) if b['villas'] else 'No linked villa'}) | {b['hours_left']}h left"
+                for b in blacklisted
+            ]
+            selected_item = st.selectbox("Select Restricted Account to Inspect:", options=options, key="admin_blacklist_sel")
+
+            if selected_item != "-- Select Blacklisted User --":
+                idx = options.index(selected_item) - 1
+                target = blacklisted[idx]
+
+                with st.container(border=True):
+                    st.markdown(f"#### 👤 Account Details: `{target['email']}`")
+                    c_info1, c_info2 = st.columns(2)
+                    with c_info1:
+                        st.write(f"**Lockout Issued:** {target['penalized_at']}")
+                        st.write(f"**Remaining Cooldown:** `{target['hours_left']} hours`")
+                    with c_info2:
+                        st.write(f"**Device Fingerprint:** `{target['fingerprint'][:16]}...`")
+                        st.write(f"**Reason:** *{target['details']}*")
+
+                    st.markdown("##### 🏡 Associated Villas:")
+                    if target["villas"]:
+                        for v_name in target["villas"]:
+                            st.info(f"📍 **{v_name}** (Booking and registration blocked)")
+                    else:
+                        st.warning("No registered villas currently tied to this email in `villa_claims`.")
+
+                    st.write("")
+                    if st.button(
+                        f"🔓 Clear Restrictions & Wipe Slate Clean for {target['email']}", 
+                        type="primary", 
+                        use_container_width=True,
+                        key=f"clear_rest_{idx}"
+                    ):
+                        now_ts = get_utc_plus_4().isoformat()
+                        
+                        # 1. Update verification timestamps on all linked properties to wipe 72h cooldowns
+                        if target["claims"]:
+                            for c in target["claims"]:
+                                run_query(supabase.table("villa_claims").update({
+                                    "verified_at": now_ts,
+                                    "status": "approved"
+                                }).eq("id", c["id"]))
+
+                        # 2. Write administrative reset record to cancel the 96h device penalty
+                        add_log(
+                            "Admin Reset",
+                            f"Admin cleared restrictions and wiped sniping penalty for {target['email']} (Device: {target['fingerprint']})",
+                            fingerprint=target["fingerprint"]
+                        )
+                        st.success(f"🎉 Restrictions cleared! Slate wiped clean for {target['email']}.")
+                        time.sleep(1.5)
+                        st.rerun()
+
+        st.divider()
+
         # --- EMAIL-BASED LOCKOUT & COOLDOWN RESET DASHBOARD ---
         st.markdown("### 🔓 Email-Based Lockout & Cooldown Reset")
         st.caption("Lookup all properties claimed under a resident's email and reset their cooldown lockout period directly.")
