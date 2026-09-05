@@ -89,9 +89,10 @@ def send_booking_notification(action_type, villa, sub_community, court, date_str
 
 # --- DONOR TICKER (scrolls at the top of every tab) ---
 DONOR_NAMES = [
-    "Abhisek", "Adam", "Adebayo", "Arlan", "Alesia", "Angelo", "Carlos", "Charbel", "Dev", "Elie",
+    "Abhisek", "Adam", "Adebayo", "Arlan", "Alesia", "Ameen", "Angelo", "Carlos", "Charbel", "Dev", "Elie",
     "Farheen", "Hana", "Harith", "Hisham", "Katya", "Khaled", "Leina", "Marko", "Mei",
-    "Melissa", "Mustafa", "Nikki", "Rena", "Riin", "Saket", "Sheila", "Sofia", "Vik", "Yousef",
+    "Melissa", "Mustafa", "Nick", "Nikki", "Rena", "Riin", "Saket", "Sheila", "Sofia", "Vik", "Yousef",
+    "Melissa", "Mustafa", "Nick", "Nikki", "Rena", "Ricardo", "Riin", "SAS", "Saket", "Sheila", "Sofia", "Vik", "Yousef",
 ]
 
 def render_donor_ticker(names):
