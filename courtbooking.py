@@ -1,4 +1,3 @@
-name=courtbooking_3.py
 import time
 import streamlit as st
 from supabase import create_client, Client
