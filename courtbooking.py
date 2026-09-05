@@ -236,6 +236,18 @@ sub_community_list = [
     "Mira Oasis 1", "Mira Oasis 2", "Mira Oasis 3"
 ]
 
+# Villa count mapping based on your data specification
+SUB_COMMUNITY_VILLA_LIMITS = {
+    "Mira 1": 322,
+    "Mira 2": 341,
+    "Mira 3": 402,
+    "Mira 4": 320,
+    "Mira 5": 395,
+    "Mira Oasis 1": 483,
+    "Mira Oasis 2": 427,
+    "Mira Oasis 3": 483
+}
+
 courts = ["Mira 2", "Mira 4", "Mira 5A", "Mira 5B", "Mira Oasis 1", "Mira Oasis 2", "Mira Oasis 3A", "Mira Oasis 3B", "Mira Oasis 3C"]
 
 DISPOSABLE_DOMAINS = {
@@ -758,15 +770,15 @@ def show_migration_dialog():
     st.markdown("""
     Hi neighbors! 👋
 
-    To keep court bookings fair and stop people from booking under fake or multiple villas, we are introducing a simple **one-time email verification**[cite: 1].
+    To keep court bookings fair and stop people from booking under fake or multiple villas, we are introducing a simple **one-time email verification**.
 
     **What this means for you:**
-    * **Fair access for real residents:** Keeps slots open for those who actually live here[cite: 1].
-    * **One-time only:** Just enter your email and a 6-digit code once — your device will remember you automatically after that![cite: 1]
-    * **Family friendly:** Up to 2 emails can be linked to your villa (e.g. partners or housemates)[cite: 1].
+    * **Fair access for real residents:** Keeps slots open for those who actually live here.
+    * **One-time only:** Just enter your email and a 6-digit code once — your device will remember you automatically after that!
+    * **Family friendly:** Up to 2 emails can be linked to your villa (e.g. partners or housemates).
 
     ---
-    Please enter your resident email below to receive your 6-digit verification code[cite: 1].
+    Please enter your resident email below to receive your 6-digit verification code.
 
     💬 *Please reach out to Dev in case you have any queries.*
     """)
@@ -1023,8 +1035,12 @@ if not st.session_state.authenticated:
         otp_email_input = st.text_input("Email Address", placeholder="name@example.com", key="otp_email_text").strip().lower()
 
         if st.button("Send 6-Digit Code", type="primary", width='stretch'):
+            max_allowed_villa = SUB_COMMUNITY_VILLA_LIMITS.get(otp_sub, 9999)
+            
             if not otp_sub or not otp_villa:
                 st.error("Please specify your Sub-Community and Villa Number.")
+            elif not otp_villa.isdigit() or not (1 <= int(otp_villa) <= max_allowed_villa):
+                st.error(f"Invalid villa number for {otp_sub}. Please enter a number between 1 and {max_allowed_villa}.")
             elif not otp_email_input or "@" not in otp_email_input:
                 st.error("Please provide a valid email address.")
             elif is_disposable_email(otp_email_input):
@@ -1486,7 +1502,6 @@ with tab3:
         st.metric("Today's Bookings", f"{today_bookings} / 2")
     st.divider()
 
-    # --- MANUAL BUTTON TO EMAIL ALL ACTIVE BOOKINGS ---
     merged_bookings = []
     if my_b:
         df_my_b = pd.DataFrame(my_b).sort_values(['date', 'court', 'start_hour'])
@@ -1735,8 +1750,11 @@ with tab4:
                 bypass_email = st.text_input("Resident Email Address", placeholder="resident@example.com", key="tab4_bypass_email").strip().lower()
 
                 if st.button("Authorize & Switch Session to Resident", type="primary", width='stretch', key="tab4_bypass_btn"):
+                    max_allowed_bypass = SUB_COMMUNITY_VILLA_LIMITS.get(bypass_sub, 9999)
                     if not bypass_sub or not bypass_villa or not bypass_email or "@" not in bypass_email:
                         st.error("Please specify a valid Sub-Community, Villa, and Email Address.")
+                    elif not bypass_villa.isdigit() or not (1 <= int(bypass_villa) <= max_allowed_bypass):
+                        st.error(f"Invalid villa number for {bypass_sub}. Please enter a number between 1 and {max_allowed_bypass}.")
                     else:
                         now_ts = get_utc_plus_4().isoformat()
                         existing = get_existing_claim(bypass_sub, bypass_villa, bypass_email)
@@ -1997,8 +2015,11 @@ with tab5:
                 man_email = st.text_input("Resident Email Address", key="admin_man_email").strip().lower()
                 submitted_claim = st.form_submit_button("Authorize Claim Now", type="primary")
                 if submitted_claim:
+                    max_allowed_manual = SUB_COMMUNITY_VILLA_LIMITS.get(man_sub, 9999)
                     if not man_villa or not man_email or "@" not in man_email:
                         st.error("Please provide valid villa and email details.")
+                    elif not man_villa.isdigit() or not (1 <= int(man_villa) <= max_allowed_manual):
+                        st.error(f"Invalid villa number for {man_sub}. Please enter a number between 1 and {max_allowed_manual}.")
                     else:
                         curr_c = get_villa_claims_count(man_sub, man_villa)
                         email_v_count = get_email_claimed_villas_count(man_email)
