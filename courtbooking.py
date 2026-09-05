@@ -1,3 +1,4 @@
+name=courtbooking_3.py
 import time
 import streamlit as st
 from supabase import create_client, Client
@@ -86,6 +87,59 @@ def send_booking_notification(action_type, villa, sub_community, court, date_str
         })
     except Exception as e:
         print(f"Error sending email: {e}")
+
+def send_all_bookings_summary(villa, sub_community, bookings_list, recipient_email):
+    """Sends a summary email containing all active bookings for the user."""
+    if not recipient_email or "@" not in recipient_email or not bookings_list:
+        return False
+    try:
+        resend.api_key = st.secrets.get("RESEND_API_KEY")
+        if not resend.api_key:
+            return False
+        
+        items_html = ""
+        for b in bookings_list:
+            b_date = datetime.strptime(b['date'], '%Y-%m-%d')
+            formatted_date = b_date.strftime('%A, %b %d, %Y')
+            start_time = min(b['start_hours'])
+            end_time = max(b['start_hours']) + 1
+            time_display = f"{start_time:02d}:00 - {end_time:02d}:00"
+            duration = len(b['start_hours'])
+            id_list = sorted(b['ids'])
+            id_display = f"#{id_list[0]}" if len(id_list) == 1 else f"#{id_list[0]}-{id_list[-1]}"
+            
+            items_html += f"""
+            <div style="background: white; padding: 15px; border-radius: 8px; border-left: 5px solid #0d5384; margin-bottom: 15px; box-shadow: 0 1px 3px rgba(0,0,0,0.05);">
+                <p style="margin: 4px 0; color: #888; font-size: 0.85rem;"><b>Reference:</b> {id_display}</p>
+                <p style="margin: 4px 0; font-size: 1.1rem; color: #0d5384;"><b>🎾 {b['court']}</b></p>
+                <p style="margin: 4px 0;"><b>Date:</b> {formatted_date}</p>
+                <p style="margin: 4px 0;"><b>Time:</b> {time_display} ({duration} hour(s))</p>
+                <p style="margin: 4px 0; font-size: 0.9rem; color: #555;"><b>Residence:</b> {b['sc']} - Villa {b['v']}</p>
+            </div>
+            """
+
+        subject = f"📋 Summary of All Your Active Court Bookings ({sub_community} Villa {villa})"
+        html_content = f"""
+        <div style="font-family: Arial, sans-serif; max-width: 600px; margin: auto; padding: 25px; background-color: #f9f9f9; border-radius: 12px; border: 1px solid #e0e0e0;">
+            <h2 style="color: #0d5384; margin-top: 0;">📋 Your Active Bookings Summary</h2>
+            <p>Hello from Mira Court Booking,</p>
+            <p>Here is the complete list of your active court reservations for <b>{sub_community} - Villa {villa}</b>:</p>
+            <hr style="border: 0; border-top: 1px solid #ddd; margin: 20px 0;">
+            {items_html}
+            <p style="color: #888; font-size: 0.85em; margin-top: 30px; border-top: 1px solid #eee; padding-top: 10px;">Mira Court Booking App • Unofficial Community Solution</p>
+        </div>
+        """
+
+        resend.Emails.send({
+            "from": "Mira Court Booking <onboarding@resend.dev>",
+            "to": [recipient_email],
+            "subject": subject,
+            "html": html_content
+        })
+        return True
+    except Exception as e:
+        print(f"Error sending summary email: {e}")
+        return False
 
 # --- DONOR TICKER (scrolls at the top of every tab) ---
 DONOR_NAMES = [
@@ -1433,10 +1487,10 @@ with tab3:
         st.metric("Today's Bookings", f"{today_bookings} / 2")
     st.divider()
 
-    if not my_b: st.info("You have no active bookings.")
-    else:
+    # --- MANUAL BUTTON TO EMAIL ALL ACTIVE BOOKINGS ---
+    merged_bookings = []
+    if my_b:
         df_my_b = pd.DataFrame(my_b).sort_values(['date', 'court', 'start_hour'])
-        merged_bookings = []
         if not df_my_b.empty:
             current_booking = None
             for _, row in df_my_b.iterrows():
@@ -1450,6 +1504,19 @@ with tab3:
                         current_booking = {'court': row['court'], 'date': row['date'], 'start_hours': [row['start_hour']], 'ids': [row['id']], 'v': row['orig_v'], 'sc': row['orig_sc']}
             merged_bookings.append(current_booking)
 
+    if merged_bookings:
+        if st.button("📧 Email Me All My Bookings", type="primary", use_container_width=True, key="email_all_bookings_btn"):
+            with st.spinner("Sending summary email..."):
+                success_sent = send_all_bookings_summary(villa, sub_community, merged_bookings, verified_user_email)
+                if success_sent:
+                    st.success(f"✅ Summary email containing all your active bookings has been sent to `{verified_user_email}`!")
+                else:
+                    st.error("❌ Failed to send summary email. Please check your API configuration.")
+        st.divider()
+
+    if not my_b: 
+        st.info("You have no active bookings.")
+    else:
         for i, b in enumerate(merged_bookings):
             b_date = datetime.strptime(b['date'], '%Y-%m-%d')
             day_name = b_date.strftime('%A')
