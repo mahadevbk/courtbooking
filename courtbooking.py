@@ -1,4 +1,3 @@
-name=courtbooking.py
 import time
 import streamlit as st
 from supabase import create_client, Client
@@ -409,7 +408,6 @@ def check_device_sniping_status(device_uuid, current_email, current_sub, current
 
     total_distinct = len(recent_villas) + 1  # includes current villa
     
-    # LOCKOUT STRICTLY AT 4 OR MORE VILLAS
     if total_distinct >= 4:
         return 2, list(recent_villas), 96
     elif total_distinct >= 2:
@@ -1265,7 +1263,6 @@ with tab1:
                             break
                     
                     if success:
-                        # Automatically send confirmation email
                         send_booking_notification("created", villa, sub_community, q_court, selected_date, booked_slots, verified_user_email)
                         st.balloons()
                         st.success(f"Booked {q_slots} slot(s) for {q_court} starting at {q_time}")
@@ -1391,7 +1388,6 @@ with tab2:
                         break
                 
                 if success:
-                    # Automatically send confirmation email
                     send_booking_notification("created", villa, sub_community, court_choice, date_choice, booked_slots, verified_user_email)
                     st.balloons()
                     st.success(f"✅ SUCCESS! {court_choice} booked for {date_choice} starting at {start_h:02d}:00 ({slots_choice} slot(s))")
@@ -1500,7 +1496,6 @@ with tab3:
                 
                 if st.button(f"❌ Cancel Booking {id_display}", key=f"cancel_{i}", width='stretch'):
                     for bid in b['ids']: delete_booking(bid, b['v'], b['sc'], fingerprint=current_device)
-                    # Automatically send cancellation email
                     send_booking_notification("deleted", b['v'], b['sc'], b['court'], b['date'], b['start_hours'], verified_user_email)
                     st.success(f"Successfully cancelled booking {id_display}")
                     time.sleep(1.5); st.rerun()
