@@ -555,7 +555,7 @@ def delete_booking(booking_id, villa, sub_community, fingerprint=None):
 def get_logs_last_14_days():
     cutoff = (get_utc_plus_4() - timedelta(days=14)).isoformat()
     response = run_query(
-        supabase.table("logs").select("timestamp, event_type, fingerprint, details")
+        supabase.table("logs").select("timestamp, event_type, Fingerprint, details")
         .gte("timestamp", cutoff)
         .order("timestamp", desc=True)
     )
