@@ -1,3 +1,4 @@
+name=courtbooking.py
 import time
 import streamlit as st
 from supabase import create_client, Client
@@ -14,6 +15,7 @@ from postgrest.exceptions import APIError
 from PIL import Image # For image resizing
 from streamlit_javascript import st_javascript
 import urllib.parse
+import resend
 
 # Set page configuration to wide mode by default
 st.set_page_config(
@@ -22,11 +24,75 @@ st.set_page_config(
     layout="wide",
 )
 
+# --- EMAIL NOTIFICATION HELPER (RESEND API) ---
+def send_booking_notification(action_type, villa, sub_community, court, date_str, start_hours, recipient_email):
+    """Sends a neatly formatted HTML email confirmation via Resend API."""
+    if not recipient_email or "@" not in recipient_email:
+        return
+    try:
+        resend.api_key = st.secrets.get("RESEND_API_KEY")
+        if not resend.api_key:
+            return
+        
+        sorted_hours = sorted(start_hours)
+        start_h = sorted_hours[0]
+        end_h = sorted_hours[-1] + 1
+        duration = len(sorted_hours)
+        time_display = f"{start_h:02d}:00 - {end_h:02d}:00"
+        
+        b_date = datetime.strptime(date_str, '%Y-%m-%d')
+        formatted_date = b_date.strftime('%A, %b %d, %Y')
+        
+        if action_type == "created":
+            subject = f"🎾 Booking Confirmed: {court} ({formatted_date})"
+            html_content = f"""
+            <div style="font-family: Arial, sans-serif; max-width: 600px; margin: auto; padding: 25px; background-color: #f9f9f9; border-radius: 12px; border: 1px solid #e0e0e0;">
+                <h2 style="color: #0d5384; margin-top: 0;">🎾 Court Booking Confirmation</h2>
+                <p>Hello from Mira Court Booking,</p>
+                <p>Your court reservation has been successfully booked!</p>
+                <div style="background: white; padding: 20px; border-radius: 8px; border-left: 6px solid #4CAF50; margin: 20px 0; box-shadow: 0 2px 5px rgba(0,0,0,0.05);">
+                    <p style="margin: 8px 0;"><b>Court:</b> {court}</p>
+                    <p style="margin: 8px 0;"><b>Date:</b> {formatted_date}</p>
+                    <p style="margin: 8px 0;"><b>Time Slot:</b> {time_display}</p>
+                    <p style="margin: 8px 0;"><b>Duration:</b> {duration} hour(s)</p>
+                    <p style="margin: 8px 0;"><b>Residence:</b> {sub_community} - Villa {villa}</p>
+                </div>
+                <p style="color: #555; font-size: 0.95em;">Thank you for helping keep our community booking system fair and organized.</p>
+                <p style="color: #888; font-size: 0.85em; margin-top: 30px; border-top: 1px solid #eee; padding-top: 10px;">Mira Court Booking App • Unofficial Community Solution</p>
+            </div>
+            """
+        else:
+            subject = f"❌ Booking Cancelled: {court} ({formatted_date})"
+            html_content = f"""
+            <div style="font-family: Arial, sans-serif; max-width: 600px; margin: auto; padding: 25px; background-color: #f9f9f9; border-radius: 12px; border: 1px solid #e0e0e0;">
+                <h2 style="color: #c0392b; margin-top: 0;">❌ Court Booking Cancelled</h2>
+                <p>Hello from Mira Court Booking,</p>
+                <p>Your court reservation has been successfully cancelled.</p>
+                <div style="background: white; padding: 20px; border-radius: 8px; border-left: 6px solid #c0392b; margin: 20px 0; box-shadow: 0 2px 5px rgba(0,0,0,0.05);">
+                    <p style="margin: 8px 0;"><b>Court:</b> {court}</p>
+                    <p style="margin: 8px 0;"><b>Date:</b> {formatted_date}</p>
+                    <p style="margin: 8px 0;"><b>Time Slot:</b> {time_display}</p>
+                    <p style="margin: 8px 0;"><b>Duration:</b> {duration} hour(s)</p>
+                    <p style="margin: 8px 0;"><b>Residence:</b> {sub_community} - Villa {villa}</p>
+                </div>
+                <p style="color: #888; font-size: 0.85em; margin-top: 30px; border-top: 1px solid #eee; padding-top: 10px;">Mira Court Booking App • Unofficial Community Solution</p>
+            </div>
+            """
+
+        resend.Emails.send({
+            "from": "Mira Court Booking <onboarding@resend.dev>",
+            "to": [recipient_email],
+            "subject": subject,
+            "html": html_content
+        })
+    except Exception as e:
+        print(f"Error sending email: {e}")
+
 # --- DONOR TICKER (scrolls at the top of every tab) ---
 DONOR_NAMES = [
-    "Abhisek", "Adam", "Adebayo", "Arlan", "Alesia", "Ameen", "Angelo", "Carlos", "Charbel", "Dev", "Elie",
+    "Abhisek", "Adam", "Adebayo", "Arlan", "Alesia", "Angelo", "Carlos", "Charbel", "Dev", "Elie",
     "Farheen", "Hana", "Harith", "Hisham", "Katya", "Khaled", "Leina", "Marko", "Mei",
-    "Melissa", "Mustafa", "Nick", "Nikki", "Rena", "Ricardo", "Riin", "SAS", "Saket", "Sheila", "Sofia", "Vik", "Yousef",
+    "Melissa", "Mustafa", "Nikki", "Rena", "Riin", "Saket", "Sheila", "Sofia", "Vik", "Yousef",
 ]
 
 def render_donor_ticker(names):
@@ -46,7 +112,6 @@ def render_donor_ticker(names):
         '</svg>'
     )
 
-    # Wrap names in <b> tags for white bold styling
     ticker_text = tennis_ball_svg.join(f"<b>{n}</b>" for n in uppercase_names)
 
     st.markdown(
@@ -722,7 +787,6 @@ def logout_action():
         localStorage.removeItem('court_verified_email');
         localStorage.removeItem('verified_claim_info');
         localStorage.removeItem('supabase_refresh_token');
-        // Hardware device_uuid is preserved to ensure anti-abuse tracking persists across logout
         setTimeout(() => { window.location.href = window.location.origin + window.location.pathname; }, 150);
     """)
     for key in [
@@ -813,7 +877,6 @@ except Exception:
 if 'authenticated' not in st.session_state:
     st.session_state.authenticated = False
 
-# Persistent Device Identification in Client LocalStorage
 js_device_fetch = st_javascript("""
     (function() {
         let devId = localStorage.getItem('court_device_uuid');
@@ -830,7 +893,6 @@ if isinstance(js_device_fetch, str) and js_device_fetch.startswith("dev_"):
 elif "device_uuid" not in st.session_state:
     st.session_state.device_uuid = f"dev_{random.randint(10000000, 99999999)}_{int(time.time())}"
 
-# 1. SYNCHRONOUS URL TOKEN AUTH (ONLY ACCEPTS VERIFIED TOKENS CONTAINING EMAIL)
 url_token = st.query_params.get("auth")
 if url_token and not st.session_state.authenticated:
     verified_claim = decode_auth_token(url_token)
@@ -840,7 +902,6 @@ if url_token and not st.session_state.authenticated:
         st.session_state.verified_email = verified_claim["email"]
         st.session_state.authenticated = True
 
-# 2. LOCALSTORAGE INSPECTION (EXTRACT PRE-FILLS, DO NOT AUTO-LOG IN WITHOUT EMAIL)
 if not st.session_state.authenticated:
     stored_bundle = st_javascript("(localStorage.getItem('court_villa_lock') || 'no_lock') + ':::' + (localStorage.getItem('court_verified_email') || '') + ':::' + (localStorage.getItem('verified_claim_info') || '');")
     
@@ -850,7 +911,6 @@ if not st.session_state.authenticated:
         s_email = parts[1] if len(parts) > 1 else ""
         s_claim = parts[2] if len(parts) > 2 else ""
         
-        # If user ALREADY verified previously with email in localStorage, restore them and upgrade to signed URL token
         if s_email and s_email != "":
             target_sub = None
             target_villa = None
@@ -867,7 +927,6 @@ if not st.session_state.authenticated:
                 st.query_params["auth"] = encode_auth_token(target_sub, target_villa, s_email)
                 st.rerun()
 
-        # If phone only had a legacy lock WITHOUT verified email, PRE-FILL but do NOT authenticate
         elif s_lock and s_lock != "no_lock" and "-" in s_lock:
             try:
                 locked_sub, locked_villa = s_lock.rsplit("-", 1)
@@ -876,9 +935,7 @@ if not st.session_state.authenticated:
             except Exception:
                 pass
 
-# --- REGISTRATION & VERIFICATION GATE ---
 if not st.session_state.authenticated:
-    # Trigger the floating modal dialog on first unauthenticated visit
     if "seen_migration_notice" not in st.session_state:
         st.session_state.seen_migration_notice = False
 
@@ -925,7 +982,6 @@ if not st.session_state.authenticated:
                 current_claims_count = get_villa_claims_count(otp_sub, otp_villa)
                 email_villas_count = get_email_claimed_villas_count(otp_email_input)
                 
-                # Check 72-Hour Cooldown for this villa (allows up to 2 distinct household emails)
                 is_on_cooldown, hours_left = get_recent_claim_cooldown(otp_sub, otp_villa, otp_email_input)
                 
                 target_pair = f"{otp_sub}::{otp_villa}"
@@ -1029,7 +1085,6 @@ if not st.session_state.authenticated:
                                     localStorage.setItem('court_device_uuid', '{resolved_uuid}');
                                 """)
 
-                                # Save synchronous signed token in URL to survive refreshes
                                 st.query_params["auth"] = encode_auth_token(target_sub, target_villa, verified_email)
 
                                 st.session_state.sub_community = target_sub
@@ -1063,7 +1118,6 @@ if not st.session_state.authenticated:
         if st.button("🚪 Reset / Clear Details", width='stretch', key="reg_logout_postsend"):
             logout_action()
 
-    # --- EMERGENCY ADMIN CONSOLE (ACCESSIBLE EVEN WHEN LOGGED OUT OR LOCKED OUT) ---
     st.write("")
     with st.expander("🛠️ Admin Emergency Console", expanded=(st.query_params.get("admin") == "true")):
         st.caption("Unlock accounts, reset cooldowns, or clear restrictions if locked out.")
@@ -1211,6 +1265,8 @@ with tab1:
                             break
                     
                     if success:
+                        # Automatically send confirmation email
+                        send_booking_notification("created", villa, sub_community, q_court, selected_date, booked_slots, verified_user_email)
                         st.balloons()
                         st.success(f"Booked {q_slots} slot(s) for {q_court} starting at {q_time}")
                         time.sleep(2)
@@ -1335,6 +1391,8 @@ with tab2:
                         break
                 
                 if success:
+                    # Automatically send confirmation email
+                    send_booking_notification("created", villa, sub_community, court_choice, date_choice, booked_slots, verified_user_email)
                     st.balloons()
                     st.success(f"✅ SUCCESS! {court_choice} booked for {date_choice} starting at {start_h:02d}:00 ({slots_choice} slot(s))")
                     time.sleep(2.5) 
@@ -1442,6 +1500,8 @@ with tab3:
                 
                 if st.button(f"❌ Cancel Booking {id_display}", key=f"cancel_{i}", width='stretch'):
                     for bid in b['ids']: delete_booking(bid, b['v'], b['sc'], fingerprint=current_device)
+                    # Automatically send cancellation email
+                    send_booking_notification("deleted", b['v'], b['sc'], b['court'], b['date'], b['start_hours'], verified_user_email)
                     st.success(f"Successfully cancelled booking {id_display}")
                     time.sleep(1.5); st.rerun()
                 st.markdown('<div style="margin-bottom: 25px;"></div>', unsafe_allow_html=True)
@@ -1595,7 +1655,6 @@ with tab4:
 
     st.divider()
 
-    # --- ADMIN CONTROLS IN TAB 4 ---
     st.markdown("### 🛠️ Admin Maintenance Controls")
     admin_maint_pwd = st.text_input("Enter Admin Password to Unlock Controls", type="password", key="tab4_admin_pass")
     
@@ -1678,7 +1737,6 @@ with tab5:
         display_df = log_df[filters].copy()        
         display_df['details'] = display_df['details'].str.replace(r'⟦FP:.*?⟧⟦IP:.*?⟧ ', '', regex=True)
 
-        # Mask email addresses for public view (unmasked only if admin is logged in)
         if not is_admin:
             display_df['details'] = display_df['details'].apply(mask_emails_in_text)
 
@@ -1709,7 +1767,6 @@ with tab5:
                 st.session_state.pop("log_admin_pass", None)
                 st.rerun()
 
-        # --- ORGANIZED ADMIN EXPANDERS ---
         with st.expander("🚨 Security, Blacklist & Anti-Abuse Management", expanded=True):
             st.markdown("### Active 4-Day Sniping Lockouts & Quota Abuse")
             blacklisted = get_blacklisted_accounts()
