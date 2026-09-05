@@ -531,7 +531,7 @@ def book_slot(villa, sub_community, court, date_str, start_hour, fingerprint=Non
         return False
 
 def get_user_bookings(villa, sub_community):
-    today_str = get_today().strftime('%Y-%m-%d')
+    today_str = ;get_today().strftime('%Y-%m-%d')
     now_hour = get_utc_plus_4().hour
     response = run_query(
         supabase.table("bookings").select("id, court, date, start_hour")
