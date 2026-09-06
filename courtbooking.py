@@ -498,7 +498,7 @@ def send_daily_morning_reminders():
 
         for key, data in villa_bookings.items():
             claims = get_claims_for_villa(data["sub_community"], data["villa"])
-            approved_emails = [c.get("email") for c in claims if c.get("status"] == "approved" and c.get("email")]
+            approved_emails = [c.get("email") for c in claims if c.get("status") == "approved" and c.get("email")]
             
             if not approved_emails:
                 continue
@@ -2157,7 +2157,7 @@ with tab5:
                     if st.button("🚫 Apply Sniping Lockout to Email & Associated Villas", type="primary", use_container_width=True, key="apply_admin_lockout_btn"):
                         villas_str = ", ".join(villa_descriptions)
                         log_msg = f"4-day penalty active for email {lockout_email_input} across properties: {villas_str}"
-                        add_log("Sniping Lockout", log_msg, fingerprint="admin_manual_lockout")
+                        add_log("Sniping Penalty", log_msg, fingerprint="admin_manual_lockout")
                         st.success(f"✅ Sniping lockout successfully applied and logged for `{lockout_email_input}` and associated properties ({villas_str}).")
                         time.sleep(1.5)
                         st.rerun()
