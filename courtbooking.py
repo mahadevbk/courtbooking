@@ -125,7 +125,7 @@ def get_google_calendar_url(court, date_str, start_hours, sub_community, villa):
     return f"https://calendar.google.com/calendar/render?{urllib.parse.urlencode(params)}"
 
 def generate_booking_card_jpg(id_display, court, sub_community, villa, formatted_date, time_display):
-    """Generates an exact 300x300 square JPG card with rich text styling matching the UI."""
+    """Generates an exact 300x300 square JPG card with clean text rendering matching the UI."""
     width, height = 300, 300
     image = Image.new("RGB", (width, height), color="#0d5384")
     draw = ImageDraw.Draw(image)
@@ -142,9 +142,9 @@ def generate_booking_card_jpg(id_display, court, sub_community, villa, formatted
     except Exception:
         font_conf = font_court = font_res = font_date = font_time = ImageFont.load_default()
 
-    # Rich text styling matching UI hierarchy and colors
+    # Clean text rendering (emojis omitted to prevent character box artifacts)
     draw.text((18, 22), f"BOOKING CONF.: {id_display}", fill="#a0aec0", font=font_conf)
-    draw.text((18, 48), f"🎾 {court}", fill="#ccff00", font=font_court)
+    draw.text((18, 48), f"{court}", fill="#ccff00", font=font_court)
     draw.text((185, 50), f"{sub_community} - {villa}", fill="#ffffff", font=font_res)
 
     # Divider line
@@ -152,7 +152,7 @@ def generate_booking_card_jpg(id_display, court, sub_community, villa, formatted
 
     # Date and Time block
     draw.text((18, 115), formatted_date, fill="#ffffff", font=font_date)
-    draw.text((18, 155), f"⏰ {time_display}", fill="#ffffff", font=font_time)
+    draw.text((18, 155), f"{time_display}", fill="#ffffff", font=font_time)
 
     buffer = io.BytesIO()
     image.save(buffer, format="JPEG", quality=95)
