@@ -790,7 +790,7 @@ def get_blacklisted_accounts():
     for entry in logs:
         ts = datetime.fromisoformat(entry["timestamp"].replace("Z", "+00:00")).replace(tzinfo=None)
         details = entry.get("details", "")
-        fp = entry.get("Fingerprint")
+        fp = entry.get("fingerprint")
         if entry.get("event_type") == "Admin Reset":
             m_email = re.search(r'[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+', details)
             if m_email:
