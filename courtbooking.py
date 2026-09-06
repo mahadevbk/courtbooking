@@ -125,33 +125,34 @@ def get_google_calendar_url(court, date_str, start_hours, sub_community, villa):
     return f"https://calendar.google.com/calendar/render?{urllib.parse.urlencode(params)}"
 
 def generate_booking_card_jpg(id_display, court, sub_community, villa, formatted_date, time_display):
-    """Generates an exact 300x300 square JPG card with clean rendered text matching the UI."""
+    """Generates an exact 300x300 square JPG card with rich text styling matching the UI."""
     width, height = 300, 300
-    image = Image.new("RGB", (width, height), color="#0d5384") # On-screen deep blue card background
+    image = Image.new("RGB", (width, height), color="#0d5384")
     draw = ImageDraw.Draw(image)
 
     # Left accent green border stripe (matching #4CAF50 on-screen)
     draw.rectangle([0, 0, 6, height], fill="#4CAF50")
 
     try:
-        font_large = ImageFont.truetype("DejaVuSans-Bold.ttf", 18)
-        font_medium = ImageFont.truetype("DejaVuSans-Bold.ttf", 13)
-        font_small = ImageFont.truetype("DejaVuSans.ttf", 10)
-        font_time = ImageFont.truetype("DejaVuSans-Bold.ttf", 22)
+        font_conf = ImageFont.truetype("DejaVuSans-Bold.ttf", 9)
+        font_court = ImageFont.truetype("DejaVuSans-Bold.ttf", 16)
+        font_res = ImageFont.truetype("DejaVuSans-Bold.ttf", 12)
+        font_date = ImageFont.truetype("DejaVuSans.ttf", 11)
+        font_time = ImageFont.truetype("DejaVuSans-Bold.ttf", 20)
     except Exception:
-        font_large = font_medium = font_small = font_time = ImageFont.load_default()
+        font_conf = font_court = font_res = font_date = font_time = ImageFont.load_default()
 
-    # Compact 300x300 layout mapping the UI elements cleanly
-    draw.text((20, 18), f"BOOKING CONF.: {id_display}", fill="#a0aec0", font=font_small)
-    draw.text((20, 42), f"🎾 {court}", fill="#ccff00", font=font_large)
-    draw.text((185, 46), f"{sub_community} - {villa}", fill="#ffffff", font=font_medium)
+    # Rich text styling matching UI hierarchy and colors
+    draw.text((18, 22), f"BOOKING CONF.: {id_display}", fill="rgba(255,255,255,0.6)", font=font_conf)
+    draw.text((18, 48), f"🎾 {court}", fill="#ccff00", font=font_court)
+    draw.text((185, 50), f"{sub_community} - {villa}", fill="#ffffff", font=font_res)
 
     # Divider line
-    draw.line([(20, 92), (280, 92)], fill="#1f618d", width=1)
+    draw.line([(18, 90), (282, 90)], fill="rgba(255,255,255,0.15)", width=1)
 
     # Date and Time block
-    draw.text((20, 115), formatted_date, fill="#ffffff", font=font_small)
-    draw.text((20, 150), f"⏰ {time_display}", fill="#ffffff", font=font_time)
+    draw.text((18, 115), formatted_date, fill="#ffffff", font=font_date)
+    draw.text((18, 155), f"⏰ {time_display}", fill="#ffffff", font=font_time)
 
     buffer = io.BytesIO()
     image.save(buffer, format="JPEG", quality=95)
@@ -1677,13 +1678,13 @@ with tab3:
                     </div>
                 """, unsafe_allow_html=True)
                 
-                # Download Square 300x300 JPG Card Button (Cleaned text & filename formatting)
+                # Download Square 300x300 JPG Card Button (Clean filename formatting)
                 jpg_bytes = generate_booking_card_jpg(id_display, b['court'], b['sc'], b['v'], f"{day_name}, {formatted_date}", time_display)
                 clean_ref_filename = id_display.replace('#', '').replace('-', '_')
                 st.download_button(
-                    label=f"📥 Download Booking Card (Square JPG) {id_display}",
+                    label=f"📥 Download Booking Card {id_display}",
                     data=jpg_bytes,
-                    file_name=f"booking card.jpg ({clean_ref_filename}).jpg",
+                    file_name=f"{clean_ref_filename}.jpg",
                     mime="image/jpeg",
                     key=f"download_jpg_{i}",
                     use_container_width=True
