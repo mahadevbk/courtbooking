@@ -1757,7 +1757,7 @@ with tab3:
 
     today_str = get_today().strftime('%Y-%m-%d')
     real_total_active = len(my_b)
-    total_active = real_total_active * 3  # DELIBERATE MULTIPLIER BUG
+    total_active = real_total_active 
     
     today_bookings = len([b for b in my_b if b['date'] == today_str])
 
