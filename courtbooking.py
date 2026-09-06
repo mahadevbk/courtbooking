@@ -78,7 +78,7 @@ def render_donor_ticker(names):
 render_donor_ticker(DONOR_NAMES)
 
 
-# --- ICS & JPG CARD GENERATOR HELPERS ---
+# --- ICS & SQUARE JPG CARD GENERATOR HELPERS ---
 def generate_ics_content(court, date_str, start_hours, sub_community, villa):
     """Generates standard iCalendar (.ics) bytes for universal calendar integration."""
     sorted_hours = sorted(start_hours)
@@ -125,42 +125,43 @@ def get_google_calendar_url(court, date_str, start_hours, sub_community, villa):
     return f"https://calendar.google.com/calendar/render?{urllib.parse.urlencode(params)}"
 
 def generate_booking_card_jpg(id_display, court, sub_community, villa, formatted_date, time_display):
-    """Generates an exact replica JPG card matching the UI screenshot."""
-    width, height = 800, 420
-    image = Image.new("RGB", (width, height), color="#0a3d62") # Deep blue card background
+    """Generates an exact replica square JPG card matching the on-screen UI styling."""
+    width, height = 600, 600
+    image = Image.new("RGB", (width, height), color="#0d5384") # On-screen deep blue card background
     draw = ImageDraw.Draw(image)
 
-    # Left accent green border stripe
-    draw.rectangle([0, 0, 12, height], fill="#2ecc71")
+    # Left accent green border stripe (matching #4CAF50 on-screen)
+    draw.rectangle([0, 0, 10, height], fill="#4CAF50")
 
     try:
-        font_large = ImageFont.truetype("DejaVuSans-Bold.ttf", 38)
-        font_medium = ImageFont.truetype("DejaVuSans-Bold.ttf", 26)
-        font_small = ImageFont.truetype("DejaVuSans.ttf", 20)
+        font_large = ImageFont.truetype("DejaVuSans-Bold.ttf", 34)
+        font_medium = ImageFont.truetype("DejaVuSans-Bold.ttf", 24)
+        font_small = ImageFont.truetype("DejaVuSans.ttf", 16)
+        font_time = ImageFont.truetype("DejaVuSans-Bold.ttf", 40)
     except Exception:
-        font_large = font_medium = font_small = ImageFont.load_default()
+        font_large = font_medium = font_small = font_time = ImageFont.load_default()
 
-    # Content positioning
-    draw.text((40, 35), f"BOOKING CONF.: {id_display}", fill="#bdc3c7", font=font_small)
-    draw.text((40, 85), f"🎾  {court}", fill="#ccff00", font=font_large)
-    draw.text((530, 90), f"{sub_community} - {villa}", fill="#ffffff", font=font_medium)
+    # Content layout matching the UI structure
+    draw.text((35, 40), f"BOOKING CONF.: {id_display}", fill="rgba(255,255,255,0.6)", font=font_small)
+    draw.text((35, 85), f"🎾  {court}", fill="#ccff00", font=font_large)
+    draw.text((370, 92), f"{sub_community} - {villa}", fill="#ffffff", font=font_medium)
 
     # Location pin link text
-    draw.text((40, 145), "📍  View Location Pin", fill="#ccff00", font=font_small)
+    draw.text((35, 145), "📍  View Location Pin", fill="#ccff00", font=font_small)
 
-    # Divider line
-    draw.line([(40, 195), (760, 195)], fill="#1f618d", width=2)
+    # Divider line matching UI border
+    draw.line([(35, 195), (565, 195)], fill="rgba(255,255,255,0.15)", width=2)
 
-    # Date and Time
-    draw.text((40, 225), formatted_date, fill="#ecf0f1", font=font_small)
-    draw.text((40, 285), f"⏰  {time_display}", fill="#ffffff", font=font_large)
+    # Date and Time block
+    draw.text((35, 230), formatted_date, fill="#ffffff", font=font_medium)
+    draw.text((35, 290), f"⏰  {time_display}", fill="#ffffff", font=font_time)
 
     buffer = io.BytesIO()
     image.save(buffer, format="JPEG", quality=95)
     return buffer.getvalue()
 
 
-# --- ELEGANT EMAIL NOTIFICATION HELPER (RESEND API + ICS + WEB LINK) ---
+# --- ELEGANT EMAIL NOTIFICATION HELPER ---
 def send_booking_notification(action_type, villa, sub_community, court, date_str, start_hours, recipient_email):
     """Sends an elegant, neatly formatted HTML email confirmation with ICS attachment and web links via Resend API."""
     if not recipient_email or "@" not in recipient_email:
@@ -551,7 +552,7 @@ def get_recent_claim_cooldown(sub_community, villa, requesting_email):
     if not claims:
         return False, None
     req_email_clean = requesting_email.strip().lower()
-    approved_claims = [c for c in claims if c.get("status") == "approved"]
+    approved_claims = [c for c in claims if c.get("status"] == "approved"]
     registered_emails = {c.get("email", "").strip().lower() for c in approved_claims if c.get("email")}
     if req_email_clean in registered_emails:
         return False, None
@@ -1679,10 +1680,10 @@ with tab3:
                     </div>
                 """, unsafe_allow_html=True)
                 
-                # Download JPG Card Button
+                # Download Square JPG Card Button
                 jpg_bytes = generate_booking_card_jpg(id_display, b['court'], b['sc'], b['v'], f"{day_name}, {formatted_date}", time_display)
                 st.download_button(
-                    label=f"📥 Download Booking Card (JPG) {id_display}",
+                    label=f"📥 Download Booking Card (Square JPG) {id_display}",
                     data=jpg_bytes,
                     file_name=f"booking-{b['court'].lower().replace(' ', '-')}-{b['date']}.jpg",
                     mime="image/jpeg",
