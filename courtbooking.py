@@ -23,124 +23,9 @@ st.set_page_config(
     layout="wide",
 )
 
-# --- EMAIL NOTIFICATION HELPER (RESEND API) ---
-def send_booking_notification(action_type, villa, sub_community, court, date_str, start_hours, recipient_email):
-    """Sends a neatly formatted HTML email confirmation via Resend API."""
-    if not recipient_email or "@" not in recipient_email:
-        return
-    try:
-        resend.api_key = st.secrets.get("RESEND_API_KEY")
-        if not resend.api_key:
-            return
-        
-        sorted_hours = sorted(start_hours)
-        start_h = sorted_hours[0]
-        end_h = sorted_hours[-1] + 1
-        duration = len(sorted_hours)
-        time_display = f"{start_h:02d}:00 - {end_h:02d}:00"
-        
-        b_date = datetime.strptime(date_str, '%Y-%m-%d')
-        formatted_date = b_date.strftime('%A, %b %d, %Y')
-        
-        if action_type == "created":
-            subject = f"🎾 Booking Confirmed: {court} ({formatted_date})"
-            html_content = f"""
-            <div style="font-family: Arial, sans-serif; max-width: 600px; margin: auto; padding: 25px; background-color: #f9f9f9; border-radius: 12px; border: 1px solid #e0e0e0;">
-                <h2 style="color: #0d5384; margin-top: 0;">🎾 Court Booking Confirmation</h2>
-                <p>Hello from Mira Court Booking,</p>
-                <p>Your court reservation has been successfully booked!</p>
-                <div style="background: white; padding: 20px; border-radius: 8px; border-left: 6px solid #4CAF50; margin: 20px 0; box-shadow: 0 2px 5px rgba(0,0,0,0.05);">
-                    <p style="margin: 8px 0;"><b>Court:</b> {court}</p>
-                    <p style="margin: 8px 0;"><b>Date:</b> {formatted_date}</p>
-                    <p style="margin: 8px 0;"><b>Time Slot:</b> {time_display}</p>
-                    <p style="margin: 8px 0;"><b>Duration:</b> {duration} hour(s)</p>
-                    <p style="margin: 8px 0;"><b>Residence:</b> {sub_community} - Villa {villa}</p>
-                </div>
-                <p style="color: #555; font-size: 0.95em;">Thank you for helping keep our community booking system fair and organized.</p>
-                <p style="color: #888; font-size: 0.85em; margin-top: 30px; border-top: 1px solid #eee; padding-top: 10px;">Mira Court Booking App • Unofficial Community Solution</p>
-            </div>
-            """
-        else:
-            subject = f"❌ Booking Cancelled: {court} ({formatted_date})"
-            html_content = f"""
-            <div style="font-family: Arial, sans-serif; max-width: 600px; margin: auto; padding: 25px; background-color: #f9f9f9; border-radius: 12px; border: 1px solid #e0e0e0;">
-                <h2 style="color: #c0392b; margin-top: 0;">❌ Court Booking Cancelled</h2>
-                <p>Hello from Mira Court Booking,</p>
-                <p>Your court reservation has been successfully cancelled.</p>
-                <div style="background: white; padding: 20px; border-radius: 8px; border-left: 6px solid #c0392b; margin: 20px 0; box-shadow: 0 2px 5px rgba(0,0,0,0.05);">
-                    <p style="margin: 8px 0;"><b>Court:</b> {court}</p>
-                    <p style="margin: 8px 0;"><b>Date:</b> {formatted_date}</p>
-                    <p style="margin: 8px 0;"><b>Time Slot:</b> {time_display}</p>
-                    <p style="margin: 8px 0;"><b>Duration:</b> {duration} hour(s)</p>
-                    <p style="margin: 8px 0;"><b>Residence:</b> {sub_community} - Villa {villa}</p>
-                </div>
-                <p style="color: #888; font-size: 0.85em; margin-top: 30px; border-top: 1px solid #eee; padding-top: 10px;">Mira Court Booking App • Unofficial Community Solution</p>
-            </div>
-            """
-
-        resend.Emails.send({
-            "from": "Mira Court Booking <onboarding@resend.dev>",
-            "to": [recipient_email],
-            "subject": subject,
-            "html": html_content
-        })
-    except Exception as e:
-        print(f"Error sending email: {e}")
-
-def send_all_bookings_summary(villa, sub_community, bookings_list, recipient_email):
-    """Sends a summary email containing all active bookings for the user."""
-    if not recipient_email or "@" not in recipient_email or not bookings_list:
-        return False
-    try:
-        resend.api_key = st.secrets.get("RESEND_API_KEY")
-        if not resend.api_key:
-            return False
-        
-        items_html = ""
-        for b in bookings_list:
-            b_date = datetime.strptime(b['date'], '%Y-%m-%d')
-            formatted_date = b_date.strftime('%A, %b %d, %Y')
-            start_time = min(b['start_hours'])
-            end_time = max(b['start_hours']) + 1
-            time_display = f"{start_time:02d}:00 - {end_time:02d}:00"
-            duration = len(b['start_hours'])
-            id_list = sorted(b['ids'])
-            id_display = f"#{id_list[0]}" if len(id_list) == 1 else f"#{id_list[0]}-{id_list[-1]}"
-            
-            items_html += f"""
-            <div style="background: white; padding: 15px; border-radius: 8px; border-left: 5px solid #0d5384; margin-bottom: 15px; box-shadow: 0 1px 3px rgba(0,0,0,0.05);">
-                <p style="margin: 4px 0; color: #888; font-size: 0.85rem;"><b>Reference:</b> {id_display}</p>
-                <p style="margin: 4px 0; font-size: 1.1rem; color: #0d5384;"><b>🎾 {b['court']}</b></p>
-                <p style="margin: 4px 0;"><b>Date:</b> {formatted_date}</p>
-                <p style="margin: 4px 0;"><b>Time:</b> {time_display} ({duration} hour(s))</p>
-                <p style="margin: 4px 0; font-size: 0.9rem; color: #555;"><b>Residence:</b> {b['sc']} - Villa {b['v']}</p>
-            </div>
-            """
-
-        subject = f"📋 Summary of All Your Active Court Bookings ({sub_community} Villa {villa})"
-        html_content = f"""
-        <div style="font-family: Arial, sans-serif; max-width: 600px; margin: auto; padding: 25px; background-color: #f9f9f9; border-radius: 12px; border: 1px solid #e0e0e0;">
-            <h2 style="color: #0d5384; margin-top: 0;">📋 Your Active Bookings Summary</h2>
-            <p>Hello from Mira Court Booking,</p>
-            <p>Here is the complete list of your active court reservations for <b>{sub_community} - Villa {villa}</b>:</p>
-            <hr style="border: 0; border-top: 1px solid #ddd; margin: 20px 0;">
-            {items_html}
-            <p style="color: #888; font-size: 0.85em; margin-top: 30px; border-top: 1px solid #eee; padding-top: 10px;">Mira Court Booking App • Unofficial Community Solution</p>
-        </div>
-        """
-
-        resend.Emails.send({
-            "from": "Mira Court Booking <onboarding@resend.dev>",
-            "to": [recipient_email],
-            "subject": subject,
-            "html": html_content
-        })
-        return True
-    except Exception as e:
-        print(f"Error sending summary email: {e}")
-        return False
-
-# --- DONOR TICKER ---
+# ==========================================
+# --- DONOR NAMES & TICKER (EDIT HERE) ---
+# ==========================================
 DONOR_NAMES = [
     "Abhisek", "Adam", "Adebayo", "Arlan", "Alesia", "Ameen", "Angelo", "Carlos", "Charbel", "Dev", "Elie",
     "Farheen", "Hana", "Harith", "Hisham", "Katya", "Khaled", "Leina", "Marko", "Mei",
@@ -148,6 +33,7 @@ DONOR_NAMES = [
 ]
 
 def render_donor_ticker(names):
+    """Renders a fixed, auto-scrolling ticker of uppercase donor names separated by tennis ball icons."""
     if not names:
         return
     uppercase_names = [name.upper() for name in names]
@@ -191,6 +77,261 @@ def render_donor_ticker(names):
 
 render_donor_ticker(DONOR_NAMES)
 
+
+# --- ICS CALENDAR GENERATOR HELPER ---
+def generate_ics_content(court, date_str, start_hours, sub_community, villa):
+    """Generates standard iCalendar (.ics) string format for universal calendar integration."""
+    sorted_hours = sorted(start_hours)
+    start_h = sorted_hours[0]
+    end_h = sorted_hours[-1] + 1
+    
+    date_clean = date_str.replace("-", "")
+    now_stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    
+    ics_text = f"""BEGIN:VCALENDAR
+VERSION:2.0
+PRODID:-//Mira Court Booking//EN
+CALSCALE:GREGORIAN
+METHOD:PUBLISH
+BEGIN:VEVENT
+UID:mira-booking-{date_str}-{start_h}-{court.replace(' ', '')}@miracourtbooking
+DTSTAMP:{now_stamp}
+DTSTART:{date_clean}T{start_h:02d}0000
+DTEND:{date_clean}T{end_h:02d}0000
+SUMMARY:🎾 Tennis at {court}
+DESCRIPTION:Court reservation at {court} for {sub_community} - Villa {villa}.
+LOCATION:{court} Tennis Court, Mira, Dubai, UAE
+END:VEVENT
+END:VCALENDAR"""
+    return ics_text
+
+def get_google_calendar_url(court, date_str, start_hours, sub_community, villa):
+    """Generates a direct web link to add an event to Google Calendar."""
+    sorted_hours = sorted(start_hours)
+    start_h = sorted_hours[0]
+    end_h = sorted_hours[-1] + 1
+    
+    date_clean = date_str.replace("-", "")
+    start_time_str = f"{date_clean}T{start_h:02d}0000Z"
+    end_time_str = f"{date_clean}T{end_h:02d}0000Z"
+    
+    params = {
+        "action": "TEMPLATE",
+        "text": f"🎾 Tennis at {court}",
+        "dates": f"{start_time_str}/{end_time_str}",
+        "details": f"Court reservation at {court} for {sub_community} - Villa {villa}.",
+        "location": f"{court} Tennis Court, Mira, Dubai, UAE"
+    }
+    return f"https://calendar.google.com/calendar/render?{urllib.parse.urlencode(params)}"
+
+# --- ELEGANT EMAIL NOTIFICATION HELPER (RESEND API + ICS + WEB LINK) ---
+def send_booking_notification(action_type, villa, sub_community, court, date_str, start_hours, recipient_email):
+    """Sends an elegant, neatly formatted HTML email confirmation with ICS attachment and web links via Resend API."""
+    if not recipient_email or "@" not in recipient_email:
+        return
+    try:
+        resend.api_key = st.secrets.get("RESEND_API_KEY")
+        if not resend.api_key:
+            return
+        
+        sorted_hours = sorted(start_hours)
+        start_h = sorted_hours[0]
+        end_h = sorted_hours[-1] + 1
+        duration = len(sorted_hours)
+        time_display = f"{start_h:02d}:00 - {end_h:02d}:00"
+        
+        b_date = datetime.strptime(date_str, '%Y-%m-%d')
+        formatted_date = b_date.strftime('%A, %b %d, %Y')
+        
+        google_cal_url = get_google_calendar_url(court, date_str, start_hours, sub_community, villa)
+        
+        attachments_list = []
+        if action_type == "created":
+            ics_data = generate_ics_content(court, date_str, start_hours, sub_community, villa)
+            encoded_ics = base64.b64encode(ics_data.encode("utf-8")).decode("utf-8")
+            attachments_list.append({
+                "filename": f"tennis-{court.lower().replace(' ', '-')}-{date_str}.ics",
+                "content": encoded_ics
+            })
+            
+            subject = f"🎾 Booking Confirmed: {court} ({formatted_date})"
+            html_content = f"""
+            <!DOCTYPE html>
+            <html>
+            <head>
+              <meta charset="utf-8">
+              <style>
+                body {{ font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; background-color: #f4f7f6; margin: 0; padding: 0; }}
+                .email-wrapper {{ max-width: 600px; margin: 30px auto; background-color: #ffffff; border-radius: 12px; overflow: hidden; box-shadow: 0 4px 15px rgba(0,0,0,0.05); border: 1px solid #e1e8ed; }}
+                .email-header {{ background: linear-gradient(135deg, #0d5384, #052134); padding: 30px; text-align: center; color: #ffffff; }}
+                .email-header h1 {{ margin: 0; font-size: 22px; font-weight: 700; letter-spacing: 0.5px; }}
+                .email-body {{ padding: 30px; color: #333333; line-height: 1.6; }}
+                .info-card {{ background-color: #f8fafc; border-radius: 8px; border-left: 5px solid #4CAF50; padding: 20px; margin: 20px 0; border: 1px solid #e2e8f0; border-left: 5px solid #4CAF50; }}
+                .info-row {{ margin: 8px 0; font-size: 15px; color: #2d3748; }}
+                .btn-container {{ text-align: center; margin: 25px 0 10px 0; }}
+                .btn {{ background-color: #0d5384; color: #ffffff !important; padding: 12px 24px; border-radius: 6px; text-decoration: none; font-weight: bold; font-size: 14px; display: inline-block; }}
+                .footer {{ background-color: #f8fafc; padding: 20px; text-align: center; font-size: 12px; color: #718096; border-top: 1px solid #e2e8f0; }}
+              </style>
+            </head>
+            <body>
+              <div class="email-wrapper">
+                <div class="email-header">
+                  <h1>🎾 Court Booking Confirmation</h1>
+                </div>
+                <div class="email-body">
+                  <p>Hello Resident,</p>
+                  <p>Your court reservation has been successfully booked and confirmed!</p>
+                  
+                  <div class="info-card">
+                    <div class="info-row"><b>Court:</b> {court}</div>
+                    <div class="info-row"><b>Date:</b> {formatted_date}</div>
+                    <div class="info-row"><b>Time Slot:</b> {time_display}</div>
+                    <div class="info-row"><b>Duration:</b> {duration} hour(s)</div>
+                    <div class="info-row"><b>Residence:</b> {sub_community} - Villa {villa}</div>
+                  </div>
+                  
+                  <p style="font-size: 14px; color: #4a5568;">An iCalendar (.ics) invite is attached to this email for instant syncing with Apple Calendar, Outlook, or mobile devices. You can also click below to add it directly to Google Calendar:</p>
+                  
+                  <div class="btn-container">
+                    <a href="{google_cal_url}" class="btn" target="_blank">📅 Add to Google Calendar</a>
+                  </div>
+                </div>
+                <div class="footer">
+                  Mira Court Booking App • Community Fair-Use Solution
+                </div>
+              </div>
+            </body>
+            </html>
+            """
+        else:
+            subject = f"❌ Booking Cancelled: {court} ({formatted_date})"
+            html_content = f"""
+            <!DOCTYPE html>
+            <html>
+            <head>
+              <meta charset="utf-8">
+              <style>
+                body {{ font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; background-color: #f4f7f6; margin: 0; padding: 0; }}
+                .email-wrapper {{ max-width: 600px; margin: 30px auto; background-color: #ffffff; border-radius: 12px; overflow: hidden; box-shadow: 0 4px 15px rgba(0,0,0,0.05); border: 1px solid #e1e8ed; }}
+                .email-header {{ background: linear-gradient(135deg, #c0392b, #962d22); padding: 30px; text-align: center; color: #ffffff; }}
+                .email-header h1 {{ margin: 0; font-size: 22px; font-weight: 700; letter-spacing: 0.5px; }}
+                .email-body {{ padding: 30px; color: #333333; line-height: 1.6; }}
+                .info-card {{ background-color: #f8fafc; border-radius: 8px; border-left: 5px solid #c0392b; padding: 20px; margin: 20px 0; border: 1px solid #e2e8f0; border-left: 5px solid #c0392b; }}
+                .info-row {{ margin: 8px 0; font-size: 15px; color: #2d3748; }}
+                .footer {{ background-color: #f8fafc; padding: 20px; text-align: center; font-size: 12px; color: #718096; border-top: 1px solid #e2e8f0; }}
+              </style>
+            </head>
+            <body>
+              <div class="email-wrapper">
+                <div class="email-header">
+                  <h1>❌ Court Booking Cancelled</h1>
+                </div>
+                <div class="email-body">
+                  <p>Hello Resident,</p>
+                  <p>Your court reservation has been successfully cancelled.</p>
+                  
+                  <div class="info-card">
+                    <div class="info-row"><b>Court:</b> {court}</div>
+                    <div class="info-row"><b>Date:</b> {formatted_date}</div>
+                    <div class="info-row"><b>Time Slot:</b> {time_display}</div>
+                    <div class="info-row"><b>Duration:</b> {duration} hour(s)</div>
+                    <div class="info-row"><b>Residence:</b> {sub_community} - Villa {villa}</div>
+                  </div>
+                </div>
+                <div class="footer">
+                  Mira Court Booking App • Community Fair-Use Solution
+                </div>
+              </div>
+            </body>
+            </html>
+            """
+
+        resend.Emails.send({
+            "from": "Mira Court Booking <onboarding@resend.dev>",
+            "to": [recipient_email],
+            "subject": subject,
+            "html": html_content,
+            "attachments": attachments_list
+        })
+    except Exception as e:
+        print(f"Error sending email: {e}")
+
+def send_all_bookings_summary(villa, sub_community, bookings_list, recipient_email):
+    """Sends an elegant summary email containing all active bookings for the user."""
+    if not recipient_email or "@" not in recipient_email or not bookings_list:
+        return False
+    try:
+        resend.api_key = st.secrets.get("RESEND_API_KEY")
+        if not resend.api_key:
+            return False
+        
+        items_html = ""
+        for b in bookings_list:
+            b_date = datetime.strptime(b['date'], '%Y-%m-%d')
+            formatted_date = b_date.strftime('%A, %b %d, %Y')
+            start_time = min(b['start_hours'])
+            end_time = max(b['start_hours']) + 1
+            time_display = f"{start_time:02d}:00 - {end_time:02d}:00"
+            duration = len(b['start_hours'])
+            id_list = sorted(b['ids'])
+            id_display = f"#{id_list[0]}" if len(id_list) == 1 else f"#{id_list[0]}-{id_list[-1]}"
+            g_url = get_google_calendar_url(b['court'], b['date'], b['start_hours'], sub_community, villa)
+            
+            items_html += f"""
+            <div style="background: #f8fafc; padding: 18px; border-radius: 8px; border-left: 5px solid #0d5384; margin-bottom: 15px; border: 1px solid #e2e8f0; border-left: 5px solid #0d5384;">
+                <p style="margin: 4px 0; color: #718096; font-size: 0.8rem;"><b>Reference:</b> {id_display}</p>
+                <p style="margin: 4px 0; font-size: 1.1rem; color: #0d5384;"><b>🎾 {b['court']}</b></p>
+                <p style="margin: 4px 0; color: #2d3748;"><b>Date:</b> {formatted_date}</p>
+                <p style="margin: 4px 0; color: #2d3748;"><b>Time:</b> {time_display} ({duration} hour(s))</p>
+                <p style="margin: 8px 0 4px 0;"><a href="{g_url}" target="_blank" style="color: #0d5384; font-size: 13px; text-decoration: none; font-weight: bold;">📅 Add to Google Calendar</a></p>
+            </div>
+            """
+
+        subject = f"📋 Summary of All Active Court Bookings ({sub_community} Villa {villa})"
+        html_content = f"""
+        <!DOCTYPE html>
+        <html>
+        <head>
+          <meta charset="utf-8">
+          <style>
+            body {{ font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; background-color: #f4f7f6; margin: 0; padding: 0; }}
+            .email-wrapper {{ max-width: 600px; margin: 30px auto; background-color: #ffffff; border-radius: 12px; overflow: hidden; box-shadow: 0 4px 15px rgba(0,0,0,0.05); border: 1px solid #e1e8ed; }}
+            .email-header {{ background: linear-gradient(135deg, #0d5384, #052134); padding: 30px; text-align: center; color: #ffffff; }}
+            .email-header h1 {{ margin: 0; font-size: 22px; font-weight: 700; letter-spacing: 0.5px; }}
+            .email-body {{ padding: 30px; color: #333333; line-height: 1.6; }}
+            .footer {{ background-color: #f8fafc; padding: 20px; text-align: center; font-size: 12px; color: #718096; border-top: 1px solid #e2e8f0; }}
+          </style>
+        </head>
+        <body>
+          <div class="email-wrapper">
+            <div class="email-header">
+              <h1>📋 Active Bookings Summary</h1>
+            </div>
+            <div class="email-body">
+              <p>Hello Resident,</p>
+              <p>Here is the complete overview of all your active court reservations for <b>{sub_community} - Villa {villa}</b>:</p>
+              <hr style="border: 0; border-top: 1px solid #e2e8f0; margin: 20px 0;">
+              {items_html}
+            </div>
+            <div class="footer">
+              Mira Court Booking App • Community Fair-Use Solution
+            </div>
+          </div>
+        </body>
+        </html>
+        """
+
+        resend.Emails.send({
+            "from": "Mira Court Booking <onboarding@resend.dev>",
+            "to": [recipient_email],
+            "subject": subject,
+            "html": html_content
+        })
+        return True
+    except Exception as e:
+        print(f"Error sending summary email: {e}")
+        return False
+
 # --- DATABASE SETUP ---
 @st.cache_resource(ttl=1800)
 def init_supabase():
@@ -209,13 +350,12 @@ sub_community_list = [
     "Mira Oasis 1", "Mira Oasis 2", "Mira Oasis 3"
 ]
 
-# Exact community villa limits based on your specification
 SUB_COMMUNITY_VILLA_LIMITS = {
     "Mira 1": 322,
-    "Mira 2": 341,
+    "Mira 2": 334,
     "Mira 3": 402,
-    "Mira 4": 320,
-    "Mira 5": 395,
+    "Mira 4": 516,
+    "Mira 5": 316,
     "Mira Oasis 1": 483,
     "Mira Oasis 2": 427,
     "Mira Oasis 3": 483
@@ -279,9 +419,7 @@ def add_log(event_type, details, fingerprint=None):
         pass 
 
 def purge_out_of_range_records():
-    """Automatically sweeps and deletes claims and bookings for villas outside the valid range."""
     try:
-        # 1. Clean up invalid villa claims
         claims_res = run_query(supabase.table("villa_claims").select("id, sub_community, villa"))
         if claims_res and claims_res.data:
             for claim in claims_res.data:
@@ -294,7 +432,6 @@ def purge_out_of_range_records():
                         run_query(supabase.table("villa_claims").delete().eq("id", claim["id"]))
                         add_log("Purge Out-of-Range", f"Deleted invalid claim for {sub} Villa {v_num}")
 
-        # 2. Clean up invalid bookings
         bookings_res = run_query(supabase.table("bookings").select("id, sub_community, villa"))
         if bookings_res and bookings_res.data:
             for booking in bookings_res.data:
