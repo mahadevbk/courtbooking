@@ -131,7 +131,6 @@ def get_audiowide_font(size):
     font_path = "Audiowide-Regular.ttf"
     try:
         urllib.request.urlretrieve(
-            "https://github.google.com/external/github.com/google/fonts/raw/main/ofl/audiowide/Audiowide-Regular.ttf" if False else 
             "https://github.com/google/fonts/raw/main/ofl/audiowide/Audiowide-Regular.ttf", 
             font_path
         )
@@ -157,13 +156,13 @@ def generate_booking_card_jpg(id_display, court, sub_community, villa, formatted
     font_date = get_audiowide_font(11)
     font_time = get_audiowide_font(20)
 
-    # WYSIWYG text styling matching the exact on-screen layout & colors
-    draw.text((18, 22), f"BOOKING CONF.: {id_display}", fill="rgba(255,255,255,0.6)", font=font_conf)
+    # Clean text rendering with solid hex color for compatibility
+    draw.text((18, 22), f"BOOKING CONF.: {id_display}", fill="#a0aec0", font=font_conf)
     draw.text((18, 48), f"{court}", fill="#ccff00", font=font_court)
     draw.text((170, 50), f"{sub_community} - {villa}", fill="#ffffff", font=font_res)
 
     # Divider line
-    draw.line([(18, 92), (282, 92)], fill="rgba(255,255,255,0.15)", width=1)
+    draw.line([(18, 92), (282, 92)], fill="#1f618d", width=1)
 
     # Date and Time block
     draw.text((18, 120), formatted_date, fill="#ffffff", font=font_date)
@@ -1693,7 +1692,7 @@ with tab3:
                     </div>
                 """, unsafe_allow_html=True)
                 
-                # Download Square 300x300 JPG Card Button with correct file naming
+                # Download Square 300x300 JPG Card Button with clean filename formatting
                 jpg_bytes = generate_booking_card_jpg(id_display, b['court'], b['sc'], b['v'], f"{day_name}, {formatted_date}", time_display)
                 clean_ref_filename = id_display.replace('#', '').replace('-', '_')
                 st.download_button(
