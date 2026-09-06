@@ -142,7 +142,7 @@ def generate_booking_card_jpg(id_display, court, sub_community, villa, formatted
         font_large = font_medium = font_small = font_time = ImageFont.load_default()
 
     # Content layout matching the UI structure
-    draw.text((35, 40), f"BOOKING CONF.: {id_display}", fill="rgba(255,255,255,0.6)", font=font_small)
+    draw.text((35, 40), f"BOOKING CONF.: {id_display}", fill="#a0aec0", font=font_small)
     draw.text((35, 85), f"🎾  {court}", fill="#ccff00", font=font_large)
     draw.text((370, 92), f"{sub_community} - {villa}", fill="#ffffff", font=font_medium)
 
@@ -150,7 +150,7 @@ def generate_booking_card_jpg(id_display, court, sub_community, villa, formatted
     draw.text((35, 145), "📍  View Location Pin", fill="#ccff00", font=font_small)
 
     # Divider line matching UI border
-    draw.line([(35, 195), (565, 195)], fill="rgba(255,255,255,0.15)", width=2)
+    draw.line([(35, 195), (565, 195)], fill="#1f618d", width=2)
 
     # Date and Time block
     draw.text((35, 230), formatted_date, fill="#ffffff", font=font_medium)
