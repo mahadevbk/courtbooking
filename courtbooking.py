@@ -13,6 +13,7 @@ import re
 from postgrest.exceptions import APIError 
 from PIL import Image, ImageDraw, ImageFont # For dynamic JPG card rendering
 from streamlit_javascript import st_javascript
+import streamlit.components.v1 as components
 import urllib.parse
 import resend
 
@@ -236,9 +237,72 @@ def generate_booking_card_jpg(id_display, court, sub_community, villa, formatted
     _draw_clock_icon(draw, pad_x, y + 2, size=clock_size)
     draw.text((pad_x + clock_size + 8, y), time_display, fill="#ffffff", font=font_time)
 
+    # Crop away the unused space below the time row so the card hugs its content, using the
+    # same padding below the time row as above the "BOOKING CONF" label for a symmetric look.
+    time_bbox = draw.textbbox((pad_x + clock_size + 8, y), time_display, font=font_time)
+    icon_bottom = y + 2 + clock_size
+    content_bottom = max(time_bbox[3], icon_bottom)
+    bottom_pad = 20
+    final_height = content_bottom + bottom_pad
+    image = image.crop((0, 0, width, final_height))
+
     buffer = io.BytesIO()
     image.save(buffer, format="JPEG", quality=95)
     return buffer.getvalue()
+
+def render_share_or_download_button(jpg_bytes, filename, id_display, key):
+    """Renders a native mobile share-sheet button (Web Share API, so the user can send the
+    card straight to WhatsApp/Messages/etc.) on phones, and a plain download button on
+    desktop where there's no share sheet to hand off to. Falls back to a direct download
+    if the browser/context doesn't support navigator.share with files (e.g. some in-app
+    browsers, or a component iframe without web-share permission)."""
+    if st.session_state.get("is_mobile_device", False):
+        b64_data = base64.b64encode(jpg_bytes).decode()
+        html = f"""
+        <button id="share_btn_{key}" style="
+            width:100%; padding:0.6rem 1rem; margin-top:0.25rem;
+            background-color:#0d5384; color:#ffffff;
+            border:1px solid rgba(250,250,250,0.3); border-radius:0.5rem;
+            font-size:1rem; font-family: 'Source Sans Pro', sans-serif; cursor:pointer;">
+            📤 Share Booking Card {id_display}
+        </button>
+        <script>
+        (function() {{
+            const b64 = "{b64_data}";
+            const filename = "{filename}";
+            document.getElementById("share_btn_{key}").addEventListener("click", async function() {{
+                try {{
+                    const byteChars = atob(b64);
+                    const byteNumbers = new Array(byteChars.length);
+                    for (let i = 0; i < byteChars.length; i++) {{ byteNumbers[i] = byteChars.charCodeAt(i); }}
+                    const byteArray = new Uint8Array(byteNumbers);
+                    const file = new File([byteArray], filename, {{ type: "image/jpeg" }});
+                    if (navigator.canShare && navigator.canShare({{ files: [file] }})) {{
+                        await navigator.share({{ files: [file], title: "Tennis Court Booking" }});
+                    }} else {{
+                        const url = URL.createObjectURL(file);
+                        const a = document.createElement('a');
+                        a.href = url; a.download = filename;
+                        document.body.appendChild(a); a.click(); document.body.removeChild(a);
+                        URL.revokeObjectURL(url);
+                    }}
+                }} catch (err) {{
+                    console.error("Share failed:", err);
+                }}
+            }});
+        }})();
+        </script>
+        """
+        components.html(html, height=52)
+    else:
+        st.download_button(
+            label=f"📥 Download Booking Card {id_display}",
+            data=jpg_bytes,
+            file_name=filename,
+            mime="image/jpeg",
+            key=f"download_jpg_{key}",
+            use_container_width=True
+        )
 
 
 # --- ELEGANT EMAIL NOTIFICATION HELPER ---
@@ -1158,6 +1222,15 @@ if isinstance(js_device_fetch, str) and js_device_fetch.startswith("dev_"):
 elif "device_uuid" not in st.session_state:
     st.session_state.device_uuid = f"dev_{random.randint(10000000, 99999999)}_{int(time.time())}"
 
+if "is_mobile_device" not in st.session_state:
+    ua_check = st_javascript("""
+        (function() {
+            const ua = navigator.userAgent || '';
+            return /Mobi|Android|iPhone|iPad|iPod/i.test(ua) ? 'mobile' : 'desktop';
+        })();
+    """)
+    st.session_state.is_mobile_device = (ua_check == "mobile")
+
 url_token = st.query_params.get("auth")
 if url_token and not st.session_state.authenticated:
     verified_claim = decode_auth_token(url_token)
@@ -1760,17 +1833,10 @@ with tab3:
                     </div>
                 """, unsafe_allow_html=True)
                 
-                # Download Square 300x300 JPG Card Button (Clean filename formatting)
+                # Booking Card: share sheet on mobile, plain download on desktop
                 jpg_bytes = generate_booking_card_jpg(id_display, b['court'], b['sc'], b['v'], f"{day_name}, {formatted_date}", time_display)
                 clean_ref_filename = id_display.replace('#', '').replace('-', '_')
-                st.download_button(
-                    label=f"📥 Download Booking Card {id_display}",
-                    data=jpg_bytes,
-                    file_name=f"{clean_ref_filename}.jpg",
-                    mime="image/jpeg",
-                    key=f"download_jpg_{i}",
-                    use_container_width=True
-                )
+                render_share_or_download_button(jpg_bytes, f"{clean_ref_filename}.jpg", id_display, key=i)
                 
                 if st.button(f"❌ Cancel Booking {id_display}", key=f"cancel_{i}", width='stretch'):
                     for bid in b['ids']: delete_booking(bid, b['v'], b['sc'], fingerprint=current_device)
