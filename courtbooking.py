@@ -533,7 +533,7 @@ sub_community_list = [
 SUB_COMMUNITY_VILLA_LIMITS = {
     "Mira 1": 322,
     "Mira 2": 334,
-    "Mira 3": 402,
+    "Mira 3": 294,
     "Mira 4": 516,
     "Mira 5": 316,
     "Mira Oasis 1": 483,
