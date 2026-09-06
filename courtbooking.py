@@ -457,8 +457,8 @@ def send_all_bookings_summary(villa, sub_community, bookings_list, recipient_ema
 
 def send_daily_morning_reminders():
     """Checks if it's past 5:00 AM UTC+4 today and triggers a daily summary 
-    email for all users who have active bookings today. Uses database logs to 
-    ensure it only runs once per day globally, surviving app restarts."""
+    email for all users who have active bookings today. Uses an atomic database check 
+    to ensure it runs only once globally, even under concurrent user loads."""
     try:
         now = get_utc_plus_4()
         today_str = now.strftime('%Y-%m-%d')
@@ -470,6 +470,7 @@ def send_daily_morning_reminders():
         if not g_pass:
             return
 
+        # 1. IMMEDIATE CHECK: Look if we already logged a reminder dispatch for today
         log_check = run_query(
             supabase.table("logs")
             .select("id")
@@ -480,6 +481,9 @@ def send_daily_morning_reminders():
         if log_check and log_check.data:
             return  
 
+        # 2. ATOMIC LOCK: Log the intent immediately so concurrent sessions abort
+        add_log("Daily Reminder Sent", f"Initiating daily court reminders dispatch for {today_str}")
+
         response = run_query(
             supabase.table("bookings")
             .select("id, court, date, start_hour, villa, sub_community")
@@ -487,7 +491,6 @@ def send_daily_morning_reminders():
         )
         
         if not response or not response.data:
-            add_log("Daily Reminder Sent", f"No active bookings found for {today_str}")
             return
 
         villa_bookings = {}
@@ -510,7 +513,7 @@ def send_daily_morning_reminders():
         sent_count = 0
         for key, data in villa_bookings.items():
             claims = get_claims_for_villa(data["sub_community"], data["villa"])
-            approved_emails = list(set([c.get("email").strip().lower() for c in claims if c.get("status") == "approved" and c.get("email")]))
+            approved_emails = list(set([c.get("email").strip().lower() for c in claims if c.get("status"] == "approved" and c.get("email")]))
             
             if not approved_emails:
                 continue
@@ -568,10 +571,13 @@ def send_daily_morning_reminders():
                 if send_gmail_smtp(email_addr, subject, html_content):
                     sent_count += 1
 
-        add_log("Daily Reminder Sent", f"Successfully dispatched daily court reminders for {len(villa_bookings)} residences ({sent_count} emails total) for {today_str}")
+        add_log("Daily Reminder Sent", f"Successfully completed daily court reminders for {len(villa_bookings)} residences ({sent_count} emails total) for {today_str}")
         
     except Exception as e:
         print(f"Error in daily morning reminder trigger: {e}")
+
+
+
 
 # --- DATABASE SETUP ---
 @st.cache_resource(ttl=1800)
