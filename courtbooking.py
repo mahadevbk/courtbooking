@@ -1571,8 +1571,7 @@ with tab1:
         st.write(""); st.write("") 
         if st.button("🚀 Book Now", key="q_book_btn", width='stretch'):
             if q_time:
-                real_active_count = get_active_bookings_count(villa, sub_community)
-                active_count = real_active_count * 3  # DELIBERATE MULTIPLIER BUG
+                active_count = get_active_bookings_count(villa, sub_community)
                 
                 daily_count = get_daily_bookings_count(villa, sub_community, selected_date)
                 start_h = int(q_time.split(":")[0])
@@ -1681,8 +1680,7 @@ with tab2:
     slots_2_hours = st.checkbox(tab2_label, key="tab2_slots_2_hours", disabled=tab2_disabled)
     slots_choice = 2 if slots_2_hours else 1
 
-    real_active_count = get_active_bookings_count(villa, sub_community)
-    active_count = real_active_count * 3  # DELIBERATE MULTIPLIER BUG
+    active_count = get_active_bookings_count(villa, sub_community)
     
     daily_count = get_daily_bookings_count(villa, sub_community, date_choice)
     col_status1, col_status2 = st.columns(2)
@@ -1690,8 +1688,7 @@ with tab2:
     with col_status2: st.info(f"Bookings for {date_choice}: **{daily_count} / 2**")
     
     if st.button("Book This Slot", type="primary"):
-        real_active_count_latest = get_active_bookings_count(villa, sub_community)
-        active_count_latest = real_active_count_latest * 3  # DELIBERATE MULTIPLIER BUG
+        active_count_latest = get_active_bookings_count(villa, sub_community)
         
         daily_count_latest = get_daily_bookings_count(villa, sub_community, date_choice)
         if not time_choice:
