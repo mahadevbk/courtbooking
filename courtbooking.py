@@ -80,7 +80,7 @@ render_donor_ticker(DONOR_NAMES)
 
 # --- ICS CALENDAR GENERATOR HELPER ---
 def generate_ics_content(court, date_str, start_hours, sub_community, villa):
-    """Generates standard iCalendar (.ics) string format for universal calendar integration."""
+    """Generates standard iCalendar (.ics) bytes for universal calendar integration."""
     sorted_hours = sorted(start_hours)
     start_h = sorted_hours[0]
     end_h = sorted_hours[-1] + 1
@@ -103,7 +103,7 @@ DESCRIPTION:Court reservation at {court} for {sub_community} - Villa {villa}.
 LOCATION:{court} Tennis Court, Mira, Dubai, UAE
 END:VEVENT
 END:VCALENDAR"""
-    return ics_text
+    return ics_text.encode("utf-8")
 
 def get_google_calendar_url(court, date_str, start_hours, sub_community, villa):
     """Generates a direct web link to add an event to Google Calendar."""
@@ -147,11 +147,10 @@ def send_booking_notification(action_type, villa, sub_community, court, date_str
         
         attachments_list = []
         if action_type == "created":
-            ics_data = generate_ics_content(court, date_str, start_hours, sub_community, villa)
-            encoded_ics = base64.b64encode(ics_data.encode("utf-8")).decode("utf-8")
+            ics_bytes = generate_ics_content(court, date_str, start_hours, sub_community, villa)
             attachments_list.append({
                 "filename": f"tennis-{court.lower().replace(' ', '-')}-{date_str}.ics",
-                "content": encoded_ics
+                "content": list(ics_bytes)
             })
             
             subject = f"🎾 Booking Confirmed: {court} ({formatted_date})"
@@ -1382,7 +1381,9 @@ with tab1:
         st.write(""); st.write("") 
         if st.button("🚀 Book Now", key="q_book_btn", width='stretch'):
             if q_time:
-                active_count = get_active_bookings_count(villa, sub_community)
+                real_active_count = get_active_bookings_count(villa, sub_community)
+                active_count = real_active_count * 3  # DELIBERATE MULTIPLIER BUG
+                
                 daily_count = get_daily_bookings_count(villa, sub_community, selected_date)
                 start_h = int(q_time.split(":")[0])
                 slots_to_book = list(range(start_h, start_h + q_slots))
@@ -1490,14 +1491,18 @@ with tab2:
     slots_2_hours = st.checkbox(tab2_label, key="tab2_slots_2_hours", disabled=tab2_disabled)
     slots_choice = 2 if slots_2_hours else 1
 
-    active_count = get_active_bookings_count(villa, sub_community)
+    real_active_count = get_active_bookings_count(villa, sub_community)
+    active_count = real_active_count * 3  # DELIBERATE MULTIPLIER BUG
+    
     daily_count = get_daily_bookings_count(villa, sub_community, date_choice)
     col_status1, col_status2 = st.columns(2)
     with col_status1: st.info(f"Total active bookings: **{active_count} / 6**")
     with col_status2: st.info(f"Bookings for {date_choice}: **{daily_count} / 2**")
     
     if st.button("Book This Slot", type="primary"):
-        active_count_latest = get_active_bookings_count(villa, sub_community)
+        real_active_count_latest = get_active_bookings_count(villa, sub_community)
+        active_count_latest = real_active_count_latest * 3  # DELIBERATE MULTIPLIER BUG
+        
         daily_count_latest = get_daily_bookings_count(villa, sub_community, date_choice)
         if not time_choice:
             st.error("Please select an available time slot.")
@@ -1561,7 +1566,9 @@ with tab3:
         limit_val = 6
 
     today_str = get_today().strftime('%Y-%m-%d')
-    total_active = len(my_b)
+    real_total_active = len(my_b)
+    total_active = real_total_active * 3  # DELIBERATE MULTIPLIER BUG
+    
     today_bookings = len([b for b in my_b if b['date'] == today_str])
 
     col_sum1, col_sum2 = st.columns(2)
