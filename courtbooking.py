@@ -10,12 +10,14 @@ import json
 import base64
 import hashlib
 import re
+import smtplib
+from email.mime.text import MIMEText
+from email.mime.multipart import MIMEMultipart
 from postgrest.exceptions import APIError 
 from PIL import Image, ImageDraw, ImageFont # For dynamic JPG card rendering
 from streamlit_javascript import st_javascript
 import streamlit.components.v1 as components
 import urllib.parse
-import resend
 
 # Set page configuration to wide mode by default
 st.set_page_config(
@@ -305,16 +307,34 @@ def render_share_or_download_button(jpg_bytes, filename, id_display, key):
         )
 
 
-# --- ELEGANT EMAIL NOTIFICATION HELPER ---
+# --- GMAIL SMTP EMAIL HELPER ---
+def send_gmail_smtp(recipient_email, subject, html_content):
+    """Sends an email using standard Gmail SMTP from devkrea@gmail.com[cite: 1]."""
+    g_user = st.secrets.get("GMAIL_USER", "devkrea@gmail.com")
+    g_pass = st.secrets.get("GMAIL_PASSWORD", "").replace(" ", "")
+    if not g_pass or not recipient_email or "@" not in recipient_email:
+        return False
+    try:
+        msg = MIMEMultipart("alternative")
+        msg["Subject"] = subject
+        msg["From"] = f"Mira Court Booking <{g_user}>"
+        msg["To"] = recipient_email
+        
+        msg.attach(MIMEText(html_content, "html"))
+        
+        with smtplib.SMTP_SSL("smtp.gmail.com", 465) as server:
+            server.login(g_user, g_pass)
+            server.sendmail(g_user, recipient_email, msg.as_string())
+        return True
+    except Exception as e:
+        print(f"SMTP Email Error: {e}")
+        return False
+
 def send_booking_notification(action_type, villa, sub_community, court, date_str, start_hours, recipient_email):
-    """Sends an elegant, neatly formatted HTML email confirmation with ICS attachment and web links via Resend API."""
+    """Sends an elegant, neatly formatted HTML email cancellation notice via Gmail SMTP."""
     if not recipient_email or "@" not in recipient_email:
         return
     try:
-        resend.api_key = st.secrets.get("RESEND_API_KEY")
-        if not resend.api_key:
-            return
-        
         sorted_hours = sorted(start_hours)
         start_h = sorted_hours[0]
         end_h = sorted_hours[-1] + 1
@@ -366,13 +386,7 @@ def send_booking_notification(action_type, villa, sub_community, court, date_str
             </body>
             </html>
             """
-
-            resend.Emails.send({
-                "from": "Mira Court Booking <onboarding@resend.dev>",
-                "to": [recipient_email],
-                "subject": subject,
-                "html": html_content
-            })
+            send_gmail_smtp(recipient_email, subject, html_content)
     except Exception as e:
         print(f"Error sending cancellation email: {e}")
 
@@ -381,10 +395,6 @@ def send_all_bookings_summary(villa, sub_community, bookings_list, recipient_ema
     if not recipient_email or "@" not in recipient_email or not bookings_list:
         return False
     try:
-        resend.api_key = st.secrets.get("RESEND_API_KEY")
-        if not resend.api_key:
-            return False
-        
         items_html = ""
         for b in bookings_list:
             b_date = datetime.strptime(b['date'], '%Y-%m-%d')
@@ -440,21 +450,15 @@ def send_all_bookings_summary(villa, sub_community, bookings_list, recipient_ema
         </body>
         </html>
         """
-
-        resend.Emails.send({
-            "from": "Mira Court Booking <onboarding@resend.dev>",
-            "to": [recipient_email],
-            "subject": subject,
-            "html": html_content
-        })
-        return True
+        return send_gmail_smtp(recipient_email, subject, html_content)
     except Exception as e:
         print(f"Error sending summary email: {e}")
         return False
 
 def send_daily_morning_reminders():
     """Checks if it's past 5:00 AM UTC+4 today and triggers a daily summary 
-    email for all users who have active bookings today, ensuring only one run per day."""
+    email for all users who have active bookings today. Uses database logs to 
+    ensure it only runs once per day globally, surviving app restarts."""
     try:
         now = get_utc_plus_4()
         today_str = now.strftime('%Y-%m-%d')
@@ -462,12 +466,19 @@ def send_daily_morning_reminders():
         if now.hour < 5:
             return
 
-        if st.session_state.get("last_daily_email_sent_date") == today_str:
+        g_pass = st.secrets.get("GMAIL_PASSWORD")
+        if not g_pass:
             return
 
-        resend.api_key = st.secrets.get("RESEND_API_KEY")
-        if not resend.api_key:
-            return
+        log_check = run_query(
+            supabase.table("logs")
+            .select("id")
+            .eq("event_type", "Daily Reminder Sent")
+            .gte("timestamp", f"{today_str}T00:00:00")
+            .limit(1)
+        )
+        if log_check and log_check.data:
+            return  
 
         response = run_query(
             supabase.table("bookings")
@@ -476,7 +487,7 @@ def send_daily_morning_reminders():
         )
         
         if not response or not response.data:
-            st.session_state.last_daily_email_sent_date = today_str
+            add_log("Daily Reminder Sent", f"No active bookings found for {today_str}")
             return
 
         villa_bookings = {}
@@ -496,9 +507,10 @@ def send_daily_morning_reminders():
                 "ids": [b["id"]]
             })
 
+        sent_count = 0
         for key, data in villa_bookings.items():
             claims = get_claims_for_villa(data["sub_community"], data["villa"])
-            approved_emails = [c.get("email") for c in claims if c.get("status") == "approved" and c.get("email")]
+            approved_emails = list(set([c.get("email").strip().lower() for c in claims if c.get("status") == "approved" and c.get("email")]))
             
             if not approved_emails:
                 continue
@@ -553,17 +565,11 @@ def send_daily_morning_reminders():
             """
 
             for email_addr in approved_emails:
-                try:
-                    resend.Emails.send({
-                        "from": "Mira Court Booking <onboarding@resend.dev>",
-                        "to": [email_addr],
-                        "subject": subject,
-                        "html": html_content
-                    })
-                except Exception:
-                    pass
+                if send_gmail_smtp(email_addr, subject, html_content):
+                    sent_count += 1
 
-        st.session_state.last_daily_email_sent_date = today_str
+        add_log("Daily Reminder Sent", f"Successfully dispatched daily court reminders for {len(villa_bookings)} residences ({sent_count} emails total) for {today_str}")
+        
     except Exception as e:
         print(f"Error in daily morning reminder trigger: {e}")
 
