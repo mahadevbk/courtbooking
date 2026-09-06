@@ -513,7 +513,7 @@ def send_daily_morning_reminders():
         sent_count = 0
         for key, data in villa_bookings.items():
             claims = get_claims_for_villa(data["sub_community"], data["villa"])
-            approved_emails = list(set([c.get("email").strip().lower() for c in claims if c.get("status"] == "approved" and c.get("email")]))
+            approved_emails = list(set([c.get("email").strip().lower() for c in claims if c.get("status") == "approved" and c.get("email")]))
             
             if not approved_emails:
                 continue
