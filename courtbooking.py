@@ -593,7 +593,7 @@ def add_log(event_type, details, fingerprint=None):
     try:
         log_entry = {"timestamp": timestamp, "event_type": event_type, "details": details}
         if fingerprint:
-            log_entry["Fingerprint"] = fingerprint
+            log_entry["fingerprint"] = fingerprint
         supabase.table("logs").insert(log_entry).execute()
     except Exception:
         pass 
