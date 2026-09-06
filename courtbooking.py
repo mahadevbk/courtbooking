@@ -11,7 +11,7 @@ import base64
 import hashlib
 import re
 from postgrest.exceptions import APIError 
-from PIL import Image # For image resizing
+from PIL import Image, ImageDraw, ImageFont # For dynamic JPG card rendering
 from streamlit_javascript import st_javascript
 import urllib.parse
 import resend
@@ -78,7 +78,7 @@ def render_donor_ticker(names):
 render_donor_ticker(DONOR_NAMES)
 
 
-# --- ICS CALENDAR GENERATOR HELPER ---
+# --- ICS & JPG CARD GENERATOR HELPERS ---
 def generate_ics_content(court, date_str, start_hours, sub_community, villa):
     """Generates standard iCalendar (.ics) bytes for universal calendar integration."""
     sorted_hours = sorted(start_hours)
@@ -123,6 +123,42 @@ def get_google_calendar_url(court, date_str, start_hours, sub_community, villa):
         "location": f"{court} Tennis Court, Mira, Dubai, UAE"
     }
     return f"https://calendar.google.com/calendar/render?{urllib.parse.urlencode(params)}"
+
+def generate_booking_card_jpg(id_display, court, sub_community, villa, formatted_date, time_display):
+    """Generates an exact replica JPG card matching the UI screenshot."""
+    width, height = 800, 420
+    image = Image.new("RGB", (width, height), color="#0a3d62") # Deep blue card background
+    draw = ImageDraw.Draw(image)
+
+    # Left accent green border stripe
+    draw.rectangle([0, 0, 12, height], fill="#2ecc71")
+
+    try:
+        font_large = ImageFont.truetype("DejaVuSans-Bold.ttf", 38)
+        font_medium = ImageFont.truetype("DejaVuSans-Bold.ttf", 26)
+        font_small = ImageFont.truetype("DejaVuSans.ttf", 20)
+    except Exception:
+        font_large = font_medium = font_small = ImageFont.load_default()
+
+    # Content positioning
+    draw.text((40, 35), f"BOOKING CONF.: {id_display}", fill="#bdc3c7", font=font_small)
+    draw.text((40, 85), f"🎾  {court}", fill="#ccff00", font=font_large)
+    draw.text((530, 90), f"{sub_community} - {villa}", fill="#ffffff", font=font_medium)
+
+    # Location pin link text
+    draw.text((40, 145), "📍  View Location Pin", fill="#ccff00", font=font_small)
+
+    # Divider line
+    draw.line([(40, 195), (760, 195)], fill="#1f618d", width=2)
+
+    # Date and Time
+    draw.text((40, 225), formatted_date, fill="#ecf0f1", font=font_small)
+    draw.text((40, 285), f"⏰  {time_display}", fill="#ffffff", font=font_large)
+
+    buffer = io.BytesIO()
+    image.save(buffer, format="JPEG", quality=95)
+    return buffer.getvalue()
+
 
 # --- ELEGANT EMAIL NOTIFICATION HELPER (RESEND API + ICS + WEB LINK) ---
 def send_booking_notification(action_type, villa, sub_community, court, date_str, start_hours, recipient_email):
@@ -1642,6 +1678,17 @@ with tab3:
                         </div>
                     </div>
                 """, unsafe_allow_html=True)
+                
+                # Download JPG Card Button
+                jpg_bytes = generate_booking_card_jpg(id_display, b['court'], b['sc'], b['v'], f"{day_name}, {formatted_date}", time_display)
+                st.download_button(
+                    label=f"📥 Download Booking Card (JPG) {id_display}",
+                    data=jpg_bytes,
+                    file_name=f"booking-{b['court'].lower().replace(' ', '-')}-{b['date']}.jpg",
+                    mime="image/jpeg",
+                    key=f"download_jpg_{i}",
+                    use_container_width=True
+                )
                 
                 if st.button(f"❌ Cancel Booking {id_display}", key=f"cancel_{i}", width='stretch'):
                     for bid in b['ids']: delete_booking(bid, b['v'], b['sc'], fingerprint=current_device)
