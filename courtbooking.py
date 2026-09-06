@@ -752,7 +752,7 @@ def check_device_sniping_status(device_uuid, current_email, current_sub, current
             if any(term in details_lower for term in ["cleared cooldown", "reset cooldown", "cleared restrictions", "ownership reset", "wrong villa"]):
                 if not cooldown_cleared_at or ts > cooldown_cleared_at:
                     cooldown_cleared_at = ts
-        if entry.get("event_type") == "Sniping Penalty" and ts >= (now - timedelta(hours=96)):
+        if (entry.get("event_type") == "Sniping Penalty" or "sniping lockout" in entry.get("event_type", "").lower()) and ts >= (now - timedelta(hours=96)):
             expiry = ts + timedelta(hours=96)
             if not penalized_until or expiry > penalized_until:
                 penalized_until = expiry
@@ -781,7 +781,7 @@ def get_blacklisted_accounts():
     res = run_query(
         supabase.table("logs").select("timestamp, event_type, details, fingerprint")
         .gte("timestamp", cutoff_96h)
-        .in_("event_type", ["Sniping Penalty", "Admin Reset"])
+        .in_("event_type", ["Sniping Penalty", "Sniping Lockout", "Admin Reset"])
         .order("timestamp", desc=True)
     )
     logs = res.data if res and res.data else []
@@ -791,14 +791,15 @@ def get_blacklisted_accounts():
         ts = datetime.fromisoformat(entry["timestamp"].replace("Z", "+00:00")).replace(tzinfo=None)
         details = entry.get("details", "")
         fp = entry.get("fingerprint")
-        if entry.get("event_type") == "Admin Reset":
+        ev_type = entry.get("event_type", "")
+        if ev_type == "Admin Reset":
             m_email = re.search(r'[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+', details)
             if m_email:
                 cleared_entities.add((m_email.group(0).lower(), ts))
             if fp:
                 cleared_entities.add((fp, ts))
             continue
-        if entry.get("event_type") == "Sniping Penalty":
+        if ev_type in ["Sniping Penalty", "Sniping Lockout"]:
             m_email = re.search(r'[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+', details)
             email_val = m_email.group(0).lower() if m_email else None
             is_cleared = False
@@ -2065,7 +2066,7 @@ with tab5:
             if row.event_type in ["Booking Created", "Villa Claim"]: styles[1] = 'background-color: #d4edda; color: #155724; font-weight: bold;'
             elif row.event_type in ["Booking Deleted", "Booking Cancelled", "Villa Claim Removed"]: styles[1] = 'background-color: #f8d7da; color: #721c24; font-weight: bold;'
             elif row.event_type in ["Access Denied", "Claim Held for Review", "Sniping Warning"]: styles[1] = 'background-color: #ffcc00; color: black; font-weight: bold;'
-            elif row.event_type in ["Sniping Penalty"]: styles[1] = 'background-color: #ff4d4d; color: white; font-weight: bold;'
+            elif row.event_type in ["Sniping Penalty", "Sniping Lockout"]: styles[1] = 'background-color: #ff4d4d; color: white; font-weight: bold;'
             return styles
             
         st.dataframe(display_df[cols].style.apply(style_rows, axis=1), hide_index=True, width="stretch")
@@ -2082,6 +2083,32 @@ with tab5:
             if st.button("🔒 Exit Admin Mode", type="secondary", use_container_width=True):
                 st.session_state.pop("log_admin_pass", None)
                 st.rerun()
+
+        # --- NEW ADMIN FEATURE: Email-Based Villa Lookup & Sniping Lockout ---
+        with st.expander("🚨 Manually Apply Sniping Lockout by Email", expanded=True):
+            st.markdown("### Search Associated Villas & Enforce Lockout")
+            lockout_email_input = st.text_input("Enter Resident Email Address", placeholder="resident@example.com", key="admin_lockout_email_input").strip().lower()
+            
+            if lockout_email_input:
+                associated_claims = get_all_villas_for_email(lockout_email_input)
+                if associated_claims:
+                    st.markdown(f"**Villas Associated with `{lockout_email_input}` ({len(associated_claims)} total):**")
+                    villa_descriptions = []
+                    for c in associated_claims:
+                        v_label = f"{c['sub_community']} - Villa {c['villa']}"
+                        villa_descriptions.append(v_label)
+                        st.info(f"🏡 **{v_label}** | *Verified At:* `{c.get('verified_at', 'N/A')}`")
+                    
+                    st.write("")
+                    if st.button("🚫 Apply Sniping Lockout to Email & Associated Villas", type="primary", use_container_width=True, key="apply_admin_lockout_btn"):
+                        villas_str = ", ".join(villa_descriptions)
+                        log_msg = f"4-day penalty active for email {lockout_email_input} across properties: {villas_str}"
+                        add_log("Sniping Penalty", log_msg, fingerprint="admin_manual_lockout")
+                        st.success(f"✅ Sniping lockout successfully applied and logged for `{lockout_email_input}` and associated properties ({villas_str}).")
+                        time.sleep(1.5)
+                        st.rerun()
+                else:
+                    st.warning(f"No villas found associated with email `{lockout_email_input}`.")
 
         with st.expander("🚨 Security, Blacklist & Anti-Abuse Management", expanded=True):
             st.markdown("### Active 4-Day Sniping Lockouts & Quota Abuse")
