@@ -15,6 +15,7 @@ from PIL import Image, ImageDraw, ImageFont # For dynamic JPG card rendering
 from streamlit_javascript import st_javascript
 import urllib.parse
 import resend
+import urllib.request
 
 # Set page configuration to wide mode by default
 st.set_page_config(
@@ -124,8 +125,25 @@ def get_google_calendar_url(court, date_str, start_hours, sub_community, villa):
     }
     return f"https://calendar.google.com/calendar/render?{urllib.parse.urlencode(params)}"
 
+@st.cache_resource
+def get_audiowide_font(size):
+    """Downloads and caches the Audiowide TTF font to perfectly match on-screen styling."""
+    font_path = "Audiowide-Regular.ttf"
+    try:
+        urllib.request.urlretrieve(
+            "https://github.google.com/external/github.com/google/fonts/raw/main/ofl/audiowide/Audiowide-Regular.ttf" if False else 
+            "https://github.com/google/fonts/raw/main/ofl/audiowide/Audiowide-Regular.ttf", 
+            font_path
+        )
+        return ImageFont.truetype(font_path, size)
+    except Exception:
+        try:
+            return ImageFont.truetype("DejaVuSans-Bold.ttf", size)
+        except Exception:
+            return ImageFont.load_default()
+
 def generate_booking_card_jpg(id_display, court, sub_community, villa, formatted_date, time_display):
-    """Generates an exact 300x300 square JPG card with clean text rendering matching the UI."""
+    """Generates an exact 300x300 square JPG card matching the on-screen WYSIWYG styling and fonts."""
     width, height = 300, 300
     image = Image.new("RGB", (width, height), color="#0d5384")
     draw = ImageDraw.Draw(image)
@@ -133,26 +151,23 @@ def generate_booking_card_jpg(id_display, court, sub_community, villa, formatted
     # Left accent green border stripe (matching #4CAF50 on-screen)
     draw.rectangle([0, 0, 6, height], fill="#4CAF50")
 
-    try:
-        font_conf = ImageFont.truetype("DejaVuSans-Bold.ttf", 9)
-        font_court = ImageFont.truetype("DejaVuSans-Bold.ttf", 16)
-        font_res = ImageFont.truetype("DejaVuSans-Bold.ttf", 12)
-        font_date = ImageFont.truetype("DejaVuSans.ttf", 11)
-        font_time = ImageFont.truetype("DejaVuSans-Bold.ttf", 20)
-    except Exception:
-        font_conf = font_court = font_res = font_date = font_time = ImageFont.load_default()
+    font_conf = get_audiowide_font(9)
+    font_court = get_audiowide_font(15)
+    font_res = get_audiowide_font(11)
+    font_date = get_audiowide_font(11)
+    font_time = get_audiowide_font(20)
 
-    # Clean text rendering (emojis omitted to prevent character box artifacts)
-    draw.text((18, 22), f"BOOKING CONF.: {id_display}", fill="#a0aec0", font=font_conf)
+    # WYSIWYG text styling matching the exact on-screen layout & colors
+    draw.text((18, 22), f"BOOKING CONF.: {id_display}", fill="rgba(255,255,255,0.6)", font=font_conf)
     draw.text((18, 48), f"{court}", fill="#ccff00", font=font_court)
-    draw.text((185, 50), f"{sub_community} - {villa}", fill="#ffffff", font=font_res)
+    draw.text((170, 50), f"{sub_community} - {villa}", fill="#ffffff", font=font_res)
 
     # Divider line
-    draw.line([(18, 90), (282, 90)], fill="#1f618d", width=1)
+    draw.line([(18, 92), (282, 92)], fill="rgba(255,255,255,0.15)", width=1)
 
     # Date and Time block
-    draw.text((18, 115), formatted_date, fill="#ffffff", font=font_date)
-    draw.text((18, 155), f"{time_display}", fill="#ffffff", font=font_time)
+    draw.text((18, 120), formatted_date, fill="#ffffff", font=font_date)
+    draw.text((18, 162), f"{time_display}", fill="#ffffff", font=font_time)
 
     buffer = io.BytesIO()
     image.save(buffer, format="JPEG", quality=95)
@@ -1678,7 +1693,7 @@ with tab3:
                     </div>
                 """, unsafe_allow_html=True)
                 
-                # Download Square 300x300 JPG Card Button (Clean filename formatting)
+                # Download Square 300x300 JPG Card Button with correct file naming
                 jpg_bytes = generate_booking_card_jpg(id_display, b['court'], b['sc'], b['v'], f"{day_name}, {formatted_date}", time_display)
                 clean_ref_filename = id_display.replace('#', '').replace('-', '_')
                 st.download_button(
