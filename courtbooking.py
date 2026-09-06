@@ -726,7 +726,7 @@ def check_device_sniping_status(device_uuid, current_email, current_sub, current
     try:
         res = run_query(
             supabase.table("logs")
-            .select("timestamp, event_type, details, Fingerprint")
+            .select("timestamp, event_type, details, fingerprint")
             .gte("timestamp", cutoff_96h)
             .order("timestamp", desc=True)
         )
@@ -740,7 +740,7 @@ def check_device_sniping_status(device_uuid, current_email, current_sub, current
 
     for entry in all_logs:
         details = entry.get("details") or ""
-        fp = entry.get("Fingerprint") or ""
+        fp = entry.get("fingerprint") or ""
         if fp != device_uuid and req_email_clean not in details.lower():
             continue
         try:
