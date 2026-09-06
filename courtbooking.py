@@ -143,12 +143,12 @@ def generate_booking_card_jpg(id_display, court, sub_community, villa, formatted
         font_conf = font_court = font_res = font_date = font_time = ImageFont.load_default()
 
     # Rich text styling matching UI hierarchy and colors
-    draw.text((18, 22), f"BOOKING CONF.: {id_display}", fill="rgba(255,255,255,0.6)", font=font_conf)
+    draw.text((18, 22), f"BOOKING CONF.: {id_display}", fill="#a0aec0", font=font_conf)
     draw.text((18, 48), f"🎾 {court}", fill="#ccff00", font=font_court)
     draw.text((185, 50), f"{sub_community} - {villa}", fill="#ffffff", font=font_res)
 
     # Divider line
-    draw.line([(18, 90), (282, 90)], fill="rgba(255,255,255,0.15)", width=1)
+    draw.line([(18, 90), (282, 90)], fill="#1f618d", width=1)
 
     # Date and Time block
     draw.text((18, 115), formatted_date, fill="#ffffff", font=font_date)
