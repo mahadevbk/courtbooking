@@ -779,7 +779,7 @@ def get_blacklisted_accounts():
     now = get_utc_plus_4()
     cutoff_96h = (now - timedelta(hours=96)).isoformat()
     res = run_query(
-        supabase.table("logs").select("timestamp, event_type, details, Fingerprint")
+        supabase.table("logs").select("timestamp, event_type, details, fingerprint")
         .gte("timestamp", cutoff_96h)
         .in_("event_type", ["Sniping Penalty", "Admin Reset"])
         .order("timestamp", desc=True)
