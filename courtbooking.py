@@ -324,66 +324,7 @@ def send_booking_notification(action_type, villa, sub_community, court, date_str
         b_date = datetime.strptime(date_str, '%Y-%m-%d')
         formatted_date = b_date.strftime('%A, %b %d, %Y')
         
-        google_cal_url = get_google_calendar_url(court, date_str, start_hours, sub_community, villa)
-        
-        attachments_list = []
-        if action_type == "created":
-            ics_bytes = generate_ics_content(court, date_str, start_hours, sub_community, villa)
-            attachments_list.append({
-                "filename": f"tennis-{court.lower().replace(' ', '-')}-{date_str}.ics",
-                "content": list(ics_bytes)
-            })
-            
-            subject = f"🎾 Booking Confirmed: {court} ({formatted_date})"
-            html_content = f"""
-            <!DOCTYPE html>
-            <html>
-            <head>
-              <meta charset="utf-8">
-              <style>
-                body {{ font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; background-color: #f4f7f6; margin: 0; padding: 0; }}
-                .email-wrapper {{ max-width: 600px; margin: 30px auto; background-color: #ffffff; border-radius: 12px; overflow: hidden; box-shadow: 0 4px 15px rgba(0,0,0,0.05); border: 1px solid #e1e8ed; }}
-                .email-header {{ background: linear-gradient(135deg, #0d5384, #052134); padding: 30px; text-align: center; color: #ffffff; }}
-                .email-header h1 {{ margin: 0; font-size: 22px; font-weight: 700; letter-spacing: 0.5px; }}
-                .email-body {{ padding: 30px; color: #333333; line-height: 1.6; }}
-                .info-card {{ background-color: #f8fafc; border-radius: 8px; border-left: 5px solid #4CAF50; padding: 20px; margin: 20px 0; border: 1px solid #e2e8f0; border-left: 5px solid #4CAF50; }}
-                .info-row {{ margin: 8px 0; font-size: 15px; color: #2d3748; }}
-                .btn-container {{ text-align: center; margin: 25px 0 10px 0; }}
-                .btn {{ background-color: #0d5384; color: #ffffff !important; padding: 12px 24px; border-radius: 6px; text-decoration: none; font-weight: bold; font-size: 14px; display: inline-block; }}
-                .footer {{ background-color: #f8fafc; padding: 20px; text-align: center; font-size: 12px; color: #718096; border-top: 1px solid #e2e8f0; }}
-              </style>
-            </head>
-            <body>
-              <div class="email-wrapper">
-                <div class="email-header">
-                  <h1>🎾 Court Booking Confirmation</h1>
-                </div>
-                <div class="email-body">
-                  <p>Hello Resident,</p>
-                  <p>Your court reservation has been successfully booked and confirmed!</p>
-                  
-                  <div class="info-card">
-                    <div class="info-row"><b>Court:</b> {court}</div>
-                    <div class="info-row"><b>Date:</b> {formatted_date}</div>
-                    <div class="info-row"><b>Time Slot:</b> {time_display}</div>
-                    <div class="info-row"><b>Duration:</b> {duration} hour(s)</div>
-                    <div class="info-row"><b>Residence:</b> {sub_community} - Villa {villa}</div>
-                  </div>
-                  
-                  <p style="font-size: 14px; color: #4a5568;">An iCalendar (.ics) invite is attached to this email for instant syncing with Apple Calendar, Outlook, or mobile devices. You can also click below to add it directly to Google Calendar:</p>
-                  
-                  <div class="btn-container">
-                    <a href="{google_cal_url}" class="btn" target="_blank">📅 Add to Google Calendar</a>
-                  </div>
-                </div>
-                <div class="footer">
-                  Mira Court Booking App • Community Fair-Use Solution
-                </div>
-              </div>
-            </body>
-            </html>
-            """
-        else:
+        if action_type == "deleted":
             subject = f"❌ Booking Cancelled: {court} ({formatted_date})"
             html_content = f"""
             <!DOCTYPE html>
@@ -426,15 +367,14 @@ def send_booking_notification(action_type, villa, sub_community, court, date_str
             </html>
             """
 
-        resend.Emails.send({
-            "from": "Mira Court Booking <onboarding@resend.dev>",
-            "to": [recipient_email],
-            "subject": subject,
-            "html": html_content,
-            "attachments": attachments_list
-        })
+            resend.Emails.send({
+                "from": "Mira Court Booking <onboarding@resend.dev>",
+                "to": [recipient_email],
+                "subject": subject,
+                "html": html_content
+            })
     except Exception as e:
-        print(f"Error sending email: {e}")
+        print(f"Error sending cancellation email: {e}")
 
 def send_all_bookings_summary(villa, sub_community, bookings_list, recipient_email):
     """Sends an elegant summary email containing all active bookings for the user."""
@@ -511,6 +451,121 @@ def send_all_bookings_summary(villa, sub_community, bookings_list, recipient_ema
     except Exception as e:
         print(f"Error sending summary email: {e}")
         return False
+
+def send_daily_morning_reminders():
+    """Checks if it's past 5:00 AM UTC+4 today and triggers a daily summary 
+    email for all users who have active bookings today, ensuring only one run per day."""
+    try:
+        now = get_utc_plus_4()
+        today_str = now.strftime('%Y-%m-%d')
+        
+        if now.hour < 5:
+            return
+
+        if st.session_state.get("last_daily_email_sent_date") == today_str:
+            return
+
+        resend.api_key = st.secrets.get("RESEND_API_KEY")
+        if not resend.api_key:
+            return
+
+        response = run_query(
+            supabase.table("bookings")
+            .select("id, court, date, start_hour, villa, sub_community")
+            .eq("date", today_str)
+        )
+        
+        if not response or not response.data:
+            st.session_state.last_daily_email_sent_date = today_str
+            return
+
+        villa_bookings = {}
+        for b in response.data:
+            key = f"{b['sub_community']}::{b['villa']}"
+            if key not in villa_bookings:
+                villa_bookings[key] = {
+                    "villa": b["villa"],
+                    "sub_community": b["sub_community"],
+                    "bookings": []
+                }
+            villa_bookings[key]["bookings"].append({
+                "id": b["id"],
+                "court": b["court"],
+                "date": b["date"],
+                "start_hours": [b["start_hour"]],
+                "ids": [b["id"]]
+            })
+
+        for key, data in villa_bookings.items():
+            claims = get_claims_for_villa(data["sub_community"], data["villa"])
+            approved_emails = [c.get("email") for c in claims if c.get("status"] == "approved" and c.get("email")]
+            
+            if not approved_emails:
+                continue
+
+            items_html = ""
+            for b in data["bookings"]:
+                start_time = min(b['start_hours'])
+                end_time = max(b['start_hours']) + 1
+                time_display = f"{start_time:02d}:00 - {end_time:02d}:00"
+                g_url = get_google_calendar_url(b['court'], today_str, b['start_hours'], data['sub_community'], data['villa'])
+                
+                items_html += f"""
+                <div style="background: #f8fafc; padding: 18px; border-radius: 8px; border-left: 5px solid #0d5384; margin-bottom: 15px; border: 1px solid #e2e8f0; border-left: 5px solid #0d5384;">
+                    <p style="margin: 4px 0; font-size: 1.1rem; color: #0d5384;"><b>🎾 {b['court']}</b></p>
+                    <p style="margin: 4px 0; color: #2d3748;"><b>Time Slot:</b> {time_display}</p>
+                    <p style="margin: 8px 0 4px 0;"><a href="{g_url}" target="_blank" style="color: #0d5384; font-size: 13px; text-decoration: none; font-weight: bold;">📅 Add to Google Calendar</a></p>
+                </div>
+                """
+
+            subject = f"🌅 Today's Court Schedule Reminder ({data['sub_community']} Villa {data['villa']})"
+            html_content = f"""
+            <!DOCTYPE html>
+            <html>
+            <head>
+              <meta charset="utf-8">
+              <style>
+                body {{ font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; background-color: #f4f7f6; margin: 0; padding: 0; }}
+                .email-wrapper {{ max-width: 600px; margin: 30px auto; background-color: #ffffff; border-radius: 12px; overflow: hidden; box-shadow: 0 4px 15px rgba(0,0,0,0.05); border: 1px solid #e1e8ed; }}
+                .email-header {{ background: linear-gradient(135deg, #0d5384, #052134); padding: 30px; text-align: center; color: #ffffff; }}
+                .email-header h1 {{ margin: 0; font-size: 22px; font-weight: 700; letter-spacing: 0.5px; }}
+                .email-body {{ padding: 30px; color: #333333; line-height: 1.6; }}
+                .footer {{ background-color: #f8fafc; padding: 20px; text-align: center; font-size: 12px; color: #718096; border-top: 1px solid #e2e8f0; }}
+              </style>
+            </head>
+            <body>
+              <div class="email-wrapper">
+                <div class="email-header">
+                  <h1>🌅 Today's Court Reminder</h1>
+                </div>
+                <div class="email-body">
+                  <p>Good morning Resident,</p>
+                  <p>Here is your scheduled tennis lineup for today, <b>{now.strftime('%A, %b %d, %Y')}</b>:</p>
+                  <hr style="border: 0; border-top: 1px solid #e2e8f0; margin: 20px 0;">
+                  {items_html}
+                </div>
+                <div class="footer">
+                  Mira Court Booking App • Community Fair-Use Solution
+                </div>
+              </div>
+            </body>
+            </html>
+            """
+
+            for email_addr in approved_emails:
+                try:
+                    resend.Emails.send({
+                        "from": "Mira Court Booking <onboarding@resend.dev>",
+                        "to": [email_addr],
+                        "subject": subject,
+                        "html": html_content
+                    })
+                except Exception:
+                    pass
+
+        st.session_state.last_daily_email_sent_date = today_str
+    except Exception as e:
+        print(f"Error in daily morning reminder trigger: {e}")
 
 # --- DATABASE SETUP ---
 @st.cache_resource(ttl=1800)
@@ -1000,6 +1055,7 @@ def _process_background_tasks():
         purge_out_of_range_records()
         from database_cleanup import run_db_cleanup
         run_db_cleanup(supabase, courts)
+        send_daily_morning_reminders()
     except Exception:
         pass
 
@@ -1600,7 +1656,6 @@ with tab1:
                             success = False
                             break
                     if success:
-                        send_booking_notification("created", villa, sub_community, q_court, selected_date, booked_slots, verified_user_email)
                         st.balloons()
                         st.success(f"Booked {q_slots} slot(s) for {q_court} starting at {q_time}")
                         time.sleep(2)
@@ -1720,7 +1775,6 @@ with tab2:
                         success = False
                         break
                 if success:
-                    send_booking_notification("created", villa, sub_community, court_choice, date_choice, booked_slots, verified_user_email)
                     st.balloons()
                     st.success(f"✅ SUCCESS! {court_choice} booked for {date_choice} starting at {start_h:02d}:00 ({slots_choice} slot(s))")
                     time.sleep(2.5) 
@@ -2103,7 +2157,7 @@ with tab5:
                     if st.button("🚫 Apply Sniping Lockout to Email & Associated Villas", type="primary", use_container_width=True, key="apply_admin_lockout_btn"):
                         villas_str = ", ".join(villa_descriptions)
                         log_msg = f"4-day penalty active for email {lockout_email_input} across properties: {villas_str}"
-                        add_log("Sniping Penalty", log_msg, fingerprint="admin_manual_lockout")
+                        add_log("Sniping Lockout", log_msg, fingerprint="admin_manual_lockout")
                         st.success(f"✅ Sniping lockout successfully applied and logged for `{lockout_email_input}` and associated properties ({villas_str}).")
                         time.sleep(1.5)
                         st.rerun()
