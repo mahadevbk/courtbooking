@@ -15,7 +15,6 @@ from PIL import Image, ImageDraw, ImageFont # For dynamic JPG card rendering
 from streamlit_javascript import st_javascript
 import urllib.parse
 import resend
-import urllib.request
 
 # Set page configuration to wide mode by default
 st.set_page_config(
@@ -125,48 +124,117 @@ def get_google_calendar_url(court, date_str, start_hours, sub_community, villa):
     }
     return f"https://calendar.google.com/calendar/render?{urllib.parse.urlencode(params)}"
 
+def _blend_rgb(bg_hex, fg_hex, alpha):
+    """Blends fg over bg at the given alpha, mirroring how CSS rgba() text looks against
+    a solid background (used to reproduce e.g. rgba(255,255,255,0.6) label text)."""
+    bg = tuple(int(bg_hex.lstrip("#")[i:i+2], 16) for i in (0, 2, 4))
+    fg = tuple(int(fg_hex.lstrip("#")[i:i+2], 16) for i in (0, 2, 4))
+    return tuple(int(bg[i] * (1 - alpha) + fg[i] * alpha) for i in range(3))
+
 @st.cache_resource
-def get_audiowide_font(size):
-    """Downloads and caches the Audiowide TTF font to perfectly match on-screen styling."""
-    font_path = "Audiowide-Regular.ttf"
+def _get_audiowide_font_path():
+    """Downloads and caches the actual 'Audiowide' Google Font used on-screen, so the
+    downloadable JPG card uses the same typeface instead of a generic fallback. Returns
+    None (triggering a safe fallback font) if the download isn't available."""
+    import os, tempfile, urllib.request
+    font_path = os.path.join(tempfile.gettempdir(), "Audiowide-Regular.ttf")
+    if os.path.exists(font_path) and os.path.getsize(font_path) > 1000:
+        return font_path
     try:
-        urllib.request.urlretrieve(
-            "https://github.com/google/fonts/raw/main/ofl/audiowide/Audiowide-Regular.ttf", 
-            font_path
-        )
-        return ImageFont.truetype(font_path, size)
+        url = "https://raw.githubusercontent.com/google/fonts/main/ofl/audiowide/Audiowide-Regular.ttf"
+        urllib.request.urlretrieve(url, font_path)
+        if os.path.getsize(font_path) > 1000:
+            return font_path
     except Exception:
-        try:
-            return ImageFont.truetype("DejaVuSans-Bold.ttf", size)
-        except Exception:
-            return ImageFont.load_default()
+        pass
+    return None
+
+def _draw_tennis_icon(draw, x, y, size=15, color="#ccff00", seam="#0d5384"):
+    """Small tennis-ball glyph: filled circle with two curved seam lines. Drawn as a vector
+    shape rather than the 🎾 emoji, since PIL's bundled fonts have no emoji glyphs and would
+    render tofu boxes."""
+    draw.ellipse([x, y, x + size, y + size], fill=color)
+    bbox = [x - size * 0.35, y - size * 0.1, x + size * 1.35, y + size * 1.1]
+    draw.arc(bbox, start=200, end=340, fill=seam, width=2)
+    draw.arc(bbox, start=20, end=160, fill=seam, width=2)
+
+def _draw_clock_icon(draw, x, y, size=20, color="#ffffff"):
+    """Small clock glyph standing in for the ⏰ emoji, for the same reason as above."""
+    draw.ellipse([x, y, x + size, y + size], outline=color, width=2)
+    cx, cy = x + size / 2, y + size / 2
+    draw.line([cx, cy, cx, cy - size * 0.32], fill=color, width=2)
+    draw.line([cx, cy, cx + size * 0.24, cy + size * 0.14], fill=color, width=2)
 
 def generate_booking_card_jpg(id_display, court, sub_community, villa, formatted_date, time_display):
-    """Generates an exact 300x300 square JPG card matching the on-screen WYSIWYG styling and fonts."""
+    """Generates a 300x300 JPG card that mirrors the on-screen HTML booking card as closely
+    as possible: same 'Audiowide' typeface on the stylized fields, same colors (including the
+    muted rgba() opacities from the on-screen CSS), and proportionally matched sizes.
+    The "View Location Pin" link is intentionally left out — a link isn't actionable inside
+    a static JPG. Emoji icons (🎾/⏰) are recreated as vector glyphs since PIL's bundled fonts
+    can't render emoji and would show tofu boxes instead."""
     width, height = 300, 300
-    image = Image.new("RGB", (width, height), color="#0d5384")
+    BG_HEX = "#0d5384"
+    image = Image.new("RGB", (width, height), color=BG_HEX)
     draw = ImageDraw.Draw(image)
 
-    # Left accent green border stripe (matching #4CAF50 on-screen)
+    # Left accent green border stripe (matching border-left: 6px solid #4CAF50 on-screen)
     draw.rectangle([0, 0, 6, height], fill="#4CAF50")
 
-    font_conf = get_audiowide_font(9)
-    font_court = get_audiowide_font(15)
-    font_res = get_audiowide_font(11)
-    font_date = get_audiowide_font(11)
-    font_time = get_audiowide_font(20)
+    audiowide_path = _get_audiowide_font_path()
+    try:
+        if audiowide_path:
+            font_conf = ImageFont.truetype(audiowide_path, 11)   # 0.8rem on-screen
+            font_court = ImageFont.truetype(audiowide_path, 17)  # 1.3rem on-screen
+            font_time = ImageFont.truetype(audiowide_path, 20)   # 1.5rem on-screen
+        else:
+            raise IOError("Audiowide unavailable")
+    except Exception:
+        # Safe fallback so card generation never breaks if the font can't be fetched
+        font_conf = ImageFont.truetype("DejaVuSans-Bold.ttf", 10)
+        font_court = ImageFont.truetype("DejaVuSans-Bold.ttf", 16)
+        font_time = ImageFont.truetype("DejaVuSans-Bold.ttf", 19)
+    try:
+        font_res = ImageFont.truetype("DejaVuSans-Bold.ttf", 14)   # 1.1rem bold on-screen
+        font_date = ImageFont.truetype("DejaVuSans.ttf", 13)       # 1.0rem on-screen
+    except Exception:
+        font_res = font_date = ImageFont.load_default()
 
-    # Clean text rendering with solid hex color for compatibility
-    draw.text((18, 22), f"BOOKING CONF.: {id_display}", fill="#a0aec0", font=font_conf)
-    draw.text((18, 48), f"{court}", fill="#ccff00", font=font_court)
-    draw.text((170, 50), f"{sub_community} - {villa}", fill="#ffffff", font=font_res)
+    # On-screen colors, including the rgba() opacities blended against the card background
+    conf_color = _blend_rgb(BG_HEX, "#ffffff", 0.6)     # rgba(255,255,255,0.6)
+    divider_color = _blend_rgb(BG_HEX, "#ffffff", 0.12) # rgba(255,255,255,0.1) border
+    date_color = _blend_rgb(BG_HEX, "#ffffff", 0.9)     # opacity: 0.9
 
-    # Divider line
-    draw.line([(18, 92), (282, 92)], fill="#1f618d", width=1)
+    pad_x = 24  # 6px accent border + 18px padding, matching the on-screen card's padding:18px
+    right_edge = width - 24
 
-    # Date and Time block
-    draw.text((18, 120), formatted_date, fill="#ffffff", font=font_date)
-    draw.text((18, 162), f"{time_display}", fill="#ffffff", font=font_time)
+    # Row 1: BOOKING CONF label
+    y = 20
+    draw.text((pad_x, y), f"BOOKING CONF.: {id_display}", fill=conf_color, font=font_conf)
+    y += 24
+
+    # Row 2: court name (icon + Audiowide, lime) left, sub_community-villa (bold white) right —
+    # mirrors the on-screen flex row with justify-content: space-between, align-items: flex-start
+    icon_size = 15
+    _draw_tennis_icon(draw, pad_x, y + 3, size=icon_size)
+    draw.text((pad_x + icon_size + 6, y), court, fill="#ccff00", font=font_court)
+
+    right_text = f"{sub_community} - {villa}"
+    r_bbox = draw.textbbox((0, 0), right_text, font=font_res)
+    draw.text((right_edge - (r_bbox[2] - r_bbox[0]), y + 3), right_text, fill="#ffffff", font=font_res)
+    y += 34
+
+    # Divider (matches the on-screen border-bottom: 1px solid rgba(255,255,255,0.1))
+    draw.line([(pad_x, y), (right_edge, y)], fill=divider_color, width=1)
+    y += 20
+
+    # Date row (matches the on-screen opacity: 0.9 text)
+    draw.text((pad_x, y), formatted_date, fill=date_color, font=font_date)
+    y += 30
+
+    # Time row (icon + Audiowide, white)
+    clock_size = 20
+    _draw_clock_icon(draw, pad_x, y + 2, size=clock_size)
+    draw.text((pad_x + clock_size + 8, y), time_display, fill="#ffffff", font=font_time)
 
     buffer = io.BytesIO()
     image.save(buffer, format="JPEG", quality=95)
@@ -1692,7 +1760,7 @@ with tab3:
                     </div>
                 """, unsafe_allow_html=True)
                 
-                # Download Square 300x300 JPG Card Button with clean filename formatting
+                # Download Square 300x300 JPG Card Button (Clean filename formatting)
                 jpg_bytes = generate_booking_card_jpg(id_display, b['court'], b['sc'], b['v'], f"{day_name}, {formatted_date}", time_display)
                 clean_ref_filename = id_display.replace('#', '').replace('-', '_')
                 st.download_button(
