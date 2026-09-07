@@ -29,10 +29,12 @@ st.set_page_config(
 # ==========================================
 # --- DONOR NAMES & TICKER (EDIT HERE) ---
 # ==========================================
+
 DONOR_NAMES = [
-    "Abhisek", "Adam", "Adebayo", "Arlan", "Alesia", "Ameen", "Angelo", "Carlos", "Charbel", "Dev", "Elie",
-    "Farheen", "Francois", "Goncalo", "Hatem", "Hana", "Harith", "Hisham", "Katya", "Khaled", "Leina", "Marko", "Mei",
-    "Melissa", "Mustafa", "Nick", "Nikki", "Rena", "Ricardo", "Riin", "Saket", "SAS", "Sheila", "Sofia", "Timo", "Vik", "Yousef",
+    "Abhisek", "Adam", "Adebayo", "Alesia", "Ameen", "Angelo", "Arlan", "Asim", "Carlos", "Charbel", "Dev", "Elie", 
+    "Farheen", "Francois", "Goncalo", "Guru", "Hana", "Harith", "Hatem", "Hisham", "Katya", "Khaled", "Leina", "Marko",
+    "Mei", "Melissa", "Mustafa", "Nick", "Nikki", "Peter", "Rena", "Ricardo", "Riin", "Saket", "SAS", "Sheila", "Sofia",
+    "Timo", "Vik", "Yann", "Yousef"
 ]
 
 def render_donor_ticker(names):
