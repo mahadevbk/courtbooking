@@ -1084,6 +1084,40 @@ def delete_booking(booking_id, villa, sub_community, fingerprint=None):
         add_log("Booking Deleted", log_detail, fingerprint=fingerprint)
     run_query(supabase.table("bookings").delete().eq("id", booking_id).eq("villa", villa).eq("sub_community", sub_community))
 
+def get_slot_history(court, date_str, start_hour):
+    """Returns the chronological booking/cancellation history for one specific
+    court+date+hour slot, reconstructed from the logs table. This lets the UI warn
+    residents if a slot was previously booked by one villa, cancelled, then re-booked
+    by a different villa — the classic scenario that causes two groups to show up for
+    the same court at the same time."""
+    pattern = f"%{court} for {date_str} at {start_hour:02d}:00%"
+    response = run_query(
+        supabase.table("logs").select("timestamp, event_type, details")
+        .in_("event_type", ["Booking Created", "Booking Deleted"])
+        .ilike("details", pattern)
+        .order("timestamp")
+    )
+    if not response or not response.data:
+        return []
+    history = []
+    for row in response.data:
+        details = row.get("details", "") or ""
+        match = re.match(r"^(.*?) Villa (\S+) (booked|cancelled) ", details)
+        if not match:
+            continue
+        sub_comm, villa_num, action = match.group(1), match.group(2), match.group(3)
+        raw_ts = row.get("timestamp", "")
+        try:
+            ts_display = datetime.fromisoformat(raw_ts).strftime("%b %d, %Y %I:%M %p")
+        except Exception:
+            ts_display = raw_ts
+        history.append({
+            "action": action,
+            "who": f"{sub_comm} - Villa {villa_num}",
+            "display_time": ts_display,
+        })
+    return history
+
 @st.cache_data(ttl=60)
 def get_logs_last_14_days():
     cutoff = (get_utc_plus_4() - timedelta(days=14)).isoformat()
@@ -1672,7 +1706,43 @@ with tab1:
     curr_auth = st.query_params.get("auth")
     full_url = f"/?view=full&auth={curr_auth}" if curr_auth else "/?view=full"
     st.link_button("🌐 View Full 14-Day Schedule (Full Page)", url=full_url)
-    
+
+    st.divider()
+    st.subheader("🔍 Court Status & Booking History")
+    st.caption("Check exactly who currently holds a slot, and see its full booking/cancellation history — useful for avoiding conflicts when a slot changed hands.")
+    hist_col1, hist_col2 = st.columns([1, 1])
+    with hist_col1:
+        hist_court = st.selectbox("Select Court", options=courts, key="hist_court_select")
+    with hist_col2:
+        hist_hours = get_start_hours_for_date(selected_date)
+        if hist_hours:
+            hist_hour_labels = [f"{h:02d}:00 - {h+1:02d}:00" for h in hist_hours]
+            hist_time_label = st.selectbox("Select Time Slot", options=hist_hour_labels, key="hist_time_select")
+            hist_hour = hist_hours[hist_hour_labels.index(hist_time_label)]
+        else:
+            hist_hour = None
+            st.warning("No time slots available for this date.")
+
+    if hist_hour is not None:
+        hist_key = (hist_court, hist_hour)
+        if hist_key in bookings_with_details:
+            st.error(f"🔒 Currently **BOOKED** — {bookings_with_details[hist_key]}")
+        else:
+            st.success("✅ Currently **AVAILABLE**")
+
+        slot_history = get_slot_history(hist_court, selected_date, hist_hour)
+        if slot_history:
+            st.write(f"**📜 History for {hist_court} on {selected_date}, {hist_time_label}:**")
+            for entry in slot_history:
+                if entry["action"] == "booked":
+                    st.markdown(f"- 🟢 **Booked** by {entry['who']} — _{entry['display_time']}_")
+                else:
+                    st.markdown(f"- 🔴 **Cancelled** by {entry['who']} — _{entry['display_time']}_")
+            if len(slot_history) > 1:
+                st.caption("⚠️ This slot has changed hands more than once — please confirm on-court before assuming exclusive access.")
+        else:
+            st.caption("No prior booking activity recorded for this slot.")
+
     st.divider()
     st.markdown("### ⚡ Quick Book")
     q_col1, q_col2, q_col3, q_col4 = st.columns([2, 2, 2, 2])
