@@ -80,11 +80,12 @@ def get_donor_data():
         if df.shape[1] >= 3:
             sub_col, villa_col = df.columns[1], df.columns[2]
             for _, row in df.iterrows():
-                sub_val = str(row.get(sub_col, "")).strip()
+                # Normalize whitespace and casing so typos or double spaces don't break matches
+                sub_val = " ".join(str(row.get(sub_col, "")).lower().split())
                 villa_val = str(row.get(villa_col, "")).strip()
                 if villa_val.endswith(".0"):
                     villa_val = villa_val[:-2]
-                if sub_val and villa_val and sub_val.lower() != "nan" and villa_val.lower() != "nan":
+                if sub_val and villa_val and sub_val != "nan" and villa_val.lower() != "nan":
                     donor_villas.add((sub_val, villa_val))
 
         return names, donor_villas
@@ -94,8 +95,10 @@ def get_donor_data():
 DONOR_NAMES, DONOR_VILLAS = get_donor_data()
 
 def is_donor_villa(sub_community, villa):
-    """True if this Sub Community + Villa belongs to a recorded donor."""
-    return (str(sub_community).strip(), str(villa).strip()) in DONOR_VILLAS
+    """True if this Sub Community + Villa belongs to a recorded donor (whitespace and case normalized)."""
+    norm_sub = " ".join(str(sub_community).lower().split())
+    norm_villa = str(villa).strip()
+    return (norm_sub, norm_villa) in DONOR_VILLAS
 
 def get_active_booking_limit(sub_community, villa):
     """Donor villas get an increased quota of 8 active bookings instead of 6."""
