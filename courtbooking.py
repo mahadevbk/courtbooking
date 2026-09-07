@@ -34,7 +34,7 @@ DONOR_NAMES = [
     "Abhishek", "Adam", "Adebayo", "Alesia", "Ameen", "Angelo", "Arlan", "Asim", "Carlos", "Charbel", "Dev", "Elie", 
     "Farheen", "Francois", "Goncalo", "Guru", "Hana", "Harith", "Hatem", "Hisham", "Katya", "Khaled", "Leina", "Lisa", "Marko",
     "Mei", "Melissa", "Mustafa", "Nick", "Nikki", "Peter", "Rena", "Ricardo", "Riin", "Saket", "SAS", "Sheila", "Sofia",
-    "Timo", "Vik", "Yann", "Yousef"
+    "Timo", "Vik", "Wael", "Yann", "Yousef"
 ]
 
 def render_donor_ticker(names):
