@@ -31,7 +31,7 @@ st.set_page_config(
 # ==========================================
 DONOR_NAMES = [
     "Abhisek", "Adam", "Adebayo", "Arlan", "Alesia", "Ameen", "Angelo", "Carlos", "Charbel", "Dev", "Elie",
-    "Farheen", "Francois", "Goncalo", "Hatem", "Hana", "Harith", "Hisham", "Katya", "Khaled", "Laurent", "Leina", "Marko", "Mei",
+    "Farheen", "Francois", "Goncalo", "Hatem", "Hana", "Harith", "Hisham", "Katya", "Khaled", "Leina", "Marko", "Mei",
     "Melissa", "Mustafa", "Nick", "Nikki", "Rena", "Ricardo", "Riin", "Saket", "SAS", "Sheila", "Sofia", "Timo", "Vik", "Yousef",
 ]
 
@@ -331,7 +331,10 @@ def send_gmail_smtp(recipient_email, subject, html_content):
         return False
 
 def send_booking_notification(action_type, villa, sub_community, court, date_str, start_hours, recipient_email):
-    """Sends an elegant, neatly formatted HTML email cancellation notice via Gmail SMTP."""
+    """Sends an elegant, neatly formatted HTML email notice (booking confirmation or
+    cancellation) via Gmail SMTP. This should be called exactly ONCE per user action
+    (never once per slot/hour booked or cancelled), so a single booking or cancellation
+    never results in more than one email being sent."""
     if not recipient_email or "@" not in recipient_email:
         return
     try:
@@ -343,8 +346,51 @@ def send_booking_notification(action_type, villa, sub_community, court, date_str
         
         b_date = datetime.strptime(date_str, '%Y-%m-%d')
         formatted_date = b_date.strftime('%A, %b %d, %Y')
-        
-        if action_type == "deleted":
+
+        if action_type == "created":
+            subject = f"✅ Booking Confirmed: {court} ({formatted_date})"
+            html_content = f"""
+            <!DOCTYPE html>
+            <html>
+            <head>
+              <meta charset="utf-8">
+              <style>
+                body {{ font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; background-color: #f4f7f6; margin: 0; padding: 0; }}
+                .email-wrapper {{ max-width: 600px; margin: 30px auto; background-color: #ffffff; border-radius: 12px; overflow: hidden; box-shadow: 0 4px 15px rgba(0,0,0,0.05); border: 1px solid #e1e8ed; }}
+                .email-header {{ background: linear-gradient(135deg, #0d5384, #052134); padding: 30px; text-align: center; color: #ffffff; }}
+                .email-header h1 {{ margin: 0; font-size: 22px; font-weight: 700; letter-spacing: 0.5px; }}
+                .email-body {{ padding: 30px; color: #333333; line-height: 1.6; }}
+                .info-card {{ background-color: #f8fafc; border-radius: 8px; padding: 20px; margin: 20px 0; border: 1px solid #e2e8f0; border-left: 5px solid #4CAF50; }}
+                .info-row {{ margin: 8px 0; font-size: 15px; color: #2d3748; }}
+                .footer {{ background-color: #f8fafc; padding: 20px; text-align: center; font-size: 12px; color: #718096; border-top: 1px solid #e2e8f0; }}
+              </style>
+            </head>
+            <body>
+              <div class="email-wrapper">
+                <div class="email-header">
+                  <h1>✅ Court Booking Confirmed</h1>
+                </div>
+                <div class="email-body">
+                  <p>Hello Resident,</p>
+                  <p>Your court reservation has been successfully created.</p>
+                  
+                  <div class="info-card">
+                    <div class="info-row"><b>Court:</b> {court}</div>
+                    <div class="info-row"><b>Date:</b> {formatted_date}</div>
+                    <div class="info-row"><b>Time Slot:</b> {time_display}</div>
+                    <div class="info-row"><b>Duration:</b> {duration} hour(s)</div>
+                    <div class="info-row"><b>Residence:</b> {sub_community} - Villa {villa}</div>
+                  </div>
+                </div>
+                <div class="footer">
+                  Mira Court Booking App • Community Fair-Use Solution
+                </div>
+              </div>
+            </body>
+            </html>
+            """
+            send_gmail_smtp(recipient_email, subject, html_content)
+        elif action_type == "deleted":
             subject = f"❌ Booking Cancelled: {court} ({formatted_date})"
             html_content = f"""
             <!DOCTYPE html>
@@ -389,6 +435,20 @@ def send_booking_notification(action_type, villa, sub_community, court, date_str
             send_gmail_smtp(recipient_email, subject, html_content)
     except Exception as e:
         print(f"Error sending cancellation email: {e}")
+
+def send_booking_notification_once(action_type, villa, sub_community, court, date_str, start_hours, recipient_email):
+    """Guarded wrapper around send_booking_notification. Ensures at most ONE email is
+    sent for a given booking/cancellation action, even if this code path is somehow
+    reached more than once (e.g. a Streamlit rerun replaying the same button click, or
+    a multi-slot action accidentally calling this per-slot instead of once for the
+    whole action). Call this once per user action instead of send_booking_notification
+    directly."""
+    signature = f"{action_type}::{villa}::{sub_community}::{court}::{date_str}::{sorted(start_hours)}::{(recipient_email or '').strip().lower()}"
+    sent_signatures = st.session_state.setdefault("sent_booking_email_signatures", set())
+    if signature in sent_signatures:
+        return
+    sent_signatures.add(signature)
+    send_booking_notification(action_type, villa, sub_community, court, date_str, start_hours, recipient_email)
 
 def send_all_bookings_summary(villa, sub_community, bookings_list, recipient_email):
     """Sends an elegant summary email containing all active bookings for the user."""
@@ -1067,7 +1127,10 @@ def _process_background_tasks():
         purge_out_of_range_records()
         from database_cleanup import run_db_cleanup
         run_db_cleanup(supabase, courts)
-        send_daily_morning_reminders()
+        # Daily morning reminder emails have been disabled per updated notification
+        # policy: emails are now sent only on booking creation/deletion, plus the
+        # manual "Email Me All My Bookings" summary button.
+        # send_daily_morning_reminders()
     except Exception:
         pass
 
@@ -1668,6 +1731,7 @@ with tab1:
                             success = False
                             break
                     if success:
+                        send_booking_notification_once("created", villa, sub_community, q_court, selected_date, booked_slots, verified_user_email)
                         st.balloons()
                         st.success(f"Booked {q_slots} slot(s) for {q_court} starting at {q_time}")
                         time.sleep(2)
@@ -1787,6 +1851,7 @@ with tab2:
                         success = False
                         break
                 if success:
+                    send_booking_notification_once("created", villa, sub_community, court_choice, date_choice, booked_slots, verified_user_email)
                     st.balloons()
                     st.success(f"✅ SUCCESS! {court_choice} booked for {date_choice} starting at {start_h:02d}:00 ({slots_choice} slot(s))")
                     time.sleep(2.5) 
@@ -1904,7 +1969,7 @@ with tab3:
                 
                 if st.button(f"❌ Cancel Booking {id_display}", key=f"cancel_{i}", width='stretch'):
                     for bid in b['ids']: delete_booking(bid, b['v'], b['sc'], fingerprint=current_device)
-                    send_booking_notification("deleted", b['v'], b['sc'], b['court'], b['date'], b['start_hours'], verified_user_email)
+                    send_booking_notification_once("deleted", b['v'], b['sc'], b['court'], b['date'], b['start_hours'], verified_user_email)
                     st.success(f"Successfully cancelled booking {id_display}")
                     time.sleep(1.5); st.rerun()
                 st.markdown('<div style="margin-bottom: 25px;"></div>', unsafe_allow_html=True)
