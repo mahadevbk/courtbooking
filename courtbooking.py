@@ -102,25 +102,62 @@ def get_active_booking_limit(sub_community, villa):
     return MAX_ACTIVE_BOOKINGS_DONOR if is_donor_villa(sub_community, villa) else MAX_ACTIVE_BOOKINGS_DEFAULT
 
 def render_donor_legend_banner():
-    """An elegant thank-you banner shown to donors after they log into their villa."""
+    """A premium, celebratory gold banner shown to donors after they log into their villa."""
     st.markdown(
-        """<div style="
-            margin: 0.75rem 0 1.25rem 0;
-            padding: 0.9rem 1.4rem;
-            border-radius: 0.6rem;
-            background: linear-gradient(90deg, #0d5384 0%, #14406b 50%, #0d5384 100%);
-            border: 1px solid #ccff00;
-            box-shadow: 0 2px 10px rgba(0,0,0,0.15);
-            text-align: center;
-            color: #ffffff;
-            font-size: 1.05rem;
-            letter-spacing: 0.02em;
-        ">
-            🏆 <span style="color:#ccff00; font-weight:700;">Thank you for being a Mira Legend!</span> 🏆
-            <div style="font-size:0.85rem; font-weight:400; color:#e8f1fb; margin-top:0.25rem;">
-                Your generosity keeps these courts thriving — enjoy your enhanced 8-booking allowance.
-            </div>
-        </div>""",
+        """<style>
+@keyframes legend-gold-flow {
+    0%   { background-position: 0% 50%; }
+    50%  { background-position: 100% 50%; }
+    100% { background-position: 0% 50%; }
+}
+@keyframes legend-shimmer-sweep {
+    0%   { transform: translateX(-120%) skewX(-20deg); }
+    100% { transform: translateX(220%) skewX(-20deg); }
+}
+@keyframes legend-glow-pulse {
+    0%, 100% { box-shadow: 0 0 12px rgba(255, 215, 0, 0.35), 0 4px 18px rgba(0,0,0,0.25); }
+    50%      { box-shadow: 0 0 24px rgba(255, 215, 0, 0.65), 0 4px 22px rgba(0,0,0,0.3); }
+}
+.legend-banner-wrap {
+    position: relative;
+    overflow: hidden;
+    margin: 0.75rem 0 1.25rem 0;
+    padding: 1.1rem 1.6rem;
+    border-radius: 0.9rem;
+    background: linear-gradient(120deg, #7a5a12, #d4af37, #fff2b0, #d4af37, #7a5a12);
+    background-size: 300% 300%;
+    animation: legend-gold-flow 6s ease-in-out infinite, legend-glow-pulse 2.8s ease-in-out infinite;
+    border: 1.5px solid #ffe27a;
+    text-align: center;
+}
+.legend-banner-shimmer {
+    position: absolute;
+    top: 0; left: 0; height: 100%; width: 35%;
+    background: linear-gradient(90deg, rgba(255,255,255,0) 0%, rgba(255,255,255,0.55) 50%, rgba(255,255,255,0) 100%);
+    animation: legend-shimmer-sweep 3.2s ease-in-out infinite;
+    pointer-events: none;
+}
+.legend-banner-title {
+    position: relative;
+    font-size: 1.25rem;
+    font-weight: 800;
+    letter-spacing: 0.03em;
+    color: #3a2a00;
+    text-shadow: 0 1px 0 rgba(255,255,255,0.4);
+}
+.legend-banner-sub {
+    position: relative;
+    font-size: 0.9rem;
+    font-weight: 600;
+    color: #4a3a10;
+    margin-top: 0.3rem;
+}
+</style>
+<div class="legend-banner-wrap">
+    <div class="legend-banner-shimmer"></div>
+    <div class="legend-banner-title">✨🏆 Thank You for Being a Mira Legend! 🏆✨</div>
+    <div class="legend-banner-sub">Your generosity keeps these courts thriving — enjoy your enhanced 8-booking allowance!</div>
+</div>""",
         unsafe_allow_html=True,
     )
 
