@@ -30,17 +30,9 @@ st.set_page_config(
 # ==========================================
 # --- DONOR NAMES & TICKER (LIVE FROM GOOGLE SHEET) ---
 # ==========================================
-# The donor roster now lives in this shared Google Sheet instead of being hard-coded:
-# https://docs.google.com/spreadsheets/d/1dKj5XkH87bdPmhXc-1inrumqXVBje8pXsl-_llrefYQ/edit#gid=0
-# Column A = Name (row 1 header "Name" is skipped), Column B = Sub Community,
-# Column C = Villa number. Donors who have a Sub Community + Villa filled in get an
-# increased active-booking quota (see MAX_ACTIVE_BOOKINGS_DEFAULT / MAX_ACTIVE_BOOKINGS_DONOR
-# below) and see a "Mira Legend" welcome banner after logging in.
 DONOR_SHEET_ID = "1dKj5XkH87bdPmhXc-1inrumqXVBje8pXsl-_llrefYQ"
 DONOR_SHEET_CSV_URL = f"https://docs.google.com/spreadsheets/d/{DONOR_SHEET_ID}/export?format=csv&gid=0"
 
-# Used only as a safety-net fallback if the live sheet can't be reached (network hiccup,
-# sharing permissions changed, etc.) so the ticker never goes blank.
 _FALLBACK_DONOR_NAMES = [
     "Abhisek", "Adam", "Adebayo", "Arlan", "Alesia", "Ameen", "Angelo", "Carlos", "Charbel", "Dev", "Elie",
     "Farheen", "Francois", "Goncalo", "Hatem", "Hana", "Harith", "Hisham", "Katya", "Khaled", "Leina", "Marko", "Mei",
@@ -52,17 +44,6 @@ MAX_ACTIVE_BOOKINGS_DONOR = 8
 
 @st.cache_data(ttl=600, show_spinner=False)
 def get_donor_data():
-    """Pulls the live donor roster from the shared Google Sheet.
-
-    Returns a tuple of:
-      - donor_names: ordered list of donor first names for the ticker
-      - donor_villas: a set of (sub_community, villa) tuples for donors who've had their
-        villa recorded, used to grant the increased 8-booking quota and Legend banner.
-
-    Re-fetched from the sheet at most once every 10 minutes (st.cache_data ttl), so as the
-    Google Sheet grows the ticker and donor-villa perks update themselves automatically
-    without needing a code change or redeploy.
-    """
     try:
         resp = requests.get(DONOR_SHEET_CSV_URL, timeout=10)
         resp.raise_for_status()
@@ -80,7 +61,6 @@ def get_donor_data():
         if df.shape[1] >= 3:
             sub_col, villa_col = df.columns[1], df.columns[2]
             for _, row in df.iterrows():
-                # Normalize whitespace and casing so typos or double spaces don't break matches
                 sub_val = " ".join(str(row.get(sub_col, "")).lower().split())
                 villa_val = str(row.get(villa_col, "")).strip()
                 if villa_val.endswith(".0"):
@@ -105,7 +85,6 @@ def get_active_booking_limit(sub_community, villa):
     return MAX_ACTIVE_BOOKINGS_DONOR if is_donor_villa(sub_community, villa) else MAX_ACTIVE_BOOKINGS_DEFAULT
 
 def render_donor_legend_banner():
-    """A premium, celebratory gold banner shown to donors after they log into their villa."""
     st.markdown(
         """<style>
 @keyframes legend-gold-flow {
@@ -165,7 +144,6 @@ def render_donor_legend_banner():
     )
 
 def render_donor_ticker(names):
-    """Renders a fixed, auto-scrolling ticker of uppercase donor names separated by tennis ball icons."""
     if not names:
         return
     uppercase_names = [name.upper() for name in names]
@@ -209,10 +187,8 @@ def render_donor_ticker(names):
 
 render_donor_ticker(DONOR_NAMES)
 
-
 # --- ICS & SQUARE JPG CARD GENERATOR HELPERS ---
 def generate_ics_content(court, date_str, start_hours, sub_community, villa):
-    """Generates standard iCalendar (.ics) bytes for universal calendar integration."""
     sorted_hours = sorted(start_hours)
     start_h = sorted_hours[0]
     end_h = sorted_hours[-1] + 1
@@ -238,7 +214,6 @@ END:VCALENDAR"""
     return ics_text.encode("utf-8")
 
 def get_google_calendar_url(court, date_str, start_hours, sub_community, villa):
-    """Generates a direct web link to add an event to Google Calendar."""
     sorted_hours = sorted(start_hours)
     start_h = sorted_hours[0]
     end_h = sorted_hours[-1] + 1
@@ -257,17 +232,12 @@ def get_google_calendar_url(court, date_str, start_hours, sub_community, villa):
     return f"https://calendar.google.com/calendar/render?{urllib.parse.urlencode(params)}"
 
 def _blend_rgb(bg_hex, fg_hex, alpha):
-    """Blends fg over bg at the given alpha, mirroring how CSS rgba() text looks against
-    a solid background (used to reproduce e.g. rgba(255,255,255,0.6) label text)."""
     bg = tuple(int(bg_hex.lstrip("#")[i:i+2], 16) for i in (0, 2, 4))
     fg = tuple(int(fg_hex.lstrip("#")[i:i+2], 16) for i in (0, 2, 4))
     return tuple(int(bg[i] * (1 - alpha) + fg[i] * alpha) for i in range(3))
 
 @st.cache_resource
 def _get_audiowide_font_path():
-    """Downloads and caches the actual 'Audiowide' Google Font used on-screen, so the
-    downloadable JPG card uses the same typeface instead of a generic fallback. Returns
-    None (triggering a safe fallback font) if the download isn't available."""
     import os, tempfile, urllib.request
     font_path = os.path.join(tempfile.gettempdir(), "Audiowide-Regular.ttf")
     if os.path.exists(font_path) and os.path.getsize(font_path) > 1000:
@@ -282,70 +252,54 @@ def _get_audiowide_font_path():
     return None
 
 def _draw_tennis_icon(draw, x, y, size=15, color="#ccff00", seam="#0d5384"):
-    """Small tennis-ball glyph: filled circle with two curved seam lines. Drawn as a vector
-    shape rather than the 🎾 emoji, since PIL's bundled fonts have no emoji glyphs and would
-    render tofu boxes."""
     draw.ellipse([x, y, x + size, y + size], fill=color)
     bbox = [x - size * 0.35, y - size * 0.1, x + size * 1.35, y + size * 1.1]
     draw.arc(bbox, start=200, end=340, fill=seam, width=2)
     draw.arc(bbox, start=20, end=160, fill=seam, width=2)
 
 def _draw_clock_icon(draw, x, y, size=20, color="#ffffff"):
-    """Small clock glyph standing in for the ⏰ emoji, for the same reason as above."""
     draw.ellipse([x, y, x + size, y + size], outline=color, width=2)
     cx, cy = x + size / 2, y + size / 2
     draw.line([cx, cy, cx, cy - size * 0.32], fill=color, width=2)
     draw.line([cx, cy, cx + size * 0.24, cy + size * 0.14], fill=color, width=2)
 
 def generate_booking_card_jpg(id_display, court, sub_community, villa, formatted_date, time_display):
-    """Generates a 300x300 JPG card that mirrors the on-screen HTML booking card as closely
-    as possible: same 'Audiowide' typeface on the stylized fields, same colors (including the
-    muted rgba() opacities from the on-screen CSS), and proportionally matched sizes.
-    The "View Location Pin" link is intentionally left out — a link isn't actionable inside
-    a static JPG. Emoji icons (🎾/⏰) are recreated as vector glyphs since PIL's bundled fonts
-    can't render emoji and would show tofu boxes instead."""
     width, height = 300, 300
     BG_HEX = "#0d5384"
     image = Image.new("RGB", (width, height), color=BG_HEX)
     draw = ImageDraw.Draw(image)
 
-    # Left accent green border stripe (matching border-left: 6px solid #4CAF50 on-screen)
     draw.rectangle([0, 0, 6, height], fill="#4CAF50")
 
     audiowide_path = _get_audiowide_font_path()
     try:
         if audiowide_path:
-            font_conf = ImageFont.truetype(audiowide_path, 11)   # 0.8rem on-screen
-            font_court = ImageFont.truetype(audiowide_path, 17)  # 1.3rem on-screen
-            font_time = ImageFont.truetype(audiowide_path, 20)   # 1.5rem on-screen
+            font_conf = ImageFont.truetype(audiowide_path, 11)
+            font_court = ImageFont.truetype(audiowide_path, 17)
+            font_time = ImageFont.truetype(audiowide_path, 20)
         else:
             raise IOError("Audiowide unavailable")
     except Exception:
-        # Safe fallback so card generation never breaks if the font can't be fetched
         font_conf = ImageFont.truetype("DejaVuSans-Bold.ttf", 10)
         font_court = ImageFont.truetype("DejaVuSans-Bold.ttf", 16)
         font_time = ImageFont.truetype("DejaVuSans-Bold.ttf", 19)
     try:
-        font_res = ImageFont.truetype("DejaVuSans-Bold.ttf", 14)   # 1.1rem bold on-screen
-        font_date = ImageFont.truetype("DejaVuSans.ttf", 13)       # 1.0rem on-screen
+        font_res = ImageFont.truetype("DejaVuSans-Bold.ttf", 14)
+        font_date = ImageFont.truetype("DejaVuSans.ttf", 13)
     except Exception:
         font_res = font_date = ImageFont.load_default()
 
-    # On-screen colors, including the rgba() opacities blended against the card background
-    conf_color = _blend_rgb(BG_HEX, "#ffffff", 0.6)     # rgba(255,255,255,0.6)
-    divider_color = _blend_rgb(BG_HEX, "#ffffff", 0.12) # rgba(255,255,255,0.1) border
-    date_color = _blend_rgb(BG_HEX, "#ffffff", 0.9)     # opacity: 0.9
+    conf_color = _blend_rgb(BG_HEX, "#ffffff", 0.6)
+    divider_color = _blend_rgb(BG_HEX, "#ffffff", 0.12)
+    date_color = _blend_rgb(BG_HEX, "#ffffff", 0.9)
 
-    pad_x = 24  # 6px accent border + 18px padding, matching the on-screen card's padding:18px
+    pad_x = 24
     right_edge = width - 24
 
-    # Row 1: BOOKING CONF label
     y = 20
     draw.text((pad_x, y), f"BOOKING CONF.: {id_display}", fill=conf_color, font=font_conf)
     y += 24
 
-    # Row 2: court name (icon + Audiowide, lime) left, sub_community-villa (bold white) right —
-    # mirrors the on-screen flex row with justify-content: space-between, align-items: flex-start
     icon_size = 15
     _draw_tennis_icon(draw, pad_x, y + 3, size=icon_size)
     draw.text((pad_x + icon_size + 6, y), court, fill="#ccff00", font=font_court)
@@ -355,21 +309,16 @@ def generate_booking_card_jpg(id_display, court, sub_community, villa, formatted
     draw.text((right_edge - (r_bbox[2] - r_bbox[0]), y + 3), right_text, fill="#ffffff", font=font_res)
     y += 34
 
-    # Divider (matches the on-screen border-bottom: 1px solid rgba(255,255,255,0.1))
     draw.line([(pad_x, y), (right_edge, y)], fill=divider_color, width=1)
     y += 20
 
-    # Date row (matches the on-screen opacity: 0.9 text)
     draw.text((pad_x, y), formatted_date, fill=date_color, font=font_date)
     y += 30
 
-    # Time row (icon + Audiowide, white)
     clock_size = 20
     _draw_clock_icon(draw, pad_x, y + 2, size=clock_size)
     draw.text((pad_x + clock_size + 8, y), time_display, fill="#ffffff", font=font_time)
 
-    # Crop away the unused space below the time row so the card hugs its content, using the
-    # same padding below the time row as above the "BOOKING CONF" label for a symmetric look.
     time_bbox = draw.textbbox((pad_x + clock_size + 8, y), time_display, font=font_time)
     icon_bottom = y + 2 + clock_size
     content_bottom = max(time_bbox[3], icon_bottom)
@@ -382,11 +331,6 @@ def generate_booking_card_jpg(id_display, court, sub_community, villa, formatted
     return buffer.getvalue()
 
 def render_share_or_download_button(jpg_bytes, filename, id_display, key):
-    """Renders a native mobile share-sheet button (Web Share API, so the user can send the
-    card straight to WhatsApp/Messages/etc.) on phones, and a plain download button on
-    desktop where there's no share sheet to hand off to. Falls back to a direct download
-    if the browser/context doesn't support navigator.share with files (e.g. some in-app
-    browsers, or a component iframe without web-share permission)."""
     if st.session_state.get("is_mobile_device", False):
         b64_data = base64.b64encode(jpg_bytes).decode()
         html = f"""
@@ -435,10 +379,8 @@ def render_share_or_download_button(jpg_bytes, filename, id_display, key):
             use_container_width=True
         )
 
-
 # --- GMAIL SMTP EMAIL HELPER ---
 def send_gmail_smtp(recipient_email, subject, html_content):
-    """Sends an email using standard Gmail SMTP from devkrea@gmail.com[cite: 1]."""
     g_user = st.secrets.get("GMAIL_USER", "devkrea@gmail.com")
     g_pass = st.secrets.get("GMAIL_PASSWORD", "").replace(" ", "")
     if not g_pass or not recipient_email or "@" not in recipient_email:
@@ -460,10 +402,6 @@ def send_gmail_smtp(recipient_email, subject, html_content):
         return False
 
 def send_booking_notification(action_type, villa, sub_community, court, date_str, start_hours, recipient_email):
-    """Sends an elegant, neatly formatted HTML email notice (booking confirmation or
-    cancellation) via Gmail SMTP. This should be called exactly ONCE per user action
-    (never once per slot/hour booked or cancelled), so a single booking or cancellation
-    never results in more than one email being sent."""
     if not recipient_email or "@" not in recipient_email:
         return
     try:
@@ -566,12 +504,6 @@ def send_booking_notification(action_type, villa, sub_community, court, date_str
         print(f"Error sending cancellation email: {e}")
 
 def send_booking_notification_once(action_type, villa, sub_community, court, date_str, start_hours, recipient_email):
-    """Guarded wrapper around send_booking_notification. Ensures at most ONE email is
-    sent for a given booking/cancellation action, even if this code path is somehow
-    reached more than once (e.g. a Streamlit rerun replaying the same button click, or
-    a multi-slot action accidentally calling this per-slot instead of once for the
-    whole action). Call this once per user action instead of send_booking_notification
-    directly."""
     signature = f"{action_type}::{villa}::{sub_community}::{court}::{date_str}::{sorted(start_hours)}::{(recipient_email or '').strip().lower()}"
     sent_signatures = st.session_state.setdefault("sent_booking_email_signatures", set())
     if signature in sent_signatures:
@@ -580,7 +512,6 @@ def send_booking_notification_once(action_type, villa, sub_community, court, dat
     send_booking_notification(action_type, villa, sub_community, court, date_str, start_hours, recipient_email)
 
 def send_all_bookings_summary(villa, sub_community, bookings_list, recipient_email):
-    """Sends an elegant summary email containing all active bookings for the user."""
     if not recipient_email or "@" not in recipient_email or not bookings_list:
         return False
     try:
@@ -643,130 +574,6 @@ def send_all_bookings_summary(villa, sub_community, bookings_list, recipient_ema
     except Exception as e:
         print(f"Error sending summary email: {e}")
         return False
-
-def send_daily_morning_reminders():
-    """Checks if it's past 5:00 AM UTC+4 today and triggers a daily summary 
-    email for all users who have active bookings today. Uses an atomic database check 
-    to ensure it runs only once globally, even under concurrent user loads."""
-    try:
-        now = get_utc_plus_4()
-        today_str = now.strftime('%Y-%m-%d')
-        
-        if now.hour < 5:
-            return
-
-        g_pass = st.secrets.get("GMAIL_PASSWORD")
-        if not g_pass:
-            return
-
-        # 1. IMMEDIATE CHECK: Look if we already logged a reminder dispatch for today
-        log_check = run_query(
-            supabase.table("logs")
-            .select("id")
-            .eq("event_type", "Daily Reminder Sent")
-            .gte("timestamp", f"{today_str}T00:00:00")
-            .limit(1)
-        )
-        if log_check and log_check.data:
-            return  
-
-        # 2. ATOMIC LOCK: Log the intent immediately so concurrent sessions abort
-        add_log("Daily Reminder Sent", f"Initiating daily court reminders dispatch for {today_str}")
-
-        response = run_query(
-            supabase.table("bookings")
-            .select("id, court, date, start_hour, villa, sub_community")
-            .eq("date", today_str)
-        )
-        
-        if not response or not response.data:
-            return
-
-        villa_bookings = {}
-        for b in response.data:
-            key = f"{b['sub_community']}::{b['villa']}"
-            if key not in villa_bookings:
-                villa_bookings[key] = {
-                    "villa": b["villa"],
-                    "sub_community": b["sub_community"],
-                    "bookings": []
-                }
-            villa_bookings[key]["bookings"].append({
-                "id": b["id"],
-                "court": b["court"],
-                "date": b["date"],
-                "start_hours": [b["start_hour"]],
-                "ids": [b["id"]]
-            })
-
-        sent_count = 0
-        for key, data in villa_bookings.items():
-            claims = get_claims_for_villa(data["sub_community"], data["villa"])
-            approved_emails = list(set([c.get("email").strip().lower() for c in claims if c.get("status") == "approved" and c.get("email")]))
-            
-            if not approved_emails:
-                continue
-
-            items_html = ""
-            for b in data["bookings"]:
-                start_time = min(b['start_hours'])
-                end_time = max(b['start_hours']) + 1
-                time_display = f"{start_time:02d}:00 - {end_time:02d}:00"
-                g_url = get_google_calendar_url(b['court'], today_str, b['start_hours'], data['sub_community'], data['villa'])
-                
-                items_html += f"""
-                <div style="background: #f8fafc; padding: 18px; border-radius: 8px; border-left: 5px solid #0d5384; margin-bottom: 15px; border: 1px solid #e2e8f0; border-left: 5px solid #0d5384;">
-                    <p style="margin: 4px 0; font-size: 1.1rem; color: #0d5384;"><b>🎾 {b['court']}</b></p>
-                    <p style="margin: 4px 0; color: #2d3748;"><b>Time Slot:</b> {time_display}</p>
-                    <p style="margin: 8px 0 4px 0;"><a href="{g_url}" target="_blank" style="color: #0d5384; font-size: 13px; text-decoration: none; font-weight: bold;">📅 Add to Google Calendar</a></p>
-                </div>
-                """
-
-            subject = f"🌅 Today's Court Schedule Reminder ({data['sub_community']} Villa {data['villa']})"
-            html_content = f"""
-            <!DOCTYPE html>
-            <html>
-            <head>
-              <meta charset="utf-8">
-              <style>
-                body {{ font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; background-color: #f4f7f6; margin: 0; padding: 0; }}
-                .email-wrapper {{ max-width: 600px; margin: 30px auto; background-color: #ffffff; border-radius: 12px; overflow: hidden; box-shadow: 0 4px 15px rgba(0,0,0,0.05); border: 1px solid #e1e8ed; }}
-                .email-header {{ background: linear-gradient(135deg, #0d5384, #052134); padding: 30px; text-align: center; color: #ffffff; }}
-                .email-header h1 {{ margin: 0; font-size: 22px; font-weight: 700; letter-spacing: 0.5px; }}
-                .email-body {{ padding: 30px; color: #333333; line-height: 1.6; }}
-                .footer {{ background-color: #f8fafc; padding: 20px; text-align: center; font-size: 12px; color: #718096; border-top: 1px solid #e2e8f0; }}
-              </style>
-            </head>
-            <body>
-              <div class="email-wrapper">
-                <div class="email-header">
-                  <h1>🌅 Today's Court Reminder</h1>
-                </div>
-                <div class="email-body">
-                  <p>Good morning Resident,</p>
-                  <p>Here is your scheduled tennis lineup for today, <b>{now.strftime('%A, %b %d, %Y')}</b>:</p>
-                  <hr style="border: 0; border-top: 1px solid #e2e8f0; margin: 20px 0;">
-                  {items_html}
-                </div>
-                <div class="footer">
-                  Mira Court Booking App • Community Fair-Use Solution
-                </div>
-              </div>
-            </body>
-            </html>
-            """
-
-            for email_addr in approved_emails:
-                if send_gmail_smtp(email_addr, subject, html_content):
-                    sent_count += 1
-
-        add_log("Daily Reminder Sent", f"Successfully completed daily court reminders for {len(villa_bookings)} residences ({sent_count} emails total) for {today_str}")
-        
-    except Exception as e:
-        print(f"Error in daily morning reminder trigger: {e}")
-
-
-
 
 # --- DATABASE SETUP ---
 @st.cache_resource(ttl=1800)
@@ -1214,11 +1021,6 @@ def delete_booking(booking_id, villa, sub_community, fingerprint=None):
     run_query(supabase.table("bookings").delete().eq("id", booking_id).eq("villa", villa).eq("sub_community", sub_community))
 
 def get_slot_history(court, date_str, start_hour):
-    """Returns the chronological booking/cancellation history for one specific
-    court+date+hour slot, reconstructed from the logs table. This lets the UI warn
-    residents if a slot was previously booked by one villa, cancelled, then re-booked
-    by a different villa — the classic scenario that causes two groups to show up for
-    the same court at the same time."""
     pattern = f"%{court} for {date_str} at {start_hour:02d}:00%"
     response = run_query(
         supabase.table("logs").select("timestamp, event_type, details")
@@ -1290,10 +1092,6 @@ def _process_background_tasks():
         purge_out_of_range_records()
         from database_cleanup import run_db_cleanup
         run_db_cleanup(supabase, courts)
-        # Daily morning reminder emails have been disabled per updated notification
-        # policy: emails are now sent only on booking creation/deletion, plus the
-        # manual "Email Me All My Bookings" summary button.
-        # send_daily_morning_reminders()
     except Exception:
         pass
 
@@ -2171,7 +1969,6 @@ with tab3:
                     </div>
                 """, unsafe_allow_html=True)
                 
-                # Booking Card: share sheet on mobile, plain download on desktop
                 jpg_bytes = generate_booking_card_jpg(id_display, b['court'], b['sc'], b['v'], f"{day_name}, {formatted_date}", time_display)
                 clean_ref_filename = id_display.replace('#', '').replace('-', '_')
                 render_share_or_download_button(jpg_bytes, f"{clean_ref_filename}.jpg", id_display, key=i)
@@ -2426,7 +2223,6 @@ with tab5:
                 st.session_state.pop("log_admin_pass", None)
                 st.rerun()
 
-        # --- NEW ADMIN FEATURE: Email-Based Villa Lookup & Sniping Lockout ---
         with st.expander("🚨 Manually Apply Sniping Lockout by Email", expanded=True):
             st.markdown("### Search Associated Villas & Enforce Lockout")
             lockout_email_input = st.text_input("Enter Resident Email Address", placeholder="resident@example.com", key="admin_lockout_email_input").strip().lower()
