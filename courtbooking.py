@@ -18,6 +18,7 @@ from PIL import Image, ImageDraw, ImageFont # For dynamic JPG card rendering
 from streamlit_javascript import st_javascript
 import streamlit.components.v1 as components
 import urllib.parse
+import requests
 
 # Set page configuration to wide mode by default
 st.set_page_config(
@@ -27,14 +28,101 @@ st.set_page_config(
 )
 
 # ==========================================
-# --- DONOR NAMES & TICKER (EDIT HERE) ---
+# --- DONOR NAMES & TICKER (LIVE FROM GOOGLE SHEET) ---
 # ==========================================
+# The donor roster now lives in this shared Google Sheet instead of being hard-coded:
+# https://docs.google.com/spreadsheets/d/1dKj5XkH87bdPmhXc-1inrumqXVBje8pXsl-_llrefYQ/edit#gid=0
+# Column A = Name (row 1 header "Name" is skipped), Column B = Sub Community,
+# Column C = Villa number. Donors who have a Sub Community + Villa filled in get an
+# increased active-booking quota (see MAX_ACTIVE_BOOKINGS_DEFAULT / MAX_ACTIVE_BOOKINGS_DONOR
+# below) and see a "Mira Legend" welcome banner after logging in.
+DONOR_SHEET_ID = "1dKj5XkH87bdPmhXc-1inrumqXVBje8pXsl-_llrefYQ"
+DONOR_SHEET_CSV_URL = f"https://docs.google.com/spreadsheets/d/{DONOR_SHEET_ID}/export?format=csv&gid=0"
 
-DONOR_NAMES = ["Abhishek", "Adam", "Adebayo", "Alesia", "Ameen", "Angelo", "Arlan", "Asim", "Carlos", "Charbel", "Dev", "Elie",
-               "Farheen", "Francois", "Goncalo", "Guru", "Hana", "Harith", "Hatem", "Hisham", "Katya", "Khaled", "Leina", "Lisa", "Marko", "Mei",
-               "Melissa", "Mustafa", "Nick", "Nikki", "Peter", "Rena", "Ricardo", "Riin", "Saket", "SAS", "Sheila", "Sofia", "Timo", "Vik","Wael",
-               "Yann", "Yousef"
-              ]
+# Used only as a safety-net fallback if the live sheet can't be reached (network hiccup,
+# sharing permissions changed, etc.) so the ticker never goes blank.
+_FALLBACK_DONOR_NAMES = [
+    "Abhisek", "Adam", "Adebayo", "Arlan", "Alesia", "Ameen", "Angelo", "Carlos", "Charbel", "Dev", "Elie",
+    "Farheen", "Francois", "Goncalo", "Hatem", "Hana", "Harith", "Hisham", "Katya", "Khaled", "Leina", "Marko", "Mei",
+    "Melissa", "Mustafa", "Nick", "Nikki", "Rena", "Ricardo", "Riin", "Saket", "SAS", "Sheila", "Sofia", "Timo", "Vik", "Yousef",
+]
+
+MAX_ACTIVE_BOOKINGS_DEFAULT = 6
+MAX_ACTIVE_BOOKINGS_DONOR = 8
+
+@st.cache_data(ttl=600, show_spinner=False)
+def get_donor_data():
+    """Pulls the live donor roster from the shared Google Sheet.
+
+    Returns a tuple of:
+      - donor_names: ordered list of donor first names for the ticker
+      - donor_villas: a set of (sub_community, villa) tuples for donors who've had their
+        villa recorded, used to grant the increased 8-booking quota and Legend banner.
+
+    Re-fetched from the sheet at most once every 10 minutes (st.cache_data ttl), so as the
+    Google Sheet grows the ticker and donor-villa perks update themselves automatically
+    without needing a code change or redeploy.
+    """
+    try:
+        resp = requests.get(DONOR_SHEET_CSV_URL, timeout=10)
+        resp.raise_for_status()
+        df = pd.read_csv(io.StringIO(resp.text))
+        df.columns = [str(c).strip() for c in df.columns]
+        if df.shape[1] < 1:
+            raise ValueError("Donor sheet has no columns")
+
+        name_col = df.columns[0]
+        names = [str(n).strip() for n in df[name_col].dropna().tolist() if str(n).strip()]
+        if not names:
+            raise ValueError("Donor sheet has no names")
+
+        donor_villas = set()
+        if df.shape[1] >= 3:
+            sub_col, villa_col = df.columns[1], df.columns[2]
+            for _, row in df.iterrows():
+                sub_val = str(row.get(sub_col, "")).strip()
+                villa_val = str(row.get(villa_col, "")).strip()
+                if villa_val.endswith(".0"):
+                    villa_val = villa_val[:-2]
+                if sub_val and villa_val and sub_val.lower() != "nan" and villa_val.lower() != "nan":
+                    donor_villas.add((sub_val, villa_val))
+
+        return names, donor_villas
+    except Exception:
+        return list(_FALLBACK_DONOR_NAMES), set()
+
+DONOR_NAMES, DONOR_VILLAS = get_donor_data()
+
+def is_donor_villa(sub_community, villa):
+    """True if this Sub Community + Villa belongs to a recorded donor."""
+    return (str(sub_community).strip(), str(villa).strip()) in DONOR_VILLAS
+
+def get_active_booking_limit(sub_community, villa):
+    """Donor villas get an increased quota of 8 active bookings instead of 6."""
+    return MAX_ACTIVE_BOOKINGS_DONOR if is_donor_villa(sub_community, villa) else MAX_ACTIVE_BOOKINGS_DEFAULT
+
+def render_donor_legend_banner():
+    """An elegant thank-you banner shown to donors after they log into their villa."""
+    st.markdown(
+        """<div style="
+            margin: 0.75rem 0 1.25rem 0;
+            padding: 0.9rem 1.4rem;
+            border-radius: 0.6rem;
+            background: linear-gradient(90deg, #0d5384 0%, #14406b 50%, #0d5384 100%);
+            border: 1px solid #ccff00;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.15);
+            text-align: center;
+            color: #ffffff;
+            font-size: 1.05rem;
+            letter-spacing: 0.02em;
+        ">
+            🏆 <span style="color:#ccff00; font-weight:700;">Thank you for being a Mira Legend!</span> 🏆
+            <div style="font-size:0.85rem; font-weight:400; color:#e8f1fb; margin-top:0.25rem;">
+                Your generosity keeps these courts thriving — enjoy your enhanced 8-booking allowance.
+            </div>
+        </div>""",
+        unsafe_allow_html=True,
+    )
 
 def render_donor_ticker(names):
     """Renders a fixed, auto-scrolling ticker of uppercase donor names separated by tennis ball icons."""
@@ -1660,6 +1748,9 @@ sub_community, villa = st.session_state.sub_community, st.session_state.villa
 verified_user_email = st.session_state.get("verified_email", "Verified")
 st.success(f"✅ Logged in as: **{sub_community} - Villa {villa}** (`{verified_user_email}`)")
 
+if is_donor_villa(sub_community, villa):
+    render_donor_legend_banner()
+
 # --- VILLA SNIPING INTERCEPTOR & ENFORCEMENT ---
 current_device = st.session_state.get("device_uuid")
 sniping_level, hopping_villas, cooldown_hrs = check_device_sniping_status(
@@ -1775,6 +1866,7 @@ with tab1:
         if st.button("🚀 Book Now", key="q_book_btn", width='stretch'):
             if q_time:
                 active_count = get_active_bookings_count(villa, sub_community)
+                active_limit = get_active_booking_limit(sub_community, villa)
                 
                 daily_count = get_daily_bookings_count(villa, sub_community, selected_date)
                 start_h = int(q_time.split(":")[0])
@@ -1786,9 +1878,9 @@ with tab1:
                         unavailable.append(f"{h:02d}:00")
                 if unavailable:
                     st.error(f"Slot(s) {', '.join(unavailable)} are unavailable.")
-                elif active_count + q_slots > 6:
-                    st.error(f"Limit Reached (Max 6 active). You can book {max(0, 6-active_count)} more.")
-                    add_log("Access Denied", f"{sub_community} Villa {villa} reached active booking limit (6)", fingerprint=current_device)
+                elif active_count + q_slots > active_limit:
+                    st.error(f"Limit Reached (Max {active_limit} active). You can book {max(0, active_limit-active_count)} more.")
+                    add_log("Access Denied", f"{sub_community} Villa {villa} reached active booking limit ({active_limit})", fingerprint=current_device)
                 elif daily_count + q_slots > 2:
                     st.error(f"Daily Limit Reached (Max 2 per day). You can book {max(0, 2-daily_count)} more today.")
                     add_log("Access Denied", f"{sub_community} Villa {villa} reached daily limit (2) for {selected_date}", fingerprint=current_device)
@@ -1861,7 +1953,8 @@ with tab2:
     else:
         timing_msg = "7AM to 10PM slots."
     
-    st.info(f"App allows 6 Active bookings spanning 14 days, A maximum of 2 active bookings per day. Current date choice timing: **{timing_msg}**")
+    tab2_active_limit = get_active_booking_limit(sub_community, villa)
+    st.info(f"App allows {tab2_active_limit} Active bookings spanning 14 days, A maximum of 2 active bookings per day. Current date choice timing: **{timing_msg}**")
     court_choice = st.selectbox("Court:", courts)
     free_hours = get_available_hours(court_choice, date_choice)
     if not free_hours:
@@ -1889,11 +1982,12 @@ with tab2:
     
     daily_count = get_daily_bookings_count(villa, sub_community, date_choice)
     col_status1, col_status2 = st.columns(2)
-    with col_status1: st.info(f"Total active bookings: **{active_count} / 6**")
+    with col_status1: st.info(f"Total active bookings: **{active_count} / {tab2_active_limit}**")
     with col_status2: st.info(f"Bookings for {date_choice}: **{daily_count} / 2**")
     
     if st.button("Book This Slot", type="primary"):
         active_count_latest = get_active_bookings_count(villa, sub_community)
+        active_limit_latest = get_active_booking_limit(sub_community, villa)
         
         daily_count_latest = get_daily_bookings_count(villa, sub_community, date_choice)
         if not time_choice:
@@ -1908,9 +2002,9 @@ with tab2:
                     unavailable.append(f"{h:02d}:00")
             if unavailable:
                 st.error(f"Slot(s) {', '.join(unavailable)} are unavailable.")
-            elif active_count_latest + slots_choice > 6: 
-                st.error(f"🚫 Overall limit reached. You can book {max(0, 6-active_count_latest)} more slots.")
-                add_log("Access Denied", f"{sub_community} Villa {villa} reached active booking limit (6)", fingerprint=current_device)
+            elif active_count_latest + slots_choice > active_limit_latest: 
+                st.error(f"🚫 Overall limit reached. You can book {max(0, active_limit_latest-active_count_latest)} more slots.")
+                add_log("Access Denied", f"{sub_community} Villa {villa} reached active booking limit ({active_limit_latest})", fingerprint=current_device)
             elif daily_count_latest + slots_choice > 2:
                 st.error(f"🚫 Daily limit reached. You can book {max(0, 2-daily_count_latest)} more on {date_choice}.")
                 add_log("Access Denied", f"{sub_community} Villa {villa} reached daily limit (2) for {date_choice}", fingerprint=current_device)
@@ -1953,11 +2047,11 @@ with tab3:
             vb = get_user_bookings(v_num, "Mira 1")
             for b in vb: b['orig_v'] = v_num; b['orig_sc'] = "Mira 1"
             my_b.extend(vb)
-        limit_val = 6
+        limit_val = get_active_booking_limit(sub_community, villa)
     else:
         my_b = get_user_bookings(villa, sub_community)
         for b in my_b: b['orig_v'] = villa; b['orig_sc'] = sub_community
-        limit_val = 6
+        limit_val = get_active_booking_limit(sub_community, villa)
 
     today_str = get_today().strftime('%Y-%m-%d')
     real_total_active = len(my_b)
