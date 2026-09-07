@@ -31,7 +31,7 @@ st.set_page_config(
 # ==========================================
 DONOR_NAMES = [
     "Abhisek", "Adam", "Adebayo", "Arlan", "Alesia", "Ameen", "Angelo", "Carlos", "Charbel", "Dev", "Elie",
-    "Farheen", "Francois", "Goncalo", "Hatem", "Hana", "Harith", "Hisham", "Katya", "Khaled", "Leina", "Marko", "Mei",
+    "Farheen", "Francois", "Goncalo", "Hatem", "Hana", "Harith", "Hisham", "Katya", "Khaled", "Laurent", "Leina", "Marko", "Mei",
     "Melissa", "Mustafa", "Nick", "Nikki", "Rena", "Ricardo", "Riin", "Saket", "SAS", "Sheila", "Sofia", "Timo", "Vik", "Yousef",
 ]
 
