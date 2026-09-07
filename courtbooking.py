@@ -29,12 +29,10 @@ st.set_page_config(
 # ==========================================
 # --- DONOR NAMES & TICKER (EDIT HERE) ---
 # ==========================================
-
 DONOR_NAMES = [
-    "Abhishek", "Adam", "Adebayo", "Alesia", "Ameen", "Angelo", "Arlan", "Asim", "Carlos", "Charbel", "Dev", "Elie", 
-    "Farheen", "Francois", "Goncalo", "Guru", "Hana", "Harith", "Hatem", "Hisham", "Katya", "Khaled", "Leina", "Lisa", "Marko",
-    "Mei", "Melissa", "Mustafa", "Nick", "Nikki", "Peter", "Rena", "Ricardo", "Riin", "Saket", "SAS", "Sheila", "Sofia",
-    "Timo", "Vik", "Wael", "Yann", "Yousef"
+    "Abhisek", "Adam", "Adebayo", "Arlan", "Alesia", "Ameen", "Angelo", "Carlos", "Charbel", "Dev", "Elie",
+    "Farheen", "Francois", "Goncalo", "Hatem", "Hana", "Harith", "Hisham", "Katya", "Khaled", "Leina", "Marko", "Mei",
+    "Melissa", "Mustafa", "Nick", "Nikki", "Rena", "Ricardo", "Riin", "Saket", "SAS", "Sheila", "Sofia", "Timo", "Vik", "Yousef",
 ]
 
 def render_donor_ticker(names):
@@ -1736,6 +1734,8 @@ with tab1:
                         send_booking_notification_once("created", villa, sub_community, q_court, selected_date, booked_slots, verified_user_email)
                         st.balloons()
                         st.success(f"Booked {q_slots} slot(s) for {q_court} starting at {q_time}")
+                        if verified_user_email and "@" in verified_user_email:
+                            st.info(f"📧 A confirmation email has been sent to **{verified_user_email}** from **miracourtbooking@gmail.com**. If you don't see it, please check your spam/junk folder.")
                         time.sleep(2)
                         st.rerun()
                     else:
@@ -1856,6 +1856,8 @@ with tab2:
                     send_booking_notification_once("created", villa, sub_community, court_choice, date_choice, booked_slots, verified_user_email)
                     st.balloons()
                     st.success(f"✅ SUCCESS! {court_choice} booked for {date_choice} starting at {start_h:02d}:00 ({slots_choice} slot(s))")
+                    if verified_user_email and "@" in verified_user_email:
+                        st.info(f"📧 A confirmation email has been sent to **{verified_user_email}** from **miracourtbooking@gmail.com**. If you don't see it, please check your spam/junk folder.")
                     time.sleep(2.5) 
                     st.rerun()
                 else:
@@ -1973,6 +1975,8 @@ with tab3:
                     for bid in b['ids']: delete_booking(bid, b['v'], b['sc'], fingerprint=current_device)
                     send_booking_notification_once("deleted", b['v'], b['sc'], b['court'], b['date'], b['start_hours'], verified_user_email)
                     st.success(f"Successfully cancelled booking {id_display}")
+                    if verified_user_email and "@" in verified_user_email:
+                        st.info(f"📧 A confirmation email has been sent to **{verified_user_email}** from **miracourtbooking@gmail.com**. If you don't see it, please check your spam/junk folder.")
                     time.sleep(1.5); st.rerun()
                 st.markdown('<div style="margin-bottom: 25px;"></div>', unsafe_allow_html=True)
         
