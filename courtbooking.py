@@ -675,7 +675,7 @@ def purge_out_of_range_records():
                         run_query(supabase.table("villa_claims").delete().eq("id", claim["id"]))
                         add_log("Purge Out-of-Range", f"Deleted invalid claim for {sub} Villa {v_num}")
 
-        bookings_res = run_query(supabase.table("bookings").select("id, sub_community, villa"))
+        bookings_res = run_query(supabase.table("bookings").select("id, sub_community, villa, court, date, start_hour"))
         if bookings_res and bookings_res.data:
             for booking in bookings_res.data:
                 sub = booking.get("sub_community")
@@ -685,6 +685,8 @@ def purge_out_of_range_records():
                     v_num = int(v_str)
                     if not (1 <= v_num <= max_v):
                         run_query(supabase.table("bookings").delete().eq("id", booking["id"]))
+                        log_detail = f"{sub} Villa {v_num} cancelled {booking['court']} for {booking['date']} at {booking['start_hour']:02d}:00"
+                        add_log("Booking Deleted", log_detail)
                         add_log("Purge Out-of-Range", f"Deleted invalid booking for {sub} Villa {v_num}")
     except Exception:
         pass
@@ -1043,7 +1045,7 @@ def get_slot_history(court, date_str, start_hour):
         except Exception:
             ts_display = raw_ts
         history.append({
-            "action": action,
+            "action": "booked" if action == "booked" else "cancelled",
             "who": f"{sub_comm} - Villa {villa_num}",
             "display_time": ts_display,
         })
