@@ -1272,9 +1272,7 @@ st.subheader("🎾 Book that Court ...")
 st.caption("An Un-Official & Community Driven Booking Solution.")
 st.markdown(
     "<p style='color:#ccff00; font-weight:700; margin-top:-8px;'>"
-    "Serving about 2,350 active users, the operation costs of this app "
-    "(DB & SaaS hosting) are shared by the legends of the Mira Tennis Community. "
-    "Reach out to Dev, if you'd like to help."
+    "Serving about 2,450 active users, the app is community coded and funded."
     "</p>",
     unsafe_allow_html=True,
 )
