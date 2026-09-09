@@ -187,6 +187,8 @@ def render_donor_ticker(names):
 
 render_donor_ticker(DONOR_NAMES)
 
+st.info("🕘 **Update:** New booking slots for the 15th day now open at **9:00 PM** the night before, instead of 12:00 AM — so you don't have to stay up past midnight to grab a spot.")
+
 # --- ICS & SQUARE JPG CARD GENERATOR HELPERS ---
 def generate_ics_content(court, date_str, start_hours, sub_community, villa):
     sorted_hours = sorted(start_hours)
@@ -626,8 +628,17 @@ def get_utc_plus_4():
 def get_today():
     return get_utc_plus_4().date()
 
+def get_window_today():
+    """Like get_today(), but the booking window rolls over to the next day at 21:00
+    (9 PM) instead of at midnight, so a new day's slots become bookable earlier in
+    the evening rather than right at 12 AM."""
+    now = get_utc_plus_4()
+    if now.hour >= 21:
+        return now.date() + timedelta(days=1)
+    return now.date()
+
 def get_next_14_days():
-    today = get_today()
+    today = get_window_today()
     return [today + timedelta(days=i) for i in range(15)]
 
 def run_query(query_method):
