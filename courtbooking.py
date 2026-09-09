@@ -597,7 +597,7 @@ SUB_COMMUNITY_VILLA_LIMITS = {
     "Mira 1": 322,
     "Mira 2": 334,
     "Mira 3": 294,
-    "Mira 4": 516,
+    "Mira 4": 600,
     "Mira 5": 316,
     "Mira Oasis 1": 483,
     "Mira Oasis 2": 427,
@@ -1093,7 +1093,7 @@ def _process_background_tasks():
     try:
         purge_out_of_range_records()
         from database_cleanup import run_db_cleanup
-        run_db_cleanup(supabase, courts)
+        run_db_cleanup(supabase, courts, donor_villas=DONOR_VILLAS)
     except Exception:
         pass
 
