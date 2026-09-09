@@ -1748,7 +1748,7 @@ if st.session_state.get('is_coach'):
                 success, result = process_coach_booking(coach_email, coach_name, court_choice, date_choice, hours_to_book, fingerprint="coach_action")
                 if success:
                     st.balloons()
-                    st.success(f"Booked successfully using allocations from: {', '.join([f\"Villa {r['villa']}\" for r in result])}")
+                    st.success("Booked successfully using allocations from: " + ", ".join([f"Villa {r['villa']}" for r in result]))
                     time.sleep(2)
                     st.rerun()
                 else: 
