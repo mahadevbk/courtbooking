@@ -49,8 +49,11 @@ def delete_old_bookings(supabase):
     except Exception as e:
         add_log(supabase, "Cleanup Error", f"Failed to delete old bookings: {str(e)}")
 
-def enforce_active_limits(supabase):
-    """Enforces the 6-active-booking limit globally. Keeps the earliest 6 and deletes the rest."""
+def enforce_active_limits(supabase, donor_villas=None):
+    """Enforces the active-booking limit globally. Keeps the earliest N and deletes the rest.
+    Donor villas (Legends of Mira) get a limit of 8; everyone else gets 6.
+    """
+    donor_villas = donor_villas or set()
     today_str = get_today().strftime('%Y-%m-%d')
     now_hour = get_utc_plus_4().hour
     
@@ -74,21 +77,23 @@ def enforce_active_limits(supabase):
 
     # 3. Check and prune
     for (sc, v), bookings in villa_map.items():
-        if len(bookings) > 6:
+        norm_key = (" ".join(str(sc).lower().split()), str(v).strip())
+        limit = 8 if norm_key in donor_villas else 6
+        if len(bookings) > limit:
             # Sort chronologically: date then start_hour
             bookings.sort(key=lambda x: (x['date'], int(x['start_hour'])))
             
-            # Keep first 6, delete the rest
-            excess = bookings[6:]
+            # Keep first `limit`, delete the rest
+            excess = bookings[limit:]
             excess_ids = [b['id'] for b in excess]
             
             if excess_ids:
                 try:
                     supabase.table("bookings").delete().in_("id", excess_ids).execute()
-                    add_log(supabase, "Limit Enforcement", f"Deleted {len(excess_ids)} excess bookings for {sc} Villa {v} (Max 6 limit).")
+                    add_log(supabase, "Limit Enforcement", f"Deleted {len(excess_ids)} excess bookings for {sc} Villa {v} (Max {limit} limit).")
                 except: pass
 
-def run_db_cleanup(supabase, courts):
+def run_db_cleanup(supabase, courts, donor_villas=None):
     if st.session_state.get('background_tasks_run', False): return
     st.session_state['background_tasks_run'] = True
     if check_global_lock(supabase): return
@@ -98,7 +103,7 @@ def run_db_cleanup(supabase, courts):
         delete_old_bookings(supabase)
 
         # 1. Enforce limits on existing bookings
-        enforce_active_limits(supabase)
+        enforce_active_limits(supabase, donor_villas=donor_villas)
         
         add_log(supabase, "System Maintenance", "Database sync triggered.")
         special_villas = [("229", "Mira 1"), ("231", "Mira 1"), ("233", "Mira 1")]
