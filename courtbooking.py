@@ -987,6 +987,17 @@ def get_daily_bookings_count(villa, sub_community, date_str):
         if response is None or response.count is None: return 99
         return response.count
 
+def is_slot_booked(court, date_str, start_hour):
+    response = run_query(supabase.table("bookings").select("id").eq("court", court).eq("date", date_str).eq("start_hour", start_hour))
+    return len(response.data) > 0 if response and response.data else False
+
+def is_slot_in_past(date_str, start_hour):
+    now = get_utc_plus_4()
+    if date_str < now.strftime('%Y-%m-%d'): return True
+    if date_str == now.strftime('%Y-%m-%d') and (start_hour < now.hour or (start_hour == now.hour and now.minute > 0)): return True
+    return False
+
+
 # --- CORE BOOKING & DELETION FUNCTIONS (UPDATED FOR COACH POOL) ---
 
 def book_slot(villa, sub_community, court, date_str, start_hour, fingerprint=None, coach_email=None):
