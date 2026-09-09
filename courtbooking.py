@@ -2734,8 +2734,8 @@ else:
                 if data: st.download_button(label="Click here to Download ZIP", data=data, file_name=f"court_booking_backup_{get_today()}.zip", mime="application/zip")
                 else: st.error("Failed to fetch data for backup.")
 
-    elif admin_pass:
-        st.error("Incorrect Password")
+        elif admin_pass:
+            st.error("Incorrect Password")
 
 col1, col2 = st.columns([1, 5])
 with col1: st.markdown(f'<img src="https://raw.githubusercontent.com/mahadevbk/courtbooking/main/qr-code.miracourtbooking.streamlit.app.png" height="100">', unsafe_allow_html=True)
