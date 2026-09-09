@@ -988,15 +988,23 @@ def get_daily_bookings_count(villa, sub_community, date_str):
         return response.count
 
 def is_slot_booked(court, date_str, start_hour):
-    response = run_query(supabase.table("bookings").select("id").eq("court", court).eq("date", date_str).eq("start_hour", start_hour))
-    return len(response.data) > 0 if response and response.data else False
+    response = run_query(
+        supabase.table("bookings").select("id")
+        .eq("court", court)
+        .eq("date", date_str)
+        .eq("start_hour", start_hour)
+    )
+    if not response or not response.data: return False
+    return len(response.data) > 0
 
 def is_slot_in_past(date_str, start_hour):
     now = get_utc_plus_4()
-    if date_str < now.strftime('%Y-%m-%d'): return True
-    if date_str == now.strftime('%Y-%m-%d') and (start_hour < now.hour or (start_hour == now.hour and now.minute > 0)): return True
+    today_str = now.strftime('%Y-%m-%d')
+    if date_str < today_str: return True
+    if date_str > today_str: return False
+    if start_hour < now.hour: return True
+    if start_hour == now.hour and now.minute > 0: return True
     return False
-
 
 # --- CORE BOOKING & DELETION FUNCTIONS (UPDATED FOR COACH POOL) ---
 
@@ -1206,7 +1214,6 @@ def get_bookings_for_villa(villa, sub_community):
 def _process_background_tasks():
     try:
         purge_out_of_range_records()
-        # database_cleanup.py remains separate but we mimic the call
         from database_cleanup import run_db_cleanup
         run_db_cleanup(supabase, courts, donor_villas=DONOR_VILLAS)
     except Exception:
@@ -1328,7 +1335,13 @@ def logout_action():
         localStorage.removeItem('supabase_refresh_token');
         setTimeout(() => { window.location.href = window.location.origin + window.location.pathname; }, 150);
     """)
-    st.session_state.clear()
+    for key in [
+        "authenticated", "sub_community", "villa", "verified_email", 
+        "otp_sent", "otp_email", "otp_target_villa", "otp_target_sub", 
+        "prefill_sub", "prefill_villa", "seen_sniping_warning"
+    ]:
+        if key in st.session_state:
+            del st.session_state[key]
     st.query_params.clear()
     st.info("Logging out... Please wait.")
     time.sleep(0.8)
@@ -1407,8 +1420,6 @@ except Exception:
 
 if 'authenticated' not in st.session_state:
     st.session_state.authenticated = False
-if 'is_coach' not in st.session_state:
-    st.session_state.is_coach = False
 
 js_device_fetch = st_javascript("""
     (function() {
@@ -1443,7 +1454,6 @@ if url_token and not st.session_state.authenticated:
         st.session_state.villa = verified_claim["villa"]
         st.session_state.verified_email = verified_claim["email"]
         st.session_state.authenticated = True
-        st.session_state.is_coach = False
 
 if not st.session_state.authenticated:
     stored_bundle = st_javascript("(localStorage.getItem('court_villa_lock') || 'no_lock') + ':::' + (localStorage.getItem('court_verified_email') || '') + ':::' + (localStorage.getItem('verified_claim_info') || '');")
@@ -1467,7 +1477,6 @@ if not st.session_state.authenticated:
                 st.session_state.villa = target_villa
                 st.session_state.verified_email = s_email
                 st.session_state.authenticated = True
-                st.session_state.is_coach = False
                 st.query_params["auth"] = encode_auth_token(target_sub, target_villa, s_email)
                 st.rerun()
 
@@ -1503,7 +1512,7 @@ if not st.session_state.authenticated:
 
     st.subheader("🛡️ Resident Email Verification")
     st.caption("One-time 6-digit verification code. Max 2 resident emails per villa.")
-    
+
     # ----------------------------------------
     # COACH LOGIN INTEGRATION
     # ----------------------------------------
@@ -2336,46 +2345,7 @@ else:
         if admin_maint_pwd:
             if admin_maint_pwd == st.secrets.get("ADMIN_PASSWORD", "admin123"):
                 st.success("Admin Access Granted")
-                
-                # ----------------------------------------
-                # ADMIN: COACH POOL MANAGEMENT
-                # ----------------------------------------
-                with st.expander("🎾 Coach & Pool Management", expanded=True):
-                    st.markdown("### 1. Add New Coach")
-                    col_c1, col_c2 = st.columns(2)
-                    with col_c1:
-                        new_c_email = st.text_input("New Coach Email", key="new_coach_email_input").strip().lower()
-                    with col_c2:
-                        new_c_name = st.text_input("Coach Name", key="new_coach_name_input").strip()
-                    if st.button("Create Coach Profile", type="primary", use_container_width=True):
-                        if new_c_email and new_c_name:
-                            run_query(supabase.table("coach_accounts").insert({"email": new_c_email, "coach_name": new_c_name}))
-                            st.success(f"Coach {new_c_name} created successfully.")
-                        else:
-                            st.error("Please provide both email and name.")
-                    
-                    st.divider()
-                    st.markdown("### 2. Map Villa to Coach Pool")
-                    assign_c_email = st.text_input("Existing Coach Email", key="map_coach_email_input").strip().lower()
-                    
-                    col_m1, col_m2 = st.columns(2)
-                    with col_m1:
-                        assign_sub = st.selectbox("Sub-Community to Map", options=sub_community_list, key="map_sub_input")
-                    with col_m2:
-                        assign_villa = st.text_input("Villa Number to Map", key="map_villa_input").strip()
-                        
-                    if st.button("Map Villa to Coach", type="primary", use_container_width=True):
-                        if assign_c_email and assign_sub and assign_villa:
-                            run_query(supabase.table("coach_villas").insert({
-                                "coach_email": assign_c_email, 
-                                "sub_community": assign_sub, 
-                                "villa": assign_villa
-                            }))
-                            st.success(f"Successfully mapped {assign_sub} Villa {assign_villa} to {assign_c_email}.")
-                        else:
-                            st.error("Please complete all fields to map a villa.")
-
-                with st.expander("🔑 Admin Resident Bypass (Authorize & Switch Active Resident)", expanded=False):
+                with st.expander("🔑 Admin Resident Bypass (Authorize & Switch Active Resident)", expanded=True):
                     st.caption("Directly authorize a resident email without OTP and immediately switch this session to them.")
                     b_col1, b_col2 = st.columns(2)
                     with b_col1:
@@ -2478,6 +2448,44 @@ else:
                     st.session_state.pop("log_admin_pass", None)
                     st.rerun()
 
+            # ----------------------------------------
+            # ADMIN: COACH POOL MANAGEMENT
+            # ----------------------------------------
+            with st.expander("🎾 Coach & Pool Management", expanded=True):
+                st.markdown("### 1. Add New Coach")
+                col_c1, col_c2 = st.columns(2)
+                with col_c1:
+                    new_c_email = st.text_input("New Coach Email", key="new_coach_email_input").strip().lower()
+                with col_c2:
+                    new_c_name = st.text_input("Coach Name", key="new_coach_name_input").strip()
+                if st.button("Create Coach Profile", type="primary", use_container_width=True):
+                    if new_c_email and new_c_name:
+                        run_query(supabase.table("coach_accounts").insert({"email": new_c_email, "coach_name": new_c_name}))
+                        st.success(f"Coach {new_c_name} created successfully.")
+                    else:
+                        st.error("Please provide both email and name.")
+                
+                st.divider()
+                st.markdown("### 2. Map Villa to Coach Pool")
+                assign_c_email = st.text_input("Existing Coach Email", key="map_coach_email_input").strip().lower()
+                
+                col_m1, col_m2 = st.columns(2)
+                with col_m1:
+                    assign_sub = st.selectbox("Sub-Community to Map", options=sub_community_list, key="map_sub_input")
+                with col_m2:
+                    assign_villa = st.text_input("Villa Number to Map", key="map_villa_input").strip()
+                    
+                if st.button("Map Villa to Coach", type="primary", use_container_width=True):
+                    if assign_c_email and assign_sub and assign_villa:
+                        run_query(supabase.table("coach_villas").insert({
+                            "coach_email": assign_c_email, 
+                            "sub_community": assign_sub, 
+                            "villa": assign_villa
+                        }))
+                        st.success(f"Successfully mapped {assign_sub} Villa {assign_villa} to {assign_c_email}.")
+                    else:
+                        st.error("Please complete all fields to map a villa.")
+
             with st.expander("🚨 Manually Apply Sniping Lockout by Email", expanded=True):
                 st.markdown("### Search Associated Villas & Enforce Lockout")
                 lockout_email_input = st.text_input("Enter Resident Email Address", placeholder="resident@example.com", key="admin_lockout_email_input").strip().lower()
@@ -2554,180 +2562,180 @@ else:
                                     time.sleep(1.5)
                                     st.rerun()
 
-                st.divider()
-                st.markdown("### Email-Based Cooldown & Lockout Reset")
-                col_rst1, col_rst2 = st.columns([3, 1])
-                with col_rst1:
-                    reset_email_input = st.text_input("Enter Resident Email Address", placeholder="resident@example.com", key="admin_rst_email").strip().lower()
-                with col_rst2:
-                    st.write(""); st.write("")
-                    lookup_pressed = st.button("Search Account", type="primary", use_container_width=True)
+            st.divider()
+            st.markdown("### Email-Based Cooldown & Lockout Reset")
+            col_rst1, col_rst2 = st.columns([3, 1])
+            with col_rst1:
+                reset_email_input = st.text_input("Enter Resident Email Address", placeholder="resident@example.com", key="admin_rst_email").strip().lower()
+            with col_rst2:
+                st.write(""); st.write("")
+                lookup_pressed = st.button("Search Account", type="primary", use_container_width=True)
 
-                if reset_email_input:
-                    email_claims = get_all_villas_for_email(reset_email_input)
-                    if email_claims:
-                        st.markdown(f"**Properties Linked to `{reset_email_input}` ({len(email_claims)} total):**")
-                        for c in email_claims:
-                            st.info(f"🏡 **{c['sub_community']} - Villa {c['villa']}** | *Verified:* `{c.get('verified_at', 'Unverified')}`")
-                        st.write("")
-                        col_e1, col_e2 = st.columns(2)
-                        with col_e1:
-                            if st.button(f"🔓 Reset Cooldown & Restore Clean Access", type="primary", use_container_width=True, key="email_rst_btn_1"):
-                                now_ts = get_utc_plus_4().isoformat()
-                                for c in email_claims:
-                                    run_query(supabase.table("villa_claims").update({"verified_at": now_ts, "status": "approved"}).eq("id", c["id"]))
-                                add_log("Admin Reset", f"Admin reset cooldown for email {reset_email_input}")
-                                st.success(f"✅ Successfully cleared lockout for {reset_email_input}!")
-                                time.sleep(1.5)
-                                st.rerun()
-                        with col_e2:
-                            if st.button(f"🔄 Reset Ownership (Wrong Villa Mistake)", type="secondary", use_container_width=True, key="email_rst_btn_2"):
-                                for c in email_claims:
-                                    run_query(supabase.table("villa_claims").delete().eq("id", c["id"]))
-                                add_log("Admin Reset", f"Admin deleted all villa claims for email {reset_email_input}")
-                                st.success(f"🔄 All villa claims deleted for {reset_email_input}!")
-                                time.sleep(1.5)
-                                st.rerun()
-                    else:
-                        st.warning(f"No active property claims found for `{reset_email_input}`.")
+            if reset_email_input:
+                email_claims = get_all_villas_for_email(reset_email_input)
+                if email_claims:
+                    st.markdown(f"**Properties Linked to `{reset_email_input}` ({len(email_claims)} total):**")
+                    for c in email_claims:
+                        st.info(f"🏡 **{c['sub_community']} - Villa {c['villa']}** | *Verified:* `{c.get('verified_at', 'Unverified')}`")
+                    st.write("")
+                    col_e1, col_e2 = st.columns(2)
+                    with col_e1:
+                        if st.button(f"🔓 Reset Cooldown & Restore Clean Access", type="primary", use_container_width=True, key="email_rst_btn_1"):
+                            now_ts = get_utc_plus_4().isoformat()
+                            for c in email_claims:
+                                run_query(supabase.table("villa_claims").update({"verified_at": now_ts, "status": "approved"}).eq("id", c["id"]))
+                            add_log("Admin Reset", f"Admin reset cooldown for email {reset_email_input}")
+                            st.success(f"✅ Successfully cleared lockout for {reset_email_input}!")
+                            time.sleep(1.5)
+                            st.rerun()
+                    with col_e2:
+                        if st.button(f"🔄 Reset Ownership (Wrong Villa Mistake)", type="secondary", use_container_width=True, key="email_rst_btn_2"):
+                            for c in email_claims:
+                                run_query(supabase.table("villa_claims").delete().eq("id", c["id"]))
+                            add_log("Admin Reset", f"Admin deleted all villa claims for email {reset_email_input}")
+                            st.success(f"🔄 All villa claims deleted for {reset_email_input}!")
+                            time.sleep(1.5)
+                            st.rerun()
+                else:
+                    st.warning(f"No active property claims found for `{reset_email_input}`.")
 
-            with st.expander("🛡️ Resident & Villa Verification Management", expanded=False):
-                st.markdown("### Inspect & Release Claimed Villas")
-                all_claimed = get_all_claimed_villas()
-                claim_inspect_villa = st.selectbox("Select Claimed Villa to Inspect / Reset", options=["-- Select --"] + all_claimed, key="admin_claimed_villa_select")
-                if claim_inspect_villa != "-- Select --":
-                    try:
-                        c_sub, c_villa = claim_inspect_villa.split(" - ")
-                        claims = get_claims_for_villa(c_sub, c_villa)
-                        if claims:
-                            st.write(f"Active Verified Emails for **{claim_inspect_villa}** ({len(claims)} / 2):")
-                            for claim in claims:
-                                c_box1, c_box2 = st.columns([3, 1])
-                                with c_box1:
-                                    st.info(f"📧 **{claim['email']}**  \n*Status:* `{claim['status']}`")
-                                with c_box2:
-                                    st.write("")
-                                    if st.button(f"🔓 Release Claim", key=f"del_claim_{claim['id']}", type="secondary", width="stretch"):
-                                        run_query(supabase.table("villa_claims").delete().eq("id", claim['id']))
-                                        add_log("Villa Claim Removed", f"Admin released claim for {c_sub} Villa {c_villa}")
-                                        st.success(f"Released {claim['email']}!")
-                                        time.sleep(1.2)
-                                        st.rerun()
-                        else:
-                            st.info("No active claims found for this villa.")
-                    except Exception as e:
-                        st.error(f"Error inspecting claims: {str(e)}")
-
-                st.divider()
-                st.markdown("### Manually Authorize Resident Claim (Without OTP)")
-                with st.form("manual_claim_form"):
-                    man_sub = st.selectbox("Sub-Community", options=sub_community_list, key="admin_man_sub")
-                    max_m_limit = SUB_COMMUNITY_VILLA_LIMITS.get(man_sub, 500)
-                    man_villa = st.text_input(f"Villa Number (1 - {max_m_limit})", key="admin_man_villa").strip()
-                    man_email = st.text_input("Resident Email Address", key="admin_man_email").strip().lower()
-                    submitted_claim = st.form_submit_button("Authorize Claim Now", type="primary")
-                    if submitted_claim:
-                        max_allowed_manual = SUB_COMMUNITY_VILLA_LIMITS.get(man_sub, 9999)
-                        if not man_villa or not man_email or "@" not in man_email:
-                            st.error("Please provide valid villa and email details.")
-                        elif not man_villa.isdigit() or not (1 <= int(man_villa) <= max_allowed_manual):
-                            st.error(f"Invalid villa number for {man_sub}. Must be between 1 and {max_allowed_manual}.")
-                        else:
-                            curr_c = get_villa_claims_count(man_sub, man_villa)
-                            email_v_count = get_email_claimed_villas_count(man_email)
-                            if curr_c >= 2:
-                                st.error(f"Cannot add: {man_sub} Villa {man_villa} already has 2 verified claims.")
-                            elif email_v_count >= 3:
-                                st.error(f"Cannot add: {man_email} already holds claims for 3 villas (maximum cap reached).")
-                            else:
-                                now_ts = get_utc_plus_4().isoformat()
-                                run_query(supabase.table("villa_claims").insert({
-                                    "sub_community": man_sub,
-                                    "villa": man_villa,
-                                    "email": man_email,
-                                    "fingerprint": "admin_manual_grant",
-                                    "status": "approved",
-                                    "verified_at": now_ts
-                                }))
-                                add_log("Villa Claim", f"Admin manually authorized {man_sub} Villa {man_villa}")
-                                st.success(f"Claim created for {man_sub} Villa {man_villa}!")
-                                time.sleep(1.5)
-                                st.rerun()
-
-            with st.expander("🏘️ Villa Bookings & Data Backup Management", expanded=False):
-                st.markdown("### Villa Booking Management")
-                all_villas = get_all_villas_with_any_bookings()
-                selected_villa = st.selectbox("Select Villa to Manage", options=["-- Select --"] + all_villas, key="admin_manage_villa")
-                if selected_villa != "-- Select --":
-                    try:
-                        sub_comm, villa_num = selected_villa.split(" - ")
-                        bookings = get_bookings_for_villa(villa_num, sub_comm)
-                        if bookings:
-                            df_bookings = pd.DataFrame(bookings)
-                            df_bookings['Time'] = df_bookings['start_hour'].apply(lambda x: f"{x:02d}:00")
-                            df_bookings.insert(0, "Select", False)
-                            edited_df = st.data_editor(
-                                df_bookings[["Select", "id", "date", "Time", "court"]],
-                                column_config={
-                                    "Select": st.column_config.CheckboxColumn("Delete?", default=False),
-                                    "id": "ID", "date": "Date", "Time": "Time", "court": "Court"
-                                },
-                                disabled=["id", "date", "Time", "court"],
-                                hide_index=True,
-                                key="admin_booking_editor"
-                            )
-                            if st.button("Delete Selected Bookings", type="primary"):
-                                to_delete = edited_df[edited_df["Select"] == True]
-                                if not to_delete.empty:
-                                    with st.spinner(f"Deleting {len(to_delete)} bookings..."):
-                                        for _, row in to_delete.iterrows():
-                                            delete_booking(row['id'], villa_num, sub_comm, fingerprint=current_device)
-                                    st.success(f"Successfully deleted {len(to_delete)} bookings for {selected_villa}.")
-                                    time.sleep(1.5)
+        with st.expander("🛡️ Resident & Villa Verification Management", expanded=False):
+            st.markdown("### Inspect & Release Claimed Villas")
+            all_claimed = get_all_claimed_villas()
+            claim_inspect_villa = st.selectbox("Select Claimed Villa to Inspect / Reset", options=["-- Select --"] + all_claimed, key="admin_claimed_villa_select")
+            if claim_inspect_villa != "-- Select --":
+                try:
+                    c_sub, c_villa = claim_inspect_villa.split(" - ")
+                    claims = get_claims_for_villa(c_sub, c_villa)
+                    if claims:
+                        st.write(f"Active Verified Emails for **{claim_inspect_villa}** ({len(claims)} / 2):")
+                        for claim in claims:
+                            c_box1, c_box2 = st.columns([3, 1])
+                            with c_box1:
+                                st.info(f"📧 **{claim['email']}**  \n*Status:* `{claim['status']}`")
+                            with c_box2:
+                                st.write("")
+                                if st.button(f"🔓 Release Claim", key=f"del_claim_{claim['id']}", type="secondary", width="stretch"):
+                                    run_query(supabase.table("villa_claims").delete().eq("id", claim['id']))
+                                    add_log("Villa Claim Removed", f"Admin released claim for {c_sub} Villa {c_villa}")
+                                    st.success(f"Released {claim['email']}!")
+                                    time.sleep(1.2)
                                     st.rerun()
-                                else:
-                                    st.warning("Please select at least one booking to delete.")
+                    else:
+                        st.info("No active claims found for this villa.")
+                except Exception as e:
+                    st.error(f"Error inspecting claims: {str(e)}")
+
+            st.divider()
+            st.markdown("### Manually Authorize Resident Claim (Without OTP)")
+            with st.form("manual_claim_form"):
+                man_sub = st.selectbox("Sub-Community", options=sub_community_list, key="admin_man_sub")
+                max_m_limit = SUB_COMMUNITY_VILLA_LIMITS.get(man_sub, 500)
+                man_villa = st.text_input(f"Villa Number (1 - {max_m_limit})", key="admin_man_villa").strip()
+                man_email = st.text_input("Resident Email Address", key="admin_man_email").strip().lower()
+                submitted_claim = st.form_submit_button("Authorize Claim Now", type="primary")
+                if submitted_claim:
+                    max_allowed_manual = SUB_COMMUNITY_VILLA_LIMITS.get(man_sub, 9999)
+                    if not man_villa or not man_email or "@" not in man_email:
+                        st.error("Please provide valid villa and email details.")
+                    elif not man_villa.isdigit() or not (1 <= int(man_villa) <= max_allowed_manual):
+                        st.error(f"Invalid villa number for {man_sub}. Must be between 1 and {max_allowed_manual}.")
+                    else:
+                        curr_c = get_villa_claims_count(man_sub, man_villa)
+                        email_v_count = get_email_claimed_villas_count(man_email)
+                        if curr_c >= 2:
+                            st.error(f"Cannot add: {man_sub} Villa {man_villa} already has 2 verified claims.")
+                        elif email_v_count >= 3:
+                            st.error(f"Cannot add: {man_email} already holds claims for 3 villas (maximum cap reached).")
                         else:
-                            st.info(f"No bookings found for {selected_villa}.")
-                    except Exception as e:
-                        st.error(f"Error loading bookings: {str(e)}")
+                            now_ts = get_utc_plus_4().isoformat()
+                            run_query(supabase.table("villa_claims").insert({
+                                "sub_community": man_sub,
+                                "villa": man_villa,
+                                "email": man_email,
+                                "fingerprint": "admin_manual_grant",
+                                "status": "approved",
+                                "verified_at": now_ts
+                            }))
+                            add_log("Villa Claim", f"Admin manually authorized {man_sub} Villa {man_villa}")
+                            st.success(f"Claim created for {man_sub} Villa {man_villa}!")
+                            time.sleep(1.5)
+                            st.rerun()
 
-                st.divider()
-                st.markdown("### Database Backup (ZIP)")
-                def get_zip_data():
-                    try:
-                        b_data, l_data = [], []
-                        chunk_size = 1000
-                        offset = 0
-                        while True:
-                            res = run_query(supabase.table("bookings").select("*").range(offset, offset + chunk_size - 1))
-                            if not res or res.data is None: break
-                            b_data.extend(res.data)
-                            if len(res.data) < chunk_size: break
-                            offset += chunk_size
-                        offset = 0
-                        while True:
-                            res = run_query(supabase.table("logs").select("*").range(offset, offset + chunk_size - 1).order("timestamp", desc=True))
-                            if not res or res.data is None: break
-                            l_data.extend(res.data)
-                            if len(res.data) < chunk_size: break
-                            offset += chunk_size
-                        buf = io.BytesIO()
-                        with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as vz:
-                            vz.writestr(f"bookings_{get_today()}.csv", pd.DataFrame(b_data).to_csv(index=False))
-                            vz.writestr(f"logs_{get_today()}.csv", pd.DataFrame(l_data).to_csv(index=False))
-                        return buf.getvalue()
-                    except Exception as e:
-                        st.error(f"Backup Error: {str(e)}")
-                        return None
+        with st.expander("🏘️ Villa Bookings & Data Backup Management", expanded=False):
+            st.markdown("### Villa Booking Management")
+            all_villas = get_all_villas_with_any_bookings()
+            selected_villa = st.selectbox("Select Villa to Manage", options=["-- Select --"] + all_villas, key="admin_manage_villa")
+            if selected_villa != "-- Select --":
+                try:
+                    sub_comm, villa_num = selected_villa.split(" - ")
+                    bookings = get_bookings_for_villa(villa_num, sub_comm)
+                    if bookings:
+                        df_bookings = pd.DataFrame(bookings)
+                        df_bookings['Time'] = df_bookings['start_hour'].apply(lambda x: f"{x:02d}:00")
+                        df_bookings.insert(0, "Select", False)
+                        edited_df = st.data_editor(
+                            df_bookings[["Select", "id", "date", "Time", "court"]],
+                            column_config={
+                                "Select": st.column_config.CheckboxColumn("Delete?", default=False),
+                                "id": "ID", "date": "Date", "Time": "Time", "court": "Court"
+                            },
+                            disabled=["id", "date", "Time", "court"],
+                            hide_index=True,
+                            key="admin_booking_editor"
+                        )
+                        if st.button("Delete Selected Bookings", type="primary"):
+                            to_delete = edited_df[edited_df["Select"] == True]
+                            if not to_delete.empty:
+                                with st.spinner(f"Deleting {len(to_delete)} bookings..."):
+                                    for _, row in to_delete.iterrows():
+                                        delete_booking(row['id'], villa_num, sub_comm, fingerprint=current_device)
+                                st.success(f"Successfully deleted {len(to_delete)} bookings for {selected_villa}.")
+                                time.sleep(1.5)
+                                st.rerun()
+                            else:
+                                st.warning("Please select at least one booking to delete.")
+                    else:
+                        st.info(f"No bookings found for {selected_villa}.")
+                except Exception as e:
+                    st.error(f"Error loading bookings: {str(e)}")
 
-                if st.button("Generate Backup Link"):
-                    data = get_zip_data()
-                    if data: st.download_button(label="Click here to Download ZIP", data=data, file_name=f"court_booking_backup_{get_today()}.zip", mime="application/zip")
-                    else: st.error("Failed to fetch data for backup.")
+            st.divider()
+            st.markdown("### Database Backup (ZIP)")
+            def get_zip_data():
+                try:
+                    b_data, l_data = [], []
+                    chunk_size = 1000
+                    offset = 0
+                    while True:
+                        res = run_query(supabase.table("bookings").select("*").range(offset, offset + chunk_size - 1))
+                        if not res or res.data is None: break
+                        b_data.extend(res.data)
+                        if len(res.data) < chunk_size: break
+                        offset += chunk_size
+                    offset = 0
+                    while True:
+                        res = run_query(supabase.table("logs").select("*").range(offset, offset + chunk_size - 1).order("timestamp", desc=True))
+                        if not res or res.data is None: break
+                        l_data.extend(res.data)
+                        if len(res.data) < chunk_size: break
+                        offset += chunk_size
+                    buf = io.BytesIO()
+                    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as vz:
+                        vz.writestr(f"bookings_{get_today()}.csv", pd.DataFrame(b_data).to_csv(index=False))
+                        vz.writestr(f"logs_{get_today()}.csv", pd.DataFrame(l_data).to_csv(index=False))
+                    return buf.getvalue()
+                except Exception as e:
+                    st.error(f"Backup Error: {str(e)}")
+                    return None
 
-        elif admin_pass:
-            st.error("Incorrect Password")
+            if st.button("Generate Backup Link"):
+                data = get_zip_data()
+                if data: st.download_button(label="Click here to Download ZIP", data=data, file_name=f"court_booking_backup_{get_today()}.zip", mime="application/zip")
+                else: st.error("Failed to fetch data for backup.")
+
+    elif admin_pass:
+        st.error("Incorrect Password")
 
 col1, col2 = st.columns([1, 5])
 with col1: st.markdown(f'<img src="https://raw.githubusercontent.com/mahadevbk/courtbooking/main/qr-code.miracourtbooking.streamlit.app.png" height="100">', unsafe_allow_html=True)
