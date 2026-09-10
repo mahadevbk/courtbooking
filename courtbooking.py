@@ -619,6 +619,8 @@ SUB_COMMUNITY_VILLA_LIMITS = {
     "Mira Oasis 3": 483
 }
 
+courts = ["Mira 2", "Mira 4", "Mira 5A", "Mira 5B", "Mira Oasis 1", "Mira Oasis 2", "Mira Oasis 3A", "Mira Oasis 3B", "Mira Oasis 3C"]
+
 DISPOSABLE_DOMAINS = {
     "mailinator.com", "tempmail.com", "10minutemail.com", "guerrillamail.com",
     "trashmail.com", "yopmail.com", "sharklasers.com", "getairmail.com", "throwawaymail.com"
