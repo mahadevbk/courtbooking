@@ -2100,9 +2100,11 @@ def render_court_maintenance_tab(reporter_label, current_device):
 
 
 def render_coach_admin_panel(key_prefix="cam"):
-    """Comprehensive coach account admin panel: create/edit/deactivate/delete coaches,
-    and map/remove villas (sub-community dropdown + villa-number dropdown) for their pool.
-    Shared by both admin entry points (Court Maint. and the main Activity Log admin tools).
+    """Comprehensive coach account admin panel: create/deactivate/delete coaches, reset PINs,
+    and manage each coach's villa pool (pick a coach, see their villas as a radio list to
+    delete one, or add a new villa via sub-community + villa-number dropdowns).
+    Coach identity is keyed off email (guaranteed unique and always present) rather than a
+    numeric 'id' column, since not every coach_accounts table has one.
     """
     with st.expander("🎾 Coach & Pool Management", expanded=True):
         st.markdown("### 1. Add New Coach")
@@ -2121,90 +2123,109 @@ def render_coach_admin_panel(key_prefix="cam"):
                 st.error("Please provide both email and name.")
 
         st.divider()
-        st.markdown(f"### 2. Map Villa to Coach Pool (max {MAX_VILLAS_PER_COACH} villas per coach)")
-        assign_c_email = st.text_input("Existing Coach Email", key=f"{key_prefix}_map_coach_email_input").strip().lower()
+        st.markdown(f"### 2. Manage Villas for a Coach (max {MAX_VILLAS_PER_COACH} villas per coach)")
 
-        col_m1, col_m2 = st.columns(2)
-        with col_m1:
-            assign_sub = st.selectbox("Sub-Community to Map", options=sub_community_list, key=f"{key_prefix}_map_sub_input")
-        with col_m2:
-            map_villa_limit = SUB_COMMUNITY_VILLA_LIMITS.get(assign_sub, 500)
-            assign_villa = st.selectbox("Villa Number to Map", options=[str(n) for n in range(1, map_villa_limit + 1)], key=f"{key_prefix}_map_villa_input")
+        all_coaches_res = run_query(supabase.table("coach_accounts").select("*").order("coach_name"))
+        all_coaches = all_coaches_res.data if all_coaches_res and all_coaches_res.data else []
 
-        if st.button("Map Villa to Coach", type="primary", use_container_width=True):
-            if assign_c_email and assign_sub and assign_villa:
-                existing_villa_count = run_query(
-                    supabase.table("coach_villas").select("id", count="exact").eq("coach_email", assign_c_email)
-                )
-                current_villa_count = existing_villa_count.count if existing_villa_count and existing_villa_count.count is not None else 0
-                if current_villa_count >= MAX_VILLAS_PER_COACH:
-                    st.error(f"🚫 This coach already has {current_villa_count} villas assigned — the maximum is {MAX_VILLAS_PER_COACH}. Remove one below before adding another.")
+        if not all_coaches:
+            st.info("No coach accounts created yet. Add one above first.")
+        else:
+            coach_options = ["-- Select a Coach --"] + [f"{c.get('coach_name', 'Coach')} ({c['email']})" for c in all_coaches]
+            selected_coach_label = st.selectbox("Select Coach", options=coach_options, key=f"{key_prefix}_villa_coach_select")
+
+            if selected_coach_label != "-- Select a Coach --":
+                selected_idx = coach_options.index(selected_coach_label) - 1
+                selected_coach = all_coaches[selected_idx]
+                selected_coach_email = selected_coach["email"]
+
+                c_villas_res = run_query(supabase.table("coach_villas").select("*").eq("coach_email", selected_coach_email))
+                c_villas = c_villas_res.data if c_villas_res and c_villas_res.data else []
+
+                st.caption(f"{len(c_villas)}/{MAX_VILLAS_PER_COACH} villas currently assigned to {selected_coach.get('coach_name', 'this coach')}")
+
+                if c_villas:
+                    villa_radio_labels = [f"{v['sub_community']} - Villa {v['villa']}" for v in c_villas]
+                    villa_to_delete_label = st.radio("Existing villas (select one to remove)", options=villa_radio_labels, key=f"{key_prefix}_villa_radio_{selected_coach_email}")
+                    if st.button("🗑️ Delete Selected Villa", key=f"{key_prefix}_delete_villa_btn_{selected_coach_email}", use_container_width=True):
+                        villa_to_delete = c_villas[villa_radio_labels.index(villa_to_delete_label)]
+                        if villa_to_delete.get("id") is not None:
+                            run_query(supabase.table("coach_villas").delete().eq("id", villa_to_delete["id"]))
+                        else:
+                            run_query(
+                                supabase.table("coach_villas").delete()
+                                .eq("coach_email", selected_coach_email)
+                                .eq("sub_community", villa_to_delete["sub_community"])
+                                .eq("villa", villa_to_delete["villa"])
+                            )
+                        st.success(f"Removed {villa_to_delete_label} from {selected_coach.get('coach_name', 'this coach')}.")
+                        time.sleep(1)
+                        st.rerun()
                 else:
-                    run_query(supabase.table("coach_villas").insert({
-                        "coach_email": assign_c_email,
-                        "sub_community": assign_sub,
-                        "villa": assign_villa
-                    }))
-                    st.success(f"Successfully mapped {assign_sub} Villa {assign_villa} to {assign_c_email}.")
-                    time.sleep(1)
-                    st.rerun()
-            else:
-                st.error("Please complete all fields to map a villa.")
+                    st.caption("No villas assigned to this coach yet.")
+
+                st.divider()
+                st.markdown("**Add a Villa to this Coach**")
+                col_m1, col_m2 = st.columns(2)
+                with col_m1:
+                    assign_sub = st.selectbox("Sub-Community", options=sub_community_list, key=f"{key_prefix}_map_sub_input_{selected_coach_email}")
+                with col_m2:
+                    map_villa_limit = SUB_COMMUNITY_VILLA_LIMITS.get(assign_sub, 500)
+                    assign_villa = st.selectbox("Villa Number", options=[str(n) for n in range(1, map_villa_limit + 1)], key=f"{key_prefix}_map_villa_input_{selected_coach_email}")
+
+                if st.button("➕ Add Villa to Coach", type="primary", use_container_width=True, key=f"{key_prefix}_add_villa_btn_{selected_coach_email}"):
+                    if len(c_villas) >= MAX_VILLAS_PER_COACH:
+                        st.error(f"🚫 This coach already has {len(c_villas)} villas assigned — the maximum is {MAX_VILLAS_PER_COACH}. Remove one above before adding another.")
+                    else:
+                        run_query(supabase.table("coach_villas").insert({
+                            "coach_email": selected_coach_email,
+                            "sub_community": assign_sub,
+                            "villa": assign_villa
+                        }))
+                        st.success(f"Successfully mapped {assign_sub} Villa {assign_villa} to {selected_coach_email}.")
+                        time.sleep(1)
+                        st.rerun()
 
         st.divider()
         st.markdown("### 3. Manage Existing Coaches")
-        all_coaches_res = run_query(supabase.table("coach_accounts").select("*").order("coach_name"))
-        all_coaches = all_coaches_res.data if all_coaches_res and all_coaches_res.data else []
 
         if not all_coaches:
             st.info("No coach accounts created yet.")
         else:
             for c in all_coaches:
-                c_villas_res = run_query(supabase.table("coach_villas").select("*").eq("coach_email", c["email"]))
-                c_villas = c_villas_res.data if c_villas_res and c_villas_res.data else []
+                c_email = c["email"]
+                c_villas_count_res = run_query(supabase.table("coach_villas").select("id", count="exact").eq("coach_email", c_email))
+                c_villas_count = c_villas_count_res.count if c_villas_count_res and c_villas_count_res.count is not None else 0
                 status_label = "🟢 Active" if c.get("is_active", True) else "🔴 Deactivated"
                 pin_label = "PIN set" if c.get("pin") else "No PIN yet (will be asked to set one on next login)"
 
                 with st.container(border=True):
-                    st.markdown(f"**{c['coach_name']}** — `{c['email']}` — {status_label}")
-                    st.caption(f"{pin_label} • {len(c_villas)}/{MAX_VILLAS_PER_COACH} villas assigned")
+                    st.markdown(f"**{c.get('coach_name', 'Coach')}** — `{c_email}` — {status_label}")
+                    st.caption(f"{pin_label} • {c_villas_count}/{MAX_VILLAS_PER_COACH} villas assigned")
 
                     cc1, cc2, cc3 = st.columns(3)
                     with cc1:
-                        if st.button("🔑 Reset PIN", key=f"{key_prefix}_reset_pin_{c['id']}", use_container_width=True):
-                            run_query(supabase.table("coach_accounts").update({"pin": None}).eq("id", c["id"]))
-                            add_log("Admin Reset", f"Admin reset PIN for coach {c['email']}")
-                            st.success(f"PIN cleared for {c['coach_name']}. They'll set a new one on next login.")
+                        if st.button("🔑 Reset PIN", key=f"{key_prefix}_reset_pin_{c_email}", use_container_width=True):
+                            run_query(supabase.table("coach_accounts").update({"pin": None}).eq("email", c_email))
+                            add_log("Admin Reset", f"Admin reset PIN for coach {c_email}")
+                            st.success(f"PIN cleared for {c.get('coach_name', 'this coach')}. They'll set a new one on next login.")
                             time.sleep(1)
                             st.rerun()
                     with cc2:
                         toggle_label = "⏸️ Deactivate" if c.get("is_active", True) else "▶️ Reactivate"
-                        if st.button(toggle_label, key=f"{key_prefix}_toggle_active_{c['id']}", use_container_width=True):
-                            run_query(supabase.table("coach_accounts").update({"is_active": not c.get("is_active", True)}).eq("id", c["id"]))
-                            st.success(f"{c['coach_name']} {'deactivated' if c.get('is_active', True) else 'reactivated'}.")
+                        if st.button(toggle_label, key=f"{key_prefix}_toggle_active_{c_email}", use_container_width=True):
+                            run_query(supabase.table("coach_accounts").update({"is_active": not c.get("is_active", True)}).eq("email", c_email))
+                            st.success(f"{c.get('coach_name', 'Coach')} {'deactivated' if c.get('is_active', True) else 'reactivated'}.")
                             time.sleep(1)
                             st.rerun()
                     with cc3:
-                        if st.button("🗑️ Delete Coach", key=f"{key_prefix}_delete_coach_{c['id']}", use_container_width=True):
-                            run_query(supabase.table("coach_villas").delete().eq("coach_email", c["email"]))
-                            run_query(supabase.table("coach_accounts").delete().eq("id", c["id"]))
-                            add_log("Admin Reset", f"Admin deleted coach {c['email']} and their villa mappings")
-                            st.success(f"Deleted {c['coach_name']} and their villa assignments.")
+                        if st.button("🗑️ Delete Coach", key=f"{key_prefix}_delete_coach_{c_email}", use_container_width=True):
+                            run_query(supabase.table("coach_villas").delete().eq("coach_email", c_email))
+                            run_query(supabase.table("coach_accounts").delete().eq("email", c_email))
+                            add_log("Admin Reset", f"Admin deleted coach {c_email} and their villa mappings")
+                            st.success(f"Deleted {c.get('coach_name', 'this coach')} and their villa assignments.")
                             time.sleep(1)
                             st.rerun()
-
-                    if c_villas:
-                        st.caption("Assigned villas:")
-                        for cv in c_villas:
-                            vcol1, vcol2 = st.columns([4, 1])
-                            with vcol1:
-                                st.write(f"🏡 {cv['sub_community']} - Villa {cv['villa']}")
-                            with vcol2:
-                                if st.button("Remove", key=f"{key_prefix}_remove_villa_{cv['id']}", use_container_width=True):
-                                    run_query(supabase.table("coach_villas").delete().eq("id", cv["id"]))
-                                    st.success(f"Removed {cv['sub_community']} Villa {cv['villa']} from {c['coach_name']}.")
-                                    time.sleep(1)
-                                    st.rerun()
 
 def render_activity_log_tab(current_device):
     """Shared Community Activity Log tab body, used by both the resident and coach dashboards."""
