@@ -1392,6 +1392,72 @@ def logout_action():
     time.sleep(0.8)
     st.rerun()
 
+def _attempt_resident_login(otp_sub, otp_villa, otp_email_input):
+    """Runs the normal resident validation + OTP/PIN routing. Shared by the main login form
+    and by the 'Continue as Resident' choice offered to emails that are registered as both
+    a coach and a resident."""
+    max_allowed = SUB_COMMUNITY_VILLA_LIMITS.get(otp_sub, 9999)
+    if not otp_sub or not otp_villa:
+        st.error("Please specify your Sub-Community and Villa Number.")
+    elif not otp_villa.isdigit() or not (1 <= int(otp_villa) <= max_allowed):
+        st.error(f"Invalid villa number for {otp_sub}. Must be between 1 and {max_allowed}.")
+    elif not otp_email_input or "@" not in otp_email_input:
+        st.error("Please provide a valid email address.")
+    elif is_disposable_email(otp_email_input):
+        st.error("Disposable/temporary email domains are not allowed. Please use a personal or work email.")
+    else:
+        existing_claim = get_existing_claim(otp_sub, otp_villa, otp_email_input)
+        current_claims_count = get_villa_claims_count(otp_sub, otp_villa)
+        email_villas_count = get_email_claimed_villas_count(otp_email_input)
+        is_on_cooldown, hours_left = get_recent_claim_cooldown(otp_sub, otp_villa, otp_email_input)
+        target_pair = f"{otp_sub}::{otp_villa}"
+        current_uuid = st.session_state.get("device_uuid", "device_pending")
+        uuid_villas = get_uuid_claimed_villas(current_uuid)
+
+        if not existing_claim and is_on_cooldown:
+            st.error(
+                f"🚫 Security Lockout: This villa ({otp_sub} - Villa {otp_villa}) already has 2 registered emails, "
+                f"with an active 72-hour ownership change cooldown ({hours_left} hours remaining). "
+                "Please contact Dev in Court Maintenance for urgent reassignment."
+            )
+            add_log("Access Denied", f"Villa {otp_sub} Villa {otp_villa} 72h cooldown triggered by {otp_email_input} ({hours_left}h left)", fingerprint=current_uuid)
+        elif not existing_claim and current_claims_count >= 2:
+            st.error(
+                f"🚫 This villa ({otp_sub} - Villa {otp_villa}) already has 2 verified resident emails attached. "
+                "If you recently moved in or need to update your registered email, please reach out via the contact channels in Court Maintenance."
+            )
+        elif not existing_claim and email_villas_count >= 3:
+            st.error(
+                "Unable to register this villa to your email address. "
+                "Please contact Dev via the contact details in Court Maintenance for assistance."
+            )
+            add_log("Access Denied", f"Email {otp_email_input} exceeded 3-villa cap attempting {otp_sub} Villa {otp_villa}", fingerprint=current_uuid)
+        elif not existing_claim and target_pair not in uuid_villas and len(uuid_villas) >= 3:
+            st.error(
+                "This device has reached the maximum allowed registered villas. "
+                "Please contact Dev via Court Maintenance if you require an exception."
+            )
+            add_log("Access Denied", f"Device UUID {current_uuid} blocked from requesting access for 4th villa ({otp_sub} Villa {otp_villa})", fingerprint=current_uuid)
+        else:
+            st.session_state.auth_email = otp_email_input
+            st.session_state.auth_sub = otp_sub
+            st.session_state.auth_villa = otp_villa
+
+            if existing_claim and existing_claim.get("pin"):
+                st.session_state.auth_existing_claim = existing_claim
+                st.session_state.auth_step = "enter_pin"
+                st.rerun()
+            else:
+                with st.spinner("Sending 6-digit verification code..."):
+                    try:
+                        supabase.auth.sign_in_with_otp({"email": otp_email_input})
+                        st.session_state.auth_step = "verify_otp"
+                        st.success(f"✅ Code sent! Please check your inbox at {otp_email_input}")
+                        time.sleep(1.2)
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"Failed to send code: {str(e)}")
+
 # --- UI STYLING ---
 st.markdown("""
 <link href="https://fonts.googleapis.com/css2?family=Audiowide&display=swap" rel="stylesheet">
@@ -1598,87 +1664,62 @@ if not st.session_state.authenticated:
 
         if st.button("Continue", type="primary", width='stretch'):
             # Discreet coach detection: recognized coach emails skip the sub-community/villa
-            # requirement entirely and are routed straight into the coach PIN flow.
+            # requirement entirely and are routed straight into the coach PIN flow — unless
+            # the same email is also a registered resident, in which case we ask which
+            # account they want to use.
             coach_lookup = None
             if otp_email_input and "@" in otp_email_input:
                 coach_res = run_query(supabase.table("coach_accounts").select("*").eq("email", otp_email_input).eq("is_active", True))
                 if coach_res and coach_res.data:
                     coach_lookup = coach_res.data[0]
 
-            max_allowed = SUB_COMMUNITY_VILLA_LIMITS.get(otp_sub, 9999)
             if coach_lookup:
-                st.session_state.coach_email = otp_email_input
-                st.session_state.coach_name = coach_lookup.get("coach_name", "Coach")
-                st.session_state.coach_pin_hash = coach_lookup.get("pin")
-                if coach_lookup.get("pin"):
-                    st.session_state.auth_step = "coach_enter_pin"
+                also_resident = get_email_claimed_villas_count(otp_email_input) > 0
+                if also_resident:
+                    st.session_state.pending_coach_lookup = coach_lookup
+                    st.session_state.pending_otp_email = otp_email_input
+                    st.session_state.pending_otp_sub = otp_sub
+                    st.session_state.pending_otp_villa = otp_villa
+                    st.session_state.auth_step = "coach_or_resident_choice"
+                    st.rerun()
                 else:
-                    st.session_state.auth_step = "coach_set_pin"
-                st.rerun()
-            elif not otp_sub or not otp_villa:
-                st.error("Please specify your Sub-Community and Villa Number.")
-            elif not otp_villa.isdigit() or not (1 <= int(otp_villa) <= max_allowed):
-                st.error(f"Invalid villa number for {otp_sub}. Must be between 1 and {max_allowed}.")
-            elif not otp_email_input or "@" not in otp_email_input:
-                st.error("Please provide a valid email address.")
-            elif is_disposable_email(otp_email_input):
-                st.error("Disposable/temporary email domains are not allowed. Please use a personal or work email.")
-            else:
-                existing_claim = get_existing_claim(otp_sub, otp_villa, otp_email_input)
-                current_claims_count = get_villa_claims_count(otp_sub, otp_villa)
-                email_villas_count = get_email_claimed_villas_count(otp_email_input)
-                is_on_cooldown, hours_left = get_recent_claim_cooldown(otp_sub, otp_villa, otp_email_input)
-                target_pair = f"{otp_sub}::{otp_villa}"
-                current_uuid = st.session_state.get("device_uuid", "device_pending")
-                uuid_villas = get_uuid_claimed_villas(current_uuid)
-                
-                if not existing_claim and is_on_cooldown:
-                    st.error(
-                        f"🚫 Security Lockout: This villa ({otp_sub} - Villa {otp_villa}) already has 2 registered emails, "
-                        f"with an active 72-hour ownership change cooldown ({hours_left} hours remaining). "
-                        "Please contact Dev in Court Maintenance for urgent reassignment."
-                    )
-                    add_log("Access Denied", f"Villa {otp_sub} Villa {otp_villa} 72h cooldown triggered by {otp_email_input} ({hours_left}h left)", fingerprint=current_uuid)
-                elif not existing_claim and current_claims_count >= 2:
-                    st.error(
-                        f"🚫 This villa ({otp_sub} - Villa {otp_villa}) already has 2 verified resident emails attached. "
-                        "If you recently moved in or need to update your registered email, please reach out via the contact channels in Court Maintenance."
-                    )
-                elif not existing_claim and email_villas_count >= 3:
-                    st.error(
-                        "Unable to register this villa to your email address. "
-                        "Please contact Dev via the contact details in Court Maintenance for assistance."
-                    )
-                    add_log("Access Denied", f"Email {otp_email_input} exceeded 3-villa cap attempting {otp_sub} Villa {otp_villa}", fingerprint=current_uuid)
-                elif not existing_claim and target_pair not in uuid_villas and len(uuid_villas) >= 3:
-                    st.error(
-                        "This device has reached the maximum allowed registered villas. "
-                        "Please contact Dev via Court Maintenance if you require an exception."
-                    )
-                    add_log("Access Denied", f"Device UUID {current_uuid} blocked from requesting access for 4th villa ({otp_sub} Villa {otp_villa})", fingerprint=current_uuid)
-                else:
-                    st.session_state.auth_email = otp_email_input
-                    st.session_state.auth_sub = otp_sub
-                    st.session_state.auth_villa = otp_villa
-
-                    if existing_claim and existing_claim.get("pin"):
-                        st.session_state.auth_existing_claim = existing_claim
-                        st.session_state.auth_step = "enter_pin"
-                        st.rerun()
+                    st.session_state.coach_email = otp_email_input
+                    st.session_state.coach_name = coach_lookup.get("coach_name", "Coach")
+                    st.session_state.coach_pin_hash = coach_lookup.get("pin")
+                    if coach_lookup.get("pin"):
+                        st.session_state.auth_step = "coach_enter_pin"
                     else:
-                        with st.spinner("Sending 6-digit verification code..."):
-                            try:
-                                supabase.auth.sign_in_with_otp({"email": otp_email_input})
-                                st.session_state.auth_step = "verify_otp"
-                                st.success(f"✅ Code sent! Please check your inbox at {otp_email_input}")
-                                time.sleep(1.2)
-                                st.rerun()
-                            except Exception as e:
-                                st.error(f"Failed to send code: {str(e)}")
-        
+                        st.session_state.auth_step = "coach_set_pin"
+                    st.rerun()
+            else:
+                _attempt_resident_login(otp_sub, otp_villa, otp_email_input)
+
         st.write("")
         if st.button("🚪 Reset / Clear Details", width='stretch', key="reg_logout_presend"):
             logout_action()
+
+    elif st.session_state.auth_step == "coach_or_resident_choice":
+        st.info("This email is registered as **both** a Coach and a Resident. How would you like to continue?")
+        cor1, cor2 = st.columns(2)
+        with cor1:
+            if st.button("🎾 Continue as Coach", type="primary", width='stretch', key="cor_as_coach"):
+                coach_lookup = st.session_state.pending_coach_lookup
+                st.session_state.coach_email = st.session_state.pending_otp_email
+                st.session_state.coach_name = coach_lookup.get("coach_name", "Coach")
+                st.session_state.coach_pin_hash = coach_lookup.get("pin")
+                st.session_state.auth_step = "coach_enter_pin" if coach_lookup.get("pin") else "coach_set_pin"
+                st.rerun()
+        with cor2:
+            if st.button("🏡 Continue as Resident", width='stretch', key="cor_as_resident"):
+                _attempt_resident_login(
+                    st.session_state.pending_otp_sub,
+                    st.session_state.pending_otp_villa,
+                    st.session_state.pending_otp_email,
+                )
+        st.write("")
+        if st.button("🚪 Cancel", width='stretch', key="cor_cancel"):
+            st.session_state.auth_step = "input_email"
+            st.rerun()
 
     elif st.session_state.auth_step == "enter_pin":
         st.info(f"Welcome back! Enter your 4-digit PIN for **{st.session_state.auth_sub} - Villa {st.session_state.auth_villa}**.")
