@@ -1729,11 +1729,14 @@ if not st.session_state.authenticated:
 if st.session_state.get('is_coach'):
     coach_email = st.session_state.coach_email
     coach_name = st.session_state.coach_name
-    st.success(f"✅ Logged in as Coach: **{coach_name}** (`{coach_email}`)")
     
     assigned_villas, total_allowed, total_active = get_coach_dashboard_stats(coach_email)
     
-    c_tab1, c_tab2 = st.tabs(["➕ Pool Booking Engine", "📋 My Coach Bookings"])
+    # Format the assigned villas list into a clean, small string (e.g., "Mira 1 - Villa 12, Mira 2 - Villa 45")
+    villas_list_str = ", ".join([f"{v['sub_community']} Villa {v['villa']}" for v in assigned_villas]) if assigned_villas else "No villas assigned yet"
+    
+    st.success(f"✅ Logged in as Coach: **{coach_name}** (`{coach_email}`)")
+    st.caption(f"🏡 **Assigned Villas Pool:** {villas_list_str}")
     
     with c_tab1:
         st.subheader("Book using your Villa Pool")
