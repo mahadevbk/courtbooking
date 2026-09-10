@@ -619,8 +619,6 @@ SUB_COMMUNITY_VILLA_LIMITS = {
     "Mira Oasis 3": 483
 }
 
-courts = ["Mira 2", "Mira 4", "Mira 5A", "Mira 5B", "Mira Oasis 1", "Mira Oasis 2", "Mira Oasis 3A", "Mira Oasis 3B", "Mira Oasis 3C"]
-
 DISPOSABLE_DOMAINS = {
     "mailinator.com", "tempmail.com", "10minutemail.com", "guerrillamail.com",
     "trashmail.com", "yopmail.com", "sharklasers.com", "getairmail.com", "throwawaymail.com"
@@ -1486,14 +1484,14 @@ if not st.session_state.authenticated:
     if not st.session_state.seen_migration_notice:
         show_migration_dialog()
 
-    if "otp_sent" not in st.session_state:
-        st.session_state.otp_sent = False
-    if "otp_email" not in st.session_state:
-        st.session_state.otp_email = ""
-    if "otp_target_villa" not in st.session_state:
-        st.session_state.otp_target_villa = None
-    if "otp_target_sub" not in st.session_state:
-        st.session_state.otp_target_sub = None
+    if "auth_step" not in st.session_state:
+        st.session_state.auth_step = "input_email"
+    if "auth_email" not in st.session_state:
+        st.session_state.auth_email = ""
+    if "auth_sub" not in st.session_state:
+        st.session_state.auth_sub = None
+    if "auth_villa" not in st.session_state:
+        st.session_state.auth_villa = None
 
     default_sub_idx = None
     prefill_sub = st.session_state.get("prefill_sub")
@@ -1502,7 +1500,7 @@ if not st.session_state.authenticated:
     default_villa = st.session_state.get("prefill_villa", "")
 
     st.subheader("🛡️ Resident Email Verification")
-    st.caption("One-time 6-digit verification code. Max 2 resident emails per villa.")
+    st.caption("Secure login for your residence. Max 2 resident emails per villa.")
     
     # ----------------------------------------
     # COACH LOGIN INTEGRATION
@@ -1522,7 +1520,7 @@ if not st.session_state.authenticated:
             else:
                 st.error("Coach account not found or inactive.")
 
-    if not st.session_state.otp_sent:
+    if st.session_state.auth_step == "input_email":
         col_v1, col_v2 = st.columns(2)
         with col_v1:
             otp_sub = st.selectbox("Sub-Community", options=sub_community_list, index=default_sub_idx, key="otp_sub_select")
@@ -1533,7 +1531,7 @@ if not st.session_state.authenticated:
 
         otp_email_input = st.text_input("Email Address", placeholder="name@example.com", key="otp_email_text").strip().lower()
 
-        if st.button("Send 6-Digit Code", type="primary", width='stretch'):
+        if st.button("Continue", type="primary", width='stretch'):
             max_allowed = SUB_COMMUNITY_VILLA_LIMITS.get(otp_sub, 9999)
             if not otp_sub or not otp_villa:
                 st.error("Please specify your Sub-Community and Villa Number.")
@@ -1575,46 +1573,117 @@ if not st.session_state.authenticated:
                         "This device has reached the maximum allowed registered villas. "
                         "Please contact Dev via Court Maintenance if you require an exception."
                     )
-                    add_log("Access Denied", f"Device UUID {current_uuid} blocked from requesting OTP for 4th villa ({otp_sub} Villa {otp_villa})", fingerprint=current_uuid)
+                    add_log("Access Denied", f"Device UUID {current_uuid} blocked from requesting access for 4th villa ({otp_sub} Villa {otp_villa})", fingerprint=current_uuid)
                 else:
-                    with st.spinner("Sending 6-digit verification code..."):
-                        try:
-                            supabase.auth.sign_in_with_otp({"email": otp_email_input})
-                            st.session_state.otp_sent = True
-                            st.session_state.otp_email = otp_email_input
-                            st.session_state.otp_target_sub = otp_sub
-                            st.session_state.otp_target_villa = otp_villa
-                            st.success(f"✅ Code sent! Please check your inbox at {otp_email_input}")
-                            time.sleep(1.2)
-                            st.rerun()
-                        except Exception as e:
-                            st.error(f"Failed to send code: {str(e)}")
+                    st.session_state.auth_email = otp_email_input
+                    st.session_state.auth_sub = otp_sub
+                    st.session_state.auth_villa = otp_villa
+
+                    if existing_claim and existing_claim.get("pin"):
+                        st.session_state.auth_existing_claim = existing_claim
+                        st.session_state.auth_step = "enter_pin"
+                        st.rerun()
+                    else:
+                        with st.spinner("Sending 6-digit verification code..."):
+                            try:
+                                supabase.auth.sign_in_with_otp({"email": otp_email_input})
+                                st.session_state.auth_step = "verify_otp"
+                                st.success(f"✅ Code sent! Please check your inbox at {otp_email_input}")
+                                time.sleep(1.2)
+                                st.rerun()
+                            except Exception as e:
+                                st.error(f"Failed to send code: {str(e)}")
         
         st.write("")
         if st.button("🚪 Reset / Clear Details", width='stretch', key="reg_logout_presend"):
             logout_action()
-    else:
-        st.info(f"Enter the 6-digit code sent to **{st.session_state.otp_email}** for **{st.session_state.otp_target_sub} - Villa {st.session_state.otp_target_villa}**.")
+
+    elif st.session_state.auth_step == "enter_pin":
+        st.info(f"Welcome back! Enter your 4-digit PIN for **{st.session_state.auth_sub} - Villa {st.session_state.auth_villa}**.")
+        pin_input = st.text_input("4-Digit PIN", type="password", max_chars=4, key="pin_input_text").strip()
+
+        c1, c2, c3 = st.columns([1.5, 1.5, 1.2])
+        with c1:
+            if st.button("Log In", type="primary", width='stretch'):
+                if pin_input == st.session_state.auth_existing_claim.get("pin"):
+                    now_ts = get_utc_plus_4().isoformat()
+                    resolved_uuid = st.session_state.device_uuid
+                    target_sub = st.session_state.auth_sub
+                    target_villa = st.session_state.auth_villa
+                    verified_email = st.session_state.auth_email
+
+                    run_query(supabase.table("villa_claims").update({
+                        "verified_at": now_ts,
+                        "fingerprint": resolved_uuid,
+                        "status": "approved"
+                    }).eq("id", st.session_state.auth_existing_claim["id"]))
+
+                    fallback_choice = f"{target_sub}-{target_villa}"
+                    claim_bundle = f"{target_sub}::{target_villa}"
+
+                    st_javascript(f"""
+                        localStorage.setItem('court_villa_lock', '{fallback_choice}');
+                        localStorage.setItem('court_verified_email', '{verified_email}');
+                        localStorage.setItem('verified_claim_info', '{claim_bundle}');
+                        localStorage.setItem('court_device_uuid', '{resolved_uuid}');
+                    """, key=f"js_set_storage_pin_{target_sub}_{target_villa}_{verified_email}")
+
+                    st.query_params["auth"] = encode_auth_token(target_sub, target_villa, verified_email)
+                    st.session_state.sub_community = target_sub
+                    st.session_state.villa = target_villa
+                    st.session_state.verified_email = verified_email
+                    st.session_state.authenticated = True
+                    st.session_state.is_coach = False
+                    st.session_state.auth_step = "input_email"
+                    
+                    st.success("✅ PIN verified! Logging you in...")
+                    time.sleep(1.2)
+                    st.rerun()
+                else:
+                    st.error("❌ Incorrect PIN.")
+        with c2:
+            if st.button("Forgot PIN? Send OTP", width='stretch'):
+                with st.spinner("Sending 6-digit verification code..."):
+                    try:
+                        supabase.auth.sign_in_with_otp({"email": st.session_state.auth_email})
+                        st.session_state.auth_step = "verify_otp"
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"Failed to send code: {str(e)}")
+        with c3:
+            if st.button("Cancel", width='stretch'):
+                st.session_state.auth_step = "input_email"
+                st.rerun()
+
+    elif st.session_state.auth_step == "verify_otp":
+        st.info(f"Enter the 6-digit code sent to **{st.session_state.auth_email}** for **{st.session_state.auth_sub} - Villa {st.session_state.auth_villa}**.")
         st.caption("Check your spam/junk folder if the email does not appear in your inbox within a minute.")
         token_input = st.text_input("Enter 6-digit code", max_chars=6, key="otp_token_text").strip()
         
+        st.write("")
+        st.markdown("##### 🔐 Set a Static PIN")
+        st.caption("Create a 4-digit PIN so you can log in instantly next time without waiting for an OTP.")
+        new_pin_input = st.text_input("Set your 4-Digit PIN", type="password", max_chars=4, key="new_pin_text").strip()
+        
         c1, c2, c3 = st.columns([1.5, 1.2, 1.2])
         with c1:
-            if st.button("Verify Code", type="primary", width='stretch'):
+            if st.button("Verify & Save PIN", type="primary", width='stretch'):
                 if not token_input or len(token_input) != 6:
                     st.error("Please enter a 6-digit verification code.")
+                elif not new_pin_input or len(new_pin_input) != 4 or not new_pin_input.isdigit():
+                    st.error("Please set a valid 4-digit PIN for future use (numbers only).")
                 else:
                     with st.spinner("Verifying code..."):
                         try:
                             res = supabase.auth.verify_otp({
-                                "email": st.session_state.otp_email,
+                                "email": st.session_state.auth_email,
                                 "token": token_input,
                                 "type": "email"
                             })
                             if res and res.session:
-                                target_sub = st.session_state.otp_target_sub
-                                target_villa = st.session_state.otp_target_villa
-                                verified_email = st.session_state.otp_email
+                                target_sub = st.session_state.auth_sub
+                                target_villa = st.session_state.auth_villa
+                                verified_email = st.session_state.auth_email
                                 refresh_tok = res.session.refresh_token
                                 resolved_uuid = st.session_state.device_uuid
 
@@ -1628,14 +1697,16 @@ if not st.session_state.authenticated:
                                         "email": verified_email,
                                         "fingerprint": resolved_uuid,
                                         "status": "approved",
-                                        "verified_at": now_ts
+                                        "verified_at": now_ts,
+                                        "pin": new_pin_input
                                     }))
                                     add_log("Villa Claim", f"{target_sub} Villa {target_villa} claimed by {verified_email}", fingerprint=resolved_uuid)
                                 else:
                                     run_query(supabase.table("villa_claims").update({
                                         "verified_at": now_ts,
                                         "fingerprint": resolved_uuid,
-                                        "status": "approved"
+                                        "status": "approved",
+                                        "pin": new_pin_input
                                     }).eq("id", existing["id"]))
 
                                 fallback_choice = f"{target_sub}-{target_villa}"
@@ -1655,27 +1726,27 @@ if not st.session_state.authenticated:
                                 st.session_state.verified_email = verified_email
                                 st.session_state.authenticated = True
                                 st.session_state.is_coach = False
-                                st.session_state.otp_sent = False
+                                st.session_state.auth_step = "input_email"
                                 
                                 st.balloons()
-                                st.success("✅ Verified and registered successfully! Logging you in...")
+                                st.success("✅ Verified and PIN saved successfully! Logging you in...")
                                 time.sleep(1.2)
                                 st.rerun()
                             else:
-                                st.error("Verification failed. Please check the code.")
+                                st.error("Verification failed. Please check the OTP code.")
                         except Exception as e:
                             st.error(f"Invalid code or verification error: {str(e)}")
         with c2:
             if st.button("🔄 Resend Code", width='stretch'):
                 with st.spinner("Resending code..."):
                     try:
-                        supabase.auth.sign_in_with_otp({"email": st.session_state.otp_email})
-                        st.toast(f"A new 6-digit code has been sent to {st.session_state.otp_email}!")
+                        supabase.auth.sign_in_with_otp({"email": st.session_state.auth_email})
+                        st.toast(f"A new 6-digit code has been sent to {st.session_state.auth_email}!")
                     except Exception as e:
                         st.error(f"Could not resend code: {str(e)}")
         with c3:
             if st.button("Cancel / Change", width='stretch'):
-                st.session_state.otp_sent = False
+                st.session_state.auth_step = "input_email"
                 st.rerun()
         
         st.write("")
