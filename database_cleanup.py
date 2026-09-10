@@ -1327,7 +1327,7 @@ def logout_action():
         localStorage.removeItem('verified_claim_info');
         localStorage.removeItem('supabase_refresh_token');
         setTimeout(() => { window.location.href = window.location.origin + window.location.pathname; }, 150);
-    """)
+    """, key="js_logout")
     st.session_state.clear()
     st.query_params.clear()
     st.info("Logging out... Please wait.")
@@ -1419,7 +1419,7 @@ js_device_fetch = st_javascript("""
         }
         return devId;
     })();
-""")
+""", key="js_device_fetch")
 
 if isinstance(js_device_fetch, str) and js_device_fetch.startswith("dev_"):
     st.session_state.device_uuid = js_device_fetch
@@ -1432,7 +1432,7 @@ if "is_mobile_device" not in st.session_state:
             const ua = navigator.userAgent || '';
             return /Mobi|Android|iPhone|iPad|iPod/i.test(ua) ? 'mobile' : 'desktop';
         })();
-    """)
+    """, key="js_ua_check")
     st.session_state.is_mobile_device = (ua_check == "mobile")
 
 url_token = st.query_params.get("auth")
@@ -1446,7 +1446,7 @@ if url_token and not st.session_state.authenticated:
         st.session_state.is_coach = False
 
 if not st.session_state.authenticated:
-    stored_bundle = st_javascript("(localStorage.getItem('court_villa_lock') || 'no_lock') + ':::' + (localStorage.getItem('court_verified_email') || '') + ':::' + (localStorage.getItem('verified_claim_info') || '');")
+    stored_bundle = st_javascript("(localStorage.getItem('court_villa_lock') || 'no_lock') + ':::' + (localStorage.getItem('court_verified_email') || '') + ':::' + (localStorage.getItem('verified_claim_info') || '');", key="js_stored_bundle")
     
     if isinstance(stored_bundle, str) and ":::" in stored_bundle:
         parts = stored_bundle.split(":::")
@@ -1647,7 +1647,7 @@ if not st.session_state.authenticated:
                                     localStorage.setItem('verified_claim_info', '{claim_bundle}');
                                     localStorage.setItem('supabase_refresh_token', '{refresh_tok}');
                                     localStorage.setItem('court_device_uuid', '{resolved_uuid}');
-                                """)
+                                """, key=f"js_set_storage_{target_sub}_{target_villa}_{verified_email}")
 
                                 st.query_params["auth"] = encode_auth_token(target_sub, target_villa, verified_email)
                                 st.session_state.sub_community = target_sub
@@ -2416,7 +2416,7 @@ else:
                                 localStorage.setItem('court_villa_lock', '{fallback_choice}');
                                 localStorage.setItem('court_verified_email', '{bypass_email}');
                                 localStorage.setItem('verified_claim_info', '{claim_bundle}');
-                            """)
+                            """, key=f"js_set_storage_bypass_{bypass_sub}_{bypass_villa}_{bypass_email}")
 
                             st.session_state.sub_community = bypass_sub
                             st.session_state.villa = bypass_villa
