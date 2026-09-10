@@ -2043,110 +2043,6 @@ def render_court_maintenance_tab(reporter_label, current_device):
         if admin_maint_pwd == st.secrets.get("ADMIN_PASSWORD", "admin123"):
             st.success("Admin Access Granted")
 
-            # ----------------------------------------
-            # ADMIN: COACH POOL MANAGEMENT
-            # ----------------------------------------
-            with st.expander("🎾 Coach & Pool Management", expanded=True):
-                st.markdown("### 1. Add New Coach")
-                col_c1, col_c2 = st.columns(2)
-                with col_c1:
-                    new_c_email = st.text_input("New Coach Email", key="new_coach_email_input").strip().lower()
-                with col_c2:
-                    new_c_name = st.text_input("Coach Name", key="new_coach_name_input").strip()
-                if st.button("Create Coach Profile", type="primary", use_container_width=True):
-                    if new_c_email and new_c_name:
-                        run_query(supabase.table("coach_accounts").insert({"email": new_c_email, "coach_name": new_c_name, "is_active": True}))
-                        st.success(f"Coach {new_c_name} created successfully. They can log in from the normal login screen using this email.")
-                        time.sleep(1)
-                        st.rerun()
-                    else:
-                        st.error("Please provide both email and name.")
-
-                st.divider()
-                st.markdown(f"### 2. Map Villa to Coach Pool (max {MAX_VILLAS_PER_COACH} villas per coach)")
-                assign_c_email = st.text_input("Existing Coach Email", key="map_coach_email_input").strip().lower()
-
-                col_m1, col_m2 = st.columns(2)
-                with col_m1:
-                    assign_sub = st.selectbox("Sub-Community to Map", options=sub_community_list, key="map_sub_input")
-                with col_m2:
-                    assign_villa = st.text_input("Villa Number to Map", key="map_villa_input").strip()
-
-                if st.button("Map Villa to Coach", type="primary", use_container_width=True):
-                    if assign_c_email and assign_sub and assign_villa:
-                        existing_villa_count = run_query(
-                            supabase.table("coach_villas").select("id", count="exact").eq("coach_email", assign_c_email)
-                        )
-                        current_villa_count = existing_villa_count.count if existing_villa_count and existing_villa_count.count is not None else 0
-                        if current_villa_count >= MAX_VILLAS_PER_COACH:
-                            st.error(f"🚫 This coach already has {current_villa_count} villas assigned — the maximum is {MAX_VILLAS_PER_COACH}. Remove one below before adding another.")
-                        else:
-                            run_query(supabase.table("coach_villas").insert({
-                                "coach_email": assign_c_email,
-                                "sub_community": assign_sub,
-                                "villa": assign_villa
-                            }))
-                            st.success(f"Successfully mapped {assign_sub} Villa {assign_villa} to {assign_c_email}.")
-                            time.sleep(1)
-                            st.rerun()
-                    else:
-                        st.error("Please complete all fields to map a villa.")
-
-                st.divider()
-                st.markdown("### 3. Manage Existing Coaches")
-                all_coaches_res = run_query(supabase.table("coach_accounts").select("*").order("coach_name"))
-                all_coaches = all_coaches_res.data if all_coaches_res and all_coaches_res.data else []
-
-                if not all_coaches:
-                    st.info("No coach accounts created yet.")
-                else:
-                    for c in all_coaches:
-                        c_villas_res = run_query(supabase.table("coach_villas").select("*").eq("coach_email", c["email"]))
-                        c_villas = c_villas_res.data if c_villas_res and c_villas_res.data else []
-                        status_label = "🟢 Active" if c.get("is_active", True) else "🔴 Deactivated"
-                        pin_label = "PIN set" if c.get("pin") else "No PIN yet (will be asked to set one on next login)"
-
-                        with st.container(border=True):
-                            st.markdown(f"**{c['coach_name']}** — `{c['email']}` — {status_label}")
-                            st.caption(f"{pin_label} • {len(c_villas)}/{MAX_VILLAS_PER_COACH} villas assigned")
-
-                            cc1, cc2, cc3 = st.columns(3)
-                            with cc1:
-                                if st.button("🔑 Reset PIN", key=f"reset_pin_{c['id']}", use_container_width=True):
-                                    run_query(supabase.table("coach_accounts").update({"pin": None}).eq("id", c["id"]))
-                                    add_log("Admin Reset", f"Admin reset PIN for coach {c['email']}")
-                                    st.success(f"PIN cleared for {c['coach_name']}. They'll set a new one on next login.")
-                                    time.sleep(1)
-                                    st.rerun()
-                            with cc2:
-                                toggle_label = "⏸️ Deactivate" if c.get("is_active", True) else "▶️ Reactivate"
-                                if st.button(toggle_label, key=f"toggle_active_{c['id']}", use_container_width=True):
-                                    run_query(supabase.table("coach_accounts").update({"is_active": not c.get("is_active", True)}).eq("id", c["id"]))
-                                    st.success(f"{c['coach_name']} {'deactivated' if c.get('is_active', True) else 'reactivated'}.")
-                                    time.sleep(1)
-                                    st.rerun()
-                            with cc3:
-                                if st.button("🗑️ Delete Coach", key=f"delete_coach_{c['id']}", use_container_width=True):
-                                    run_query(supabase.table("coach_villas").delete().eq("coach_email", c["email"]))
-                                    run_query(supabase.table("coach_accounts").delete().eq("id", c["id"]))
-                                    add_log("Admin Reset", f"Admin deleted coach {c['email']} and their villa mappings")
-                                    st.success(f"Deleted {c['coach_name']} and their villa assignments.")
-                                    time.sleep(1)
-                                    st.rerun()
-
-                            if c_villas:
-                                st.caption("Assigned villas:")
-                                for cv in c_villas:
-                                    vcol1, vcol2 = st.columns([4, 1])
-                                    with vcol1:
-                                        st.write(f"🏡 {cv['sub_community']} - Villa {cv['villa']}")
-                                    with vcol2:
-                                        if st.button("Remove", key=f"remove_villa_{cv['id']}", use_container_width=True):
-                                            run_query(supabase.table("coach_villas").delete().eq("id", cv["id"]))
-                                            st.success(f"Removed {cv['sub_community']} Villa {cv['villa']} from {c['coach_name']}.")
-                                            time.sleep(1)
-                                            st.rerun()
-
             with st.expander("🔑 Admin Resident Bypass (Authorize & Switch Active Resident)", expanded=False):
                 st.caption("Directly authorize a resident email without OTP and immediately switch this session to them.")
                 b_col1, b_col2 = st.columns(2)
@@ -2203,6 +2099,113 @@ def render_court_maintenance_tab(reporter_label, current_device):
             st.error("Incorrect Password")
 
 
+def render_coach_admin_panel(key_prefix="cam"):
+    """Comprehensive coach account admin panel: create/edit/deactivate/delete coaches,
+    and map/remove villas (sub-community dropdown + villa-number dropdown) for their pool.
+    Shared by both admin entry points (Court Maint. and the main Activity Log admin tools).
+    """
+    with st.expander("🎾 Coach & Pool Management", expanded=True):
+        st.markdown("### 1. Add New Coach")
+        col_c1, col_c2 = st.columns(2)
+        with col_c1:
+            new_c_email = st.text_input("New Coach Email", key=f"{key_prefix}_new_coach_email_input").strip().lower()
+        with col_c2:
+            new_c_name = st.text_input("Coach Name", key=f"{key_prefix}_new_coach_name_input").strip()
+        if st.button("Create Coach Profile", type="primary", use_container_width=True):
+            if new_c_email and new_c_name:
+                run_query(supabase.table("coach_accounts").insert({"email": new_c_email, "coach_name": new_c_name, "is_active": True}))
+                st.success(f"Coach {new_c_name} created successfully. They can log in from the normal login screen using this email.")
+                time.sleep(1)
+                st.rerun()
+            else:
+                st.error("Please provide both email and name.")
+
+        st.divider()
+        st.markdown(f"### 2. Map Villa to Coach Pool (max {MAX_VILLAS_PER_COACH} villas per coach)")
+        assign_c_email = st.text_input("Existing Coach Email", key=f"{key_prefix}_map_coach_email_input").strip().lower()
+
+        col_m1, col_m2 = st.columns(2)
+        with col_m1:
+            assign_sub = st.selectbox("Sub-Community to Map", options=sub_community_list, key=f"{key_prefix}_map_sub_input")
+        with col_m2:
+            map_villa_limit = SUB_COMMUNITY_VILLA_LIMITS.get(assign_sub, 500)
+            assign_villa = st.selectbox("Villa Number to Map", options=[str(n) for n in range(1, map_villa_limit + 1)], key=f"{key_prefix}_map_villa_input")
+
+        if st.button("Map Villa to Coach", type="primary", use_container_width=True):
+            if assign_c_email and assign_sub and assign_villa:
+                existing_villa_count = run_query(
+                    supabase.table("coach_villas").select("id", count="exact").eq("coach_email", assign_c_email)
+                )
+                current_villa_count = existing_villa_count.count if existing_villa_count and existing_villa_count.count is not None else 0
+                if current_villa_count >= MAX_VILLAS_PER_COACH:
+                    st.error(f"🚫 This coach already has {current_villa_count} villas assigned — the maximum is {MAX_VILLAS_PER_COACH}. Remove one below before adding another.")
+                else:
+                    run_query(supabase.table("coach_villas").insert({
+                        "coach_email": assign_c_email,
+                        "sub_community": assign_sub,
+                        "villa": assign_villa
+                    }))
+                    st.success(f"Successfully mapped {assign_sub} Villa {assign_villa} to {assign_c_email}.")
+                    time.sleep(1)
+                    st.rerun()
+            else:
+                st.error("Please complete all fields to map a villa.")
+
+        st.divider()
+        st.markdown("### 3. Manage Existing Coaches")
+        all_coaches_res = run_query(supabase.table("coach_accounts").select("*").order("coach_name"))
+        all_coaches = all_coaches_res.data if all_coaches_res and all_coaches_res.data else []
+
+        if not all_coaches:
+            st.info("No coach accounts created yet.")
+        else:
+            for c in all_coaches:
+                c_villas_res = run_query(supabase.table("coach_villas").select("*").eq("coach_email", c["email"]))
+                c_villas = c_villas_res.data if c_villas_res and c_villas_res.data else []
+                status_label = "🟢 Active" if c.get("is_active", True) else "🔴 Deactivated"
+                pin_label = "PIN set" if c.get("pin") else "No PIN yet (will be asked to set one on next login)"
+
+                with st.container(border=True):
+                    st.markdown(f"**{c['coach_name']}** — `{c['email']}` — {status_label}")
+                    st.caption(f"{pin_label} • {len(c_villas)}/{MAX_VILLAS_PER_COACH} villas assigned")
+
+                    cc1, cc2, cc3 = st.columns(3)
+                    with cc1:
+                        if st.button("🔑 Reset PIN", key=f"{key_prefix}_reset_pin_{c['id']}", use_container_width=True):
+                            run_query(supabase.table("coach_accounts").update({"pin": None}).eq("id", c["id"]))
+                            add_log("Admin Reset", f"Admin reset PIN for coach {c['email']}")
+                            st.success(f"PIN cleared for {c['coach_name']}. They'll set a new one on next login.")
+                            time.sleep(1)
+                            st.rerun()
+                    with cc2:
+                        toggle_label = "⏸️ Deactivate" if c.get("is_active", True) else "▶️ Reactivate"
+                        if st.button(toggle_label, key=f"{key_prefix}_toggle_active_{c['id']}", use_container_width=True):
+                            run_query(supabase.table("coach_accounts").update({"is_active": not c.get("is_active", True)}).eq("id", c["id"]))
+                            st.success(f"{c['coach_name']} {'deactivated' if c.get('is_active', True) else 'reactivated'}.")
+                            time.sleep(1)
+                            st.rerun()
+                    with cc3:
+                        if st.button("🗑️ Delete Coach", key=f"{key_prefix}_delete_coach_{c['id']}", use_container_width=True):
+                            run_query(supabase.table("coach_villas").delete().eq("coach_email", c["email"]))
+                            run_query(supabase.table("coach_accounts").delete().eq("id", c["id"]))
+                            add_log("Admin Reset", f"Admin deleted coach {c['email']} and their villa mappings")
+                            st.success(f"Deleted {c['coach_name']} and their villa assignments.")
+                            time.sleep(1)
+                            st.rerun()
+
+                    if c_villas:
+                        st.caption("Assigned villas:")
+                        for cv in c_villas:
+                            vcol1, vcol2 = st.columns([4, 1])
+                            with vcol1:
+                                st.write(f"🏡 {cv['sub_community']} - Villa {cv['villa']}")
+                            with vcol2:
+                                if st.button("Remove", key=f"{key_prefix}_remove_villa_{cv['id']}", use_container_width=True):
+                                    run_query(supabase.table("coach_villas").delete().eq("id", cv["id"]))
+                                    st.success(f"Removed {cv['sub_community']} Villa {cv['villa']} from {c['coach_name']}.")
+                                    time.sleep(1)
+                                    st.rerun()
+
 def render_activity_log_tab(current_device):
     """Shared Community Activity Log tab body, used by both the resident and coach dashboards."""
     with st.expander("🎾 Coach Account Set Up"):
@@ -2212,7 +2215,7 @@ Coach accounts exist for tennis coaches who train residents across **several vil
 **Why a coach account works differently from a normal resident login:**
 
 1. **No need to log out and log in for several villas.** A coach logs in once with their own email and PIN, and their account is linked to a *pool* of the villas they coach for. They can book a court for any of those villas without switching accounts.
-2. **The actual quota of each villa remains unchanged.** A coach account does not create extra bookings capacity out of thin air — every booking a coach makes is drawn from that specific villa's own existing allowance (6 active bookings, or 8 for the Legend's of Mira, with a 2-per-day cap). The coach is simply using the villa owner's quota on their behalf, with the owner's consent.
+2. **The actual quota of each villa remains unchanged.** A coach account does not create extra bookings capacity out of thin air — every booking a coach makes is drawn from that specific villa's own existing allowance (6 active bookings, or 8 for donor villas, with a 2-per-day cap). The coach is simply using the villa owner's quota on their behalf, with the owner's consent.
 
 **How it works:**
 - Each coach is assigned a pool of up to **10 villas** by the admin.
@@ -2278,6 +2281,8 @@ Coach accounts exist for tennis coaches who train residents across **several vil
             if st.button("🔒 Exit Admin Mode", type="secondary", use_container_width=True):
                 st.session_state.pop("log_admin_pass", None)
                 st.rerun()
+
+        render_coach_admin_panel(key_prefix="activitylog")
 
         with st.expander("🚨 Manually Apply Sniping Lockout by Email", expanded=True):
             st.markdown("### Search Associated Villas & Enforce Lockout")
