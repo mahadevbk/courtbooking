@@ -1334,11 +1334,11 @@ def logout_action():
         localStorage.removeItem('verified_claim_info');
         localStorage.removeItem('supabase_refresh_token');
         setTimeout(() => { window.location.href = window.location.origin + window.location.pathname; }, 150);
-    """)
+    """, key="logout_js_clear")
     for key in [
         "authenticated", "sub_community", "villa", "verified_email", 
         "otp_sent", "otp_email", "otp_target_villa", "otp_target_sub", 
-        "prefill_sub", "prefill_villa", "seen_sniping_warning"
+        "prefill_sub", "prefill_villa", "seen_sniping_warning", "is_coach", "coach_email", "coach_name"
     ]:
         if key in st.session_state:
             del st.session_state[key]
@@ -1362,7 +1362,7 @@ h1, h2, h3, .stTitle { font-family: 'Audiowide', cursive !important; color: #2c3
 # --- FULL FRAME PAGE ---
 if st.query_params.get("view") == "full":
     st.title("📅 Full 14-Day Schedule")
-    if st.button("⬅️ Back to Booking App"):
+    if st.button("⬅️ Back to Booking App", key="back_to_app_full_btn"):
         curr_auth = st.query_params.get("auth")
         st.query_params.clear()
         if curr_auth:
@@ -1432,7 +1432,7 @@ js_device_fetch = st_javascript("""
         }
         return devId;
     })();
-""")
+""", key="device_uuid_fetch_main")
 
 if isinstance(js_device_fetch, str) and js_device_fetch.startswith("dev_"):
     st.session_state.device_uuid = js_device_fetch
@@ -1445,7 +1445,7 @@ if "is_mobile_device" not in st.session_state:
             const ua = navigator.userAgent || '';
             return /Mobi|Android|iPhone|iPad|iPod/i.test(ua) ? 'mobile' : 'desktop';
         })();
-    """)
+    """, key="mobile_device_ua_fetch_main")
     st.session_state.is_mobile_device = (ua_check == "mobile")
 
 url_token = st.query_params.get("auth")
@@ -1459,7 +1459,7 @@ if url_token and not st.session_state.authenticated:
         st.session_state.is_coach = False
 
 if not st.session_state.authenticated:
-    stored_bundle = st_javascript("(localStorage.getItem('court_villa_lock') || 'no_lock') + ':::' + (localStorage.getItem('court_verified_email') || '') + ':::' + (localStorage.getItem('verified_claim_info') || '');")
+    stored_bundle = st_javascript("(localStorage.getItem('court_villa_lock') || 'no_lock') + ':::' + (localStorage.getItem('court_verified_email') || '') + ':::' + (localStorage.getItem('verified_claim_info') || '');", key="stored_bundle_fetch")
     
     if isinstance(stored_bundle, str) and ":::" in stored_bundle:
         parts = stored_bundle.split(":::")
@@ -1528,7 +1528,7 @@ if not st.session_state.authenticated:
 
         otp_email_input = st.text_input("Email Address", placeholder="name@example.com", key="otp_email_text").strip().lower()
 
-        if st.button("Continue / Send Code", type="primary", width='stretch'):
+        if st.button("Continue / Send Code", type="primary", use_container_width=True):
             max_allowed = SUB_COMMUNITY_VILLA_LIMITS.get(otp_sub, 9999)
             if not otp_email_input or "@" not in otp_email_input:
                 st.error("Please provide a valid email address.")
@@ -1599,7 +1599,7 @@ if not st.session_state.authenticated:
                                 st.error(f"Failed to send code: {str(e)}")
         
         st.write("")
-        if st.button("🚪 Reset / Clear Details", width='stretch', key="reg_logout_presend"):
+        if st.button("🚪 Reset / Clear Details", use_container_width=True, key="reg_logout_presend"):
             logout_action()
     else:
         st.info(f"Enter the 6-digit code sent to **{st.session_state.otp_email}** for **{st.session_state.otp_target_sub} - Villa {st.session_state.otp_target_villa}**.")
@@ -1608,7 +1608,7 @@ if not st.session_state.authenticated:
         
         c1, c2, c3 = st.columns([1.5, 1.2, 1.2])
         with c1:
-            if st.button("Verify Code", type="primary", width='stretch'):
+            if st.button("Verify Code", type="primary", use_container_width=True):
                 if not token_input or len(token_input) != 6:
                     st.error("Please enter a 6-digit verification code.")
                 else:
@@ -1655,7 +1655,7 @@ if not st.session_state.authenticated:
                                     localStorage.setItem('verified_claim_info', '{claim_bundle}');
                                     localStorage.setItem('supabase_refresh_token', '{refresh_tok}');
                                     localStorage.setItem('court_device_uuid', '{resolved_uuid}');
-                                """)
+                                """, key="auth_storage_set_js")
 
                                 st.query_params["auth"] = encode_auth_token(target_sub, target_villa, verified_email)
                                 st.session_state.sub_community = target_sub
@@ -1674,7 +1674,7 @@ if not st.session_state.authenticated:
                         except Exception as e:
                             st.error(f"Invalid code or verification error: {str(e)}")
         with c2:
-            if st.button("🔄 Resend Code", width='stretch'):
+            if st.button("🔄 Resend Code", use_container_width=True, key="resend_otp_btn"):
                 with st.spinner("Resending code..."):
                     try:
                         supabase.auth.sign_in_with_otp({"email": st.session_state.otp_email})
@@ -1682,12 +1682,12 @@ if not st.session_state.authenticated:
                     except Exception as e:
                         st.error(f"Could not resend code: {str(e)}")
         with c3:
-            if st.button("Cancel / Change", width='stretch'):
+            if st.button("Cancel / Change", use_container_width=True, key="cancel_otp_btn"):
                 st.session_state.otp_sent = False
                 st.rerun()
         
         st.write("")
-        if st.button("🚪 Reset / Clear Details", width='stretch', key="reg_logout_postsend"):
+        if st.button("🚪 Reset / Clear Details", use_container_width=True, key="reg_logout_postsend"):
             logout_action()
 
     st.write("")
@@ -1786,7 +1786,7 @@ if st.session_state.get('is_coach'):
                     st.error(result)
         
         st.divider()
-        if st.button("🚪 Logout", width="stretch"): logout_action()
+        if st.button("🚪 Logout", use_container_width=True, key="coach_logout_btn"): logout_action()
 
     with c_tab2:
         st.subheader("📋 My Coach Bookings")
@@ -1936,7 +1936,7 @@ else:
             q_slots = 2 if q_2_hours else 1
         with q_col4:
             st.write(""); st.write("") 
-            if st.button("🚀 Book Now", key="q_book_btn", width='stretch'):
+            if st.button("🚀 Book Now", key="q_book_btn", use_container_width=True):
                 if q_time:
                     active_count = get_active_bookings_count(villa, sub_community)
                     active_limit = get_active_booking_limit(sub_community, villa)
@@ -2012,7 +2012,7 @@ else:
                 else: st.write("No active bookings found for this villa.")
 
         st.divider()
-        if st.button("🚪 Logout / Change Villa", width='stretch', key="tab1_logout"):
+        if st.button("🚪 Logout / Change Villa", use_container_width=True, key="tab1_logout"):
             logout_action()
 
     with tab2:
@@ -2208,7 +2208,7 @@ else:
                     clean_ref_filename = id_display.replace('#', '').replace('-', '_')
                     render_share_or_download_button(jpg_bytes, f"{clean_ref_filename}.jpg", id_display, key=i)
                     
-                    if st.button(f"❌ Cancel Booking {id_display}", key=f"cancel_{i}", width='stretch'):
+                    if st.button(f"❌ Cancel Booking {id_display}", key=f"cancel_{i}", use_container_width=True):
                         for bid in b['ids']: delete_booking(bid, b['v'], b['sc'], fingerprint=current_device)
                         send_booking_notification_once("deleted", b['v'], b['sc'], b['court'], b['date'], b['start_hours'], verified_user_email)
                         st.success(f"Successfully cancelled booking {id_display}")
@@ -2218,7 +2218,7 @@ else:
                     st.markdown('<div style="margin-bottom: 25px;"></div>', unsafe_allow_html=True)
             
             st.divider()
-            if st.button("🚪 Logout / Change Villa", width='stretch'):
+            if st.button("🚪 Logout / Change Villa", use_container_width=True, key="logout_resident_btn"):
                 logout_action()
 
     with tab4:
@@ -2257,7 +2257,7 @@ else:
                 except Exception as e:
                     st.error(f"Error processing image: {str(e)}")
                     
-            if st.button("Submit Report", type="primary", width='stretch'):
+            if st.button("Submit Report", type="primary", use_container_width=True, key="submit_maint_report_btn"):
                 if not m_desc:
                     st.error("Please provide a description.")
                 else:
@@ -2324,7 +2324,7 @@ else:
                     l_col1, l_col2, l_col3 = st.columns([1, 2, 1])
                     with l_col1:
                         if item.get("image_url"):
-                            st.image(f"data:image/png;base64,{item['image_url']}", width='stretch')
+                            st.image(f"data:image/png;base64,{item['image_url']}", use_container_width=True)
                         else:
                             st.info("No Photo")
                     with l_col2:
@@ -2338,7 +2338,7 @@ else:
                             st.success(f"✅ Locked/Fixed\n({fixed_dt.strftime('%b %d')})")
                         else:
                             st.warning("⚠️ Open")
-                            if st.button("Fixed", key=f"fix_{item['id']}", width='stretch'):
+                            if st.button("Fixed", key=f"fix_{item['id']}", use_container_width=True):
                                 now_ts = get_utc_plus_4().isoformat()
                                 run_query(supabase.table("court_maintenance").update({
                                     "is_fixed": True,
@@ -2366,7 +2366,7 @@ else:
                         bypass_villa = "".join(filter(str.isdigit, bypass_villa_raw))
                     bypass_email = st.text_input("Resident Email Address", placeholder="resident@example.com", key="tab4_bypass_email").strip().lower()
 
-                    if st.button("Authorize & Switch Session to Resident", type="primary", width='stretch', key="tab4_bypass_btn"):
+                    if st.button("Authorize & Switch Session to Resident", type="primary", use_container_width=True, key="tab4_bypass_btn"):
                         max_allowed_bypass = SUB_COMMUNITY_VILLA_LIMITS.get(bypass_sub, 9999)
                         if not bypass_sub or not bypass_villa or not bypass_email or "@" not in bypass_email:
                             st.error("Please specify a valid Sub-Community, Villa, and Email Address.")
@@ -2397,7 +2397,7 @@ else:
                                 localStorage.setItem('court_villa_lock', '{fallback_choice}');
                                 localStorage.setItem('court_verified_email', '{bypass_email}');
                                 localStorage.setItem('verified_claim_info', '{claim_bundle}');
-                            """)
+                            """, key="bypass_storage_set_js")
 
                             st.session_state.sub_community = bypass_sub
                             st.session_state.villa = bypass_villa
@@ -2455,7 +2455,7 @@ else:
             col_adm1, col_adm2 = st.columns([3, 1])
             with col_adm1: st.success("Admin Access Granted")
             with col_adm2:
-                if st.button("🔒 Exit Admin Mode", type="secondary", use_container_width=True):
+                if st.button("🔒 Exit Admin Mode", type="secondary", use_container_width=True, key="exit_admin_btn"):
                     st.session_state.pop("log_admin_pass", None)
                     st.rerun()
 
