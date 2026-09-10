@@ -1514,213 +1514,215 @@ if not st.session_state.authenticated:
         default_sub_idx = sub_community_list.index(prefill_sub)
     default_villa = st.session_state.get("prefill_villa", "")
 
-    st.subheader("🛡️ Resident Email Verification")
-    st.caption("One-time 6-digit verification code. Max 2 resident emails per villa.")
-
-    if not st.session_state.otp_sent:
-        col_v1, col_v2 = st.columns(2)
-        with col_v1:
-            otp_sub = st.selectbox("Sub-Community", options=sub_community_list, index=default_sub_idx, key="otp_sub_select")
-        with col_v2:
-            max_limit = SUB_COMMUNITY_VILLA_LIMITS.get(otp_sub, 500)
-            otp_villa_raw = st.text_input(f"Villa Number (1 - {max_limit})", value=default_villa, key="otp_villa_text").strip()
-            otp_villa = "".join(filter(str.isdigit, otp_villa_raw))
-
-        otp_email_input = st.text_input("Email Address", placeholder="name@example.com", key="otp_email_text").strip().lower()
-
-        if st.button("Continue", type="primary", width='stretch'):
-            max_allowed = SUB_COMMUNITY_VILLA_LIMITS.get(otp_sub, 9999)
-            if not otp_email_input or "@" not in otp_email_input:
-                st.error("Please provide a valid email address.")
-            elif is_disposable_email(otp_email_input):
-                st.error("Disposable/temporary email domains are not allowed. Please use a personal or work email.")
-            else:
-                # --- DISCREET COACH CHECK ---
-                coach_check = run_query(supabase.table("coach_accounts").select("*").eq("email", otp_email_input).eq("is_active", True))
-                if coach_check and coach_check.data:
-                    st.session_state.authenticated = True
-                    st.session_state.is_coach = True
-                    st.session_state.coach_email = otp_email_input
-                    st.session_state.coach_name = coach_check.data[0]['coach_name']
-                    st.success(f"Welcome back, Coach {st.session_state.coach_name}!")
-                    time.sleep(0.8)
-                    st.rerun()
-
-                # --- STANDARD RESIDENT FLOW ---
-                if not otp_sub or not otp_villa:
-                    st.error("Please specify your Sub-Community and Villa Number.")
-                elif not otp_villa.isdigit() or not (1 <= int(otp_villa) <= max_allowed):
-                    st.error(f"Invalid villa number for {otp_sub}. Must be between 1 and {max_allowed}.")
-                else:
-                    existing_claim = get_existing_claim(otp_sub, otp_villa, otp_email_input)
-                    current_claims_count = get_villa_claims_count(otp_sub, otp_villa)
-                    email_villas_count = get_email_claimed_villas_count(otp_email_input)
-                    is_on_cooldown, hours_left = get_recent_claim_cooldown(otp_sub, otp_villa, otp_email_input)
-                    target_pair = f"{otp_sub}::{otp_villa}"
-                    current_uuid = st.session_state.get("device_uuid", "device_pending")
-                    uuid_villas = get_uuid_claimed_villas(current_uuid)
-                    
-                    if not existing_claim and is_on_cooldown:
-                        st.error(
-                            f"🚫 Security Lockout: This villa ({otp_sub} - Villa {otp_villa}) already has 2 registered emails, "
-                            f"with an active 72-hour ownership change cooldown ({hours_left} hours remaining). "
-                            "Please contact Dev in Court Maintenance for urgent reassignment."
-                        )
-                        add_log("Access Denied", f"Villa {otp_sub} Villa {otp_villa} 72h cooldown triggered by {otp_email_input} ({hours_left}h left)", fingerprint=current_uuid)
-                    elif not existing_claim and current_claims_count >= 2:
-                        st.error(
-                            f"🚫 This villa ({otp_sub} - Villa {otp_villa}) already has 2 verified resident emails attached. "
-                            "If you recently moved in or need to update your registered email, please reach out via the contact channels in Court Maintenance."
-                        )
-                    elif not existing_claim and email_villas_count >= 3:
-                        st.error(
-                            "Unable to register this villa to your email address. "
-                            "Please contact Dev via the contact details in Court Maintenance for assistance."
-                        )
-                        add_log("Access Denied", f"Email {otp_email_input} exceeded 3-villa cap attempting {otp_sub} Villa {otp_villa}", fingerprint=current_uuid)
-                    elif not existing_claim and target_pair not in uuid_villas and len(uuid_villas) >= 3:
-                        st.error(
-                            "This device has reached the maximum allowed registered villas. "
-                            "Please contact Dev via Court Maintenance if you require an exception."
-                        )
-                        add_log("Access Denied", f"Device UUID {current_uuid} blocked from requesting OTP for 4th villa ({otp_sub} Villa {otp_villa})", fingerprint=current_uuid)
-                    else:
-                        with st.spinner("Sending 6-digit verification code..."):
-                            try:
-                                supabase.auth.sign_in_with_otp({"email": otp_email_input})
-                                st.session_state.otp_sent = True
-                                st.session_state.otp_email = otp_email_input
-                                st.session_state.otp_target_sub = otp_sub
-                                st.session_state.otp_target_villa = otp_villa
-                                st.success(f"✅ Code sent! Please check your inbox at {otp_email_input}")
-                                time.sleep(1.2)
-                                st.rerun()
-                            except Exception as e:
-                                st.error(f"Failed to send code: {str(e)}")
-        
-        st.write("")
-        if st.button("🚪 Reset / Clear Details", width='stretch', key="reg_logout_presend"):
-            logout_action()
-    else:
-        st.info(f"Enter the 6-digit code sent to **{st.session_state.otp_email}** for **{st.session_state.otp_target_sub} - Villa {st.session_state.otp_target_villa}**.")
-        st.caption("Check your spam/junk folder if the email does not appear in your inbox within a minute.")
-        token_input = st.text_input("Enter 6-digit code", max_chars=6, key="otp_token_text").strip()
-        
-        c1, c2, c3 = st.columns([1.5, 1.2, 1.2])
-        with c1:
-            if st.button("Verify Code", type="primary", width='stretch'):
-                if not token_input or len(token_input) != 6:
-                    st.error("Please enter a 6-digit verification code.")
-                else:
-                    with st.spinner("Verifying code..."):
-                        try:
-                            res = supabase.auth.verify_otp({
-                                "email": st.session_state.otp_email,
-                                "token": token_input,
-                                "type": "email"
-                            })
-                            if res and res.session:
-                                target_sub = st.session_state.otp_target_sub
-                                target_villa = st.session_state.otp_target_villa
-                                verified_email = st.session_state.otp_email
-                                refresh_tok = res.session.refresh_token
-                                resolved_uuid = st.session_state.device_uuid
-
-                                existing = get_existing_claim(target_sub, target_villa, verified_email)
-                                now_ts = get_utc_plus_4().isoformat()
-                                
-                                if not existing:
-                                    run_query(supabase.table("villa_claims").insert({
-                                        "sub_community": target_sub,
-                                        "villa": target_villa,
-                                        "email": verified_email,
-                                        "fingerprint": resolved_uuid,
-                                        "status": "approved",
-                                        "verified_at": now_ts
-                                    }))
-                                    add_log("Villa Claim", f"{target_sub} Villa {target_villa} claimed by {verified_email}", fingerprint=resolved_uuid)
-                                else:
-                                    run_query(supabase.table("villa_claims").update({
-                                        "verified_at": now_ts,
-                                        "fingerprint": resolved_uuid,
-                                        "status": "approved"
-                                    }).eq("id", existing["id"]))
-
-                                fallback_choice = f"{target_sub}-{target_villa}"
-                                claim_bundle = f"{target_sub}::{target_villa}"
-                                
-                                st_javascript(f"""
-                                    localStorage.setItem('court_villa_lock', '{fallback_choice}');
-                                    localStorage.setItem('court_verified_email', '{verified_email}');
-                                    localStorage.setItem('verified_claim_info', '{claim_bundle}');
-                                    localStorage.setItem('supabase_refresh_token', '{refresh_tok}');
-                                    localStorage.setItem('court_device_uuid', '{resolved_uuid}');
-                                """)
-
-                                st.query_params["auth"] = encode_auth_token(target_sub, target_villa, verified_email)
-                                st.session_state.sub_community = target_sub
-                                st.session_state.villa = target_villa
-                                st.session_state.verified_email = verified_email
-                                st.session_state.authenticated = True
-                                st.session_state.is_coach = False
-                                st.session_state.otp_sent = False
-                                
-                                st.balloons()
-                                st.success("✅ Verified and registered successfully! Logging you in...")
-                                time.sleep(1.2)
-                                st.rerun()
-                            else:
-                                st.error("Verification failed. Please check the code.")
-                        except Exception as e:
-                            st.error(f"Invalid code or verification error: {str(e)}")
-        with c2:
-            if st.button("🔄 Resend Code", width='stretch'):
-                with st.spinner("Resending code..."):
-                    try:
-                        supabase.auth.sign_in_with_otp({"email": st.session_state.otp_email})
-                        st.toast(f"A new 6-digit code has been sent to {st.session_state.otp_email}!")
-                    except Exception as e:
-                        st.error(f"Could not resend code: {str(e)}")
-        with c3:
-            if st.button("Cancel / Change", width='stretch'):
-                st.session_state.otp_sent = False
-                st.rerun()
-        
-        st.write("")
-        if st.button("🚪 Reset / Clear Details", width='stretch', key="reg_logout_postsend"):
-            logout_action()
-
-    st.write("")
-    with st.expander("🛠️ Admin Emergency Console", expanded=(st.query_params.get("admin") == "true")):
-        st.caption("Unlock accounts, reset cooldowns, or clear restrictions if locked out.")
-        login_admin_pwd = st.text_input("Enter Admin Password", type="password", key="login_screen_admin_pwd")
-        if login_admin_pwd:
-            if login_admin_pwd == st.secrets.get("ADMIN_PASSWORD", "admin123"):
-                st.success("Admin Access Granted")
-                rst_email = st.text_input("Resident Email Address to Restore", placeholder="resident@example.com", key="login_rst_email").strip().lower()
-                if st.button("🔓 Clear Restrictions & Restore Clean Access", type="primary", key="login_rst_btn", use_container_width=True):
-                    if not rst_email or "@" not in rst_email:
-                        st.error("Please enter a valid email address.")
-                    else:
-                        now_ts = get_utc_plus_4().isoformat()
-                        claims = get_all_villas_for_email(rst_email)
-                        for c in claims:
-                            run_query(supabase.table("villa_claims").update({
-                                "verified_at": now_ts,
-                                "status": "approved"
-                            }).eq("id", c["id"]))
-
-                        add_log(
-                            "Admin Reset",
-                            f"Admin cleared restrictions and reset cooldown for {rst_email} across {len(claims)} villas via emergency console"
-                        )
-                        st.success(f"✅ Restrictions cleared for {rst_email}! Cooldown reset for all {len(claims)} associated villas.")
-                        time.sleep(1.2)
-                        st.rerun()
-            else:
-                st.error("Incorrect Password")
     
-    st.stop()
+    st.subheader("🛡️ Resident Email Verification")
+        st.caption("One-time verification code or registered account login.")
+    
+        if not st.session_state.otp_sent:
+            col_v1, col_v2 = st.columns(2)
+            with col_v1:
+                otp_sub = st.selectbox("Sub-Community", options=sub_community_list, index=default_sub_idx, key="otp_sub_select")
+            with col_v2:
+                max_limit = SUB_COMMUNITY_VILLA_LIMITS.get(otp_sub, 500)
+                otp_villa_raw = st.text_input(f"Villa Number (1 - {max_limit})", value=default_villa, key="otp_villa_text").strip()
+                otp_villa = "".join(filter(str.isdigit, otp_villa_raw))
+    
+            otp_email_input = st.text_input("Email Address", placeholder="name@example.com", key="otp_email_text").strip().lower()
+    
+            if st.button("Continue / Send Code", type="primary", width='stretch'):
+                max_allowed = SUB_COMMUNITY_VILLA_LIMITS.get(otp_sub, 9999)
+                if not otp_email_input or "@" not in otp_email_input:
+                    st.error("Please provide a valid email address.")
+                elif is_disposable_email(otp_email_input):
+                    st.error("Disposable/temporary email domains are not allowed. Please use a personal or work email.")
+                else:
+                    # --- DISCREET BACKEND CHECK FOR COACH ---
+                    coach_check = run_query(supabase.table("coach_accounts").select("*").eq("email", otp_email_input).eq("is_active", True))
+                    if coach_check and coach_check.data:
+                        # Instantly route the coach straight into their dashboard with zero friction
+                        st.session_state.authenticated = True
+                        st.session_state.is_coach = True
+                        st.session_state.coach_email = otp_email_input
+                        st.session_state.coach_name = coach_check.data[0]['coach_name']
+                        st.success(f"Welcome back, Coach {st.session_state.coach_name}!")
+                        time.sleep(0.8)
+                        st.rerun()
+    
+                    # --- STANDARD RESIDENT FLOW ---
+                    if not otp_sub or not otp_villa:
+                        st.error("Please specify your Sub-Community and Villa Number.")
+                    elif not otp_villa.isdigit() or not (1 <= int(otp_villa) <= max_allowed):
+                        st.error(f"Invalid villa number for {otp_sub}. Must be between 1 and {max_allowed}.")
+                    else:
+                        existing_claim = get_existing_claim(otp_sub, otp_villa, otp_email_input)
+                        current_claims_count = get_villa_claims_count(otp_sub, otp_villa)
+                        email_villas_count = get_email_claimed_villas_count(otp_email_input)
+                        is_on_cooldown, hours_left = get_recent_claim_cooldown(otp_sub, otp_villa, otp_email_input)
+                        target_pair = f"{otp_sub}::{otp_villa}"
+                        current_uuid = st.session_state.get("device_uuid", "device_pending")
+                        uuid_villas = get_uuid_claimed_villas(current_uuid)
+                        
+                        if not existing_claim and is_on_cooldown:
+                            st.error(
+                                f"🚫 Security Lockout: This villa ({otp_sub} - Villa {otp_villa}) already has 2 registered emails, "
+                                f"with an active 72-hour ownership change cooldown ({hours_left} hours remaining). "
+                                "Please contact Dev in Court Maintenance for urgent reassignment."
+                            )
+                            add_log("Access Denied", f"Villa {otp_sub} Villa {otp_villa} 72h cooldown triggered by {otp_email_input} ({hours_left}h left)", fingerprint=current_uuid)
+                        elif not existing_claim and current_claims_count >= 2:
+                            st.error(
+                                f"🚫 This villa ({otp_sub} - Villa {otp_villa}) already has 2 verified resident emails attached. "
+                                "If you recently moved in or need to update your registered email, please reach out via the contact channels in Court Maintenance."
+                            )
+                        elif not existing_claim and email_villas_count >= 3:
+                            st.error(
+                                "Unable to register this villa to your email address. "
+                                "Please contact Dev via the contact details in Court Maintenance for assistance."
+                            )
+                            add_log("Access Denied", f"Email {otp_email_input} exceeded 3-villa cap attempting {otp_sub} Villa {otp_villa}", fingerprint=current_uuid)
+                        elif not existing_claim and target_pair not in uuid_villas and len(uuid_villas) >= 3:
+                            st.error(
+                                "This device has reached the maximum allowed registered villas. "
+                                "Please contact Dev via Court Maintenance if you require an exception."
+                            )
+                            add_log("Access Denied", f"Device UUID {current_uuid} blocked from requesting OTP for 4th villa ({otp_sub} Villa {otp_villa})", fingerprint=current_uuid)
+                        else:
+                            with st.spinner("Sending 6-digit verification code..."):
+                                try:
+                                    supabase.auth.sign_in_with_otp({"email": otp_email_input})
+                                    st.session_state.otp_sent = True
+                                    st.session_state.otp_email = otp_email_input
+                                    st.session_state.otp_target_sub = otp_sub
+                                    st.session_state.otp_target_villa = otp_villa
+                                    st.success(f"✅ Code sent! Please check your inbox at {otp_email_input}")
+                                    time.sleep(1.2)
+                                    st.rerun()
+                                except Exception as e:
+                                    st.error(f"Failed to send code: {str(e)}")
+            
+            st.write("")
+            if st.button("🚪 Reset / Clear Details", width='stretch', key="reg_logout_presend"):
+                logout_action()
+        else:
+            st.info(f"Enter the 6-digit code sent to **{st.session_state.otp_email}** for **{st.session_state.otp_target_sub} - Villa {st.session_state.otp_target_villa}**.")
+            st.caption("Check your spam/junk folder if the email does not appear in your inbox within a minute.")
+            token_input = st.text_input("Enter 6-digit code", max_chars=6, key="otp_token_text").strip()
+            
+            c1, c2, c3 = st.columns([1.5, 1.2, 1.2])
+            with c1:
+                if st.button("Verify Code", type="primary", width='stretch'):
+                    if not token_input or len(token_input) != 6:
+                        st.error("Please enter a 6-digit verification code.")
+                    else:
+                        with st.spinner("Verifying code..."):
+                            try:
+                                res = supabase.auth.verify_otp({
+                                    "email": st.session_state.otp_email,
+                                    "token": token_input,
+                                    "type": "email"
+                                })
+                                if res and res.session:
+                                    target_sub = st.session_state.otp_target_sub
+                                    target_villa = st.session_state.otp_target_villa
+                                    verified_email = st.session_state.otp_email
+                                    refresh_tok = res.session.refresh_token
+                                    resolved_uuid = st.session_state.device_uuid
+    
+                                    existing = get_existing_claim(target_sub, target_villa, verified_email)
+                                    now_ts = get_utc_plus_4().isoformat()
+                                    
+                                    if not existing:
+                                        run_query(supabase.table("villa_claims").insert({
+                                            "sub_community": target_sub,
+                                            "villa": target_villa,
+                                            "email": verified_email,
+                                            "fingerprint": resolved_uuid,
+                                            "status": "approved",
+                                            "verified_at": now_ts
+                                        }))
+                                        add_log("Villa Claim", f"{target_sub} Villa {target_villa} claimed by {verified_email}", fingerprint=resolved_uuid)
+                                    else:
+                                        run_query(supabase.table("villa_claims").update({
+                                            "verified_at": now_ts,
+                                            "fingerprint": resolved_uuid,
+                                            "status": "approved"
+                                        }).eq("id", existing["id"]))
+    
+                                    fallback_choice = f"{target_sub}-{target_villa}"
+                                    claim_bundle = f"{target_sub}::{target_villa}"
+                                    
+                                    st_javascript(f"""
+                                        localStorage.setItem('court_villa_lock', '{fallback_choice}');
+                                        localStorage.setItem('court_verified_email', '{verified_email}');
+                                        localStorage.setItem('verified_claim_info', '{claim_bundle}');
+                                        localStorage.setItem('supabase_refresh_token', '{refresh_tok}');
+                                        localStorage.setItem('court_device_uuid', '{resolved_uuid}');
+                                    """)
+    
+                                    st.query_params["auth"] = encode_auth_token(target_sub, target_villa, verified_email)
+                                    st.session_state.sub_community = target_sub
+                                    st.session_state.villa = target_villa
+                                    st.session_state.verified_email = verified_email
+                                    st.session_state.authenticated = True
+                                    st.session_state.is_coach = False
+                                    st.session_state.otp_sent = False
+                                    
+                                    st.balloons()
+                                    st.success("✅ Verified and registered successfully! Logging you in...")
+                                    time.sleep(1.2)
+                                    st.rerun()
+                                else:
+                                    st.error("Verification failed. Please check the code.")
+                            except Exception as e:
+                                st.error(f"Invalid code or verification error: {str(e)}")
+            with c2:
+                if st.button("🔄 Resend Code", width='stretch'):
+                    with st.spinner("Resending code..."):
+                        try:
+                            supabase.auth.sign_in_with_otp({"email": st.session_state.otp_email})
+                            st.toast(f"A new 6-digit code has been sent to {st.session_state.otp_email}!")
+                        except Exception as e:
+                            st.error(f"Could not resend code: {str(e)}")
+            with c3:
+                if st.button("Cancel / Change", width='stretch'):
+                    st.session_state.otp_sent = False
+                    st.rerun()
+            
+            st.write("")
+            if st.button("🚪 Reset / Clear Details", width='stretch', key="reg_logout_postsend"):
+                logout_action()
+    
+        st.write("")
+        with st.expander("🛠️ Admin Emergency Console", expanded=(st.query_params.get("admin") == "true")):
+            st.caption("Unlock accounts, reset cooldowns, or clear restrictions if locked out.")
+            login_admin_pwd = st.text_input("Enter Admin Password", type="password", key="login_screen_admin_pwd")
+            if login_admin_pwd:
+                if login_admin_pwd == st.secrets.get("ADMIN_PASSWORD", "admin123"):
+                    st.success("Admin Access Granted")
+                    rst_email = st.text_input("Resident Email Address to Restore", placeholder="resident@example.com", key="login_rst_email").strip().lower()
+                    if st.button("🔓 Clear Restrictions & Restore Clean Access", type="primary", key="login_rst_btn", use_container_width=True):
+                        if not rst_email or "@" not in rst_email:
+                            st.error("Please enter a valid email address.")
+                        else:
+                            now_ts = get_utc_plus_4().isoformat()
+                            claims = get_all_villas_for_email(rst_email)
+                            for c in claims:
+                                run_query(supabase.table("villa_claims").update({
+                                    "verified_at": now_ts,
+                                    "status": "approved"
+                                }).eq("id", c["id"]))
+    
+                            add_log(
+                                "Admin Reset",
+                                f"Admin cleared restrictions and reset cooldown for {rst_email} across {len(claims)} villas via emergency console"
+                            )
+                            st.success(f"✅ Restrictions cleared for {rst_email}! Cooldown reset for all {len(claims)} associated villas.")
+                            time.sleep(1.2)
+                            st.rerun()
+                else:
+                    st.error("Incorrect Password")
+        
+        st.stop()
 
 # ==========================================
 # --- ROUTING: COACH VIEW VS RESIDENT VIEW ---
