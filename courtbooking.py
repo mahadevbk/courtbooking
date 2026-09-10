@@ -2212,7 +2212,7 @@ Coach accounts exist for tennis coaches who train residents across **several vil
 **Why a coach account works differently from a normal resident login:**
 
 1. **No need to log out and log in for several villas.** A coach logs in once with their own email and PIN, and their account is linked to a *pool* of the villas they coach for. They can book a court for any of those villas without switching accounts.
-2. **The actual quota of each villa remains unchanged.** A coach account does not create extra bookings capacity out of thin air — every booking a coach makes is drawn from that specific villa's own existing allowance (6 active bookings, or 8 for donor villas, with a 2-per-day cap). The coach is simply using the villa owner's quota on their behalf, with the owner's consent.
+2. **The actual quota of each villa remains unchanged.** A coach account does not create extra bookings capacity out of thin air — every booking a coach makes is drawn from that specific villa's own existing allowance (6 active bookings, or 8 for the Legend's of Mira, with a 2-per-day cap). The coach is simply using the villa owner's quota on their behalf, with the owner's consent.
 
 **How it works:**
 - Each coach is assigned a pool of up to **10 villas** by the admin.
