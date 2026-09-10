@@ -1925,33 +1925,6 @@ def render_court_maintenance_tab(reporter_label, current_device):
     </div>
     """, unsafe_allow_html=True)
 
-    with st.expander("🎾 Coach Account Set Up"):
-        st.markdown("""
-Coach accounts exist for tennis/padel coaches who train residents across **several villas**, so they can manage all their sessions from one login instead of juggling separate villa credentials.
-
-**Why a coach account works differently from a normal resident login:**
-
-1. **No need to log out and log in for several villas.** A coach logs in once with their own email and PIN, and their account is linked to a *pool* of the villas they coach for. They can book a court for any of those villas without switching accounts.
-2. **The actual quota of each villa remains unchanged.** A coach account does not create extra bookings capacity out of thin air — every booking a coach makes is drawn from that specific villa's own existing allowance (6 active bookings, or 8 for donor villas, with a 2-per-day cap). The coach is simply using the villa owner's quota on their behalf, with the owner's consent.
-
-**How it works:**
-- Each coach is assigned a pool of up to **10 villas** by the admin.
-- When a coach books a slot, the app automatically finds a villa in their pool that still has room under its normal active/daily limits.
-- For a 2-hour session, if one villa doesn't have enough quota left, the app will **intelligently split the booking** — e.g. 1 hour drawn from one villa's quota and the 2nd hour from another villa in the pool — so the session still gets booked without breaching any individual villa's limits.
-- The villa owner receives an email notification whenever a coach books or cancels a session using their quota, so they always know when their allowance has been used.
-- On the schedule/availability grid, coach bookings appear exactly like any other booking for that villa — but a coach's own "My Bookings" list only shows sessions *they* booked, and an owner's "My Bookings" list only shows sessions *they personally* booked (coach bookings are kept separate so the two views don't mix).
-
-**Limitations & rules:**
-- A coach cannot exceed a villa's normal active-bookings limit or its 2-per-day limit — the same fair-use rules that apply to residents apply to every villa in a coach's pool.
-- A coach account can be linked to a maximum of **10 villas**.
-- First login requires the coach to set a 4-digit PIN; on every login after that, they just enter their PIN.
-- Coaches cannot reset their own PIN — **only the admin can reset a coach's PIN** if it's forgotten.
-- Cancelling a coach-booked session immediately returns that quota to the villa it was drawn from, and the owner is notified.
-- A coach cannot book, view, or cancel anything for a villa that isn't in their assigned pool.
-
-**Setting up a coach account:** Coach accounts are not self-service. If you're a coach who needs an account, or a resident who wants to authorize a coach to book on your villa's behalf, please **contact Dev** with the coach's name, email address, and the sub-community + villa number(s) to link — the admin will create the account and map the villas for you.
-        """)
-
     with st.expander("📝 Report a New Issue", expanded=False):
         m_court = st.selectbox("Select Court", options=courts, key="maint_court")
         m_desc = st.text_area("Issue Description", placeholder="Please describe the issue in detail...")
@@ -2232,6 +2205,33 @@ Coach accounts exist for tennis/padel coaches who train residents across **sever
 
 def render_activity_log_tab(current_device):
     """Shared Community Activity Log tab body, used by both the resident and coach dashboards."""
+    with st.expander("🎾 Coach Account Set Up"):
+        st.markdown("""
+Coach accounts exist for tennis coaches who train residents across **several villas**, so they can manage all their sessions from one login instead of juggling separate villa credentials.
+
+**Why a coach account works differently from a normal resident login:**
+
+1. **No need to log out and log in for several villas.** A coach logs in once with their own email and PIN, and their account is linked to a *pool* of the villas they coach for. They can book a court for any of those villas without switching accounts.
+2. **The actual quota of each villa remains unchanged.** A coach account does not create extra bookings capacity out of thin air — every booking a coach makes is drawn from that specific villa's own existing allowance (6 active bookings, or 8 for donor villas, with a 2-per-day cap). The coach is simply using the villa owner's quota on their behalf, with the owner's consent.
+
+**How it works:**
+- Each coach is assigned a pool of up to **10 villas** by the admin.
+- When a coach books a slot, the app automatically finds a villa in their pool that still has room under its normal active/daily limits.
+- For a 2-hour session, if one villa doesn't have enough quota left, the app will **intelligently split the booking** — e.g. 1 hour drawn from one villa's quota and the 2nd hour from another villa in the pool — so the session still gets booked without breaching any individual villa's limits.
+- The villa owner receives an email notification whenever a coach books or cancels a session using their quota, so they always know when their allowance has been used.
+- On the schedule/availability grid, coach bookings appear exactly like any other booking for that villa — but a coach's own "My Bookings" list only shows sessions *they* booked, and an owner's "My Bookings" list only shows sessions *they personally* booked (coach bookings are kept separate so the two views don't mix).
+
+**Limitations & rules:**
+- A coach cannot exceed a villa's normal active-bookings limit or its 2-per-day limit — the same fair-use rules that apply to residents apply to every villa in a coach's pool.
+- A coach account can be linked to a maximum of **10 villas**.
+- First login requires the coach to set a 4-digit PIN; on every login after that, they just enter their PIN.
+- Coaches cannot reset their own PIN — **only the admin can reset a coach's PIN** if it's forgotten.
+- Cancelling a coach-booked session immediately returns that quota to the villa it was drawn from, and the owner is notified.
+- A coach cannot book, view, or cancel anything for a villa that isn't in their assigned pool.
+
+**Setting up a coach account:** Coach accounts are not self-service. If you're a coach who needs an account, or a resident who wants to authorize a coach to book on your villa's behalf, please **contact Dev** with the coach's name, email address, and the sub-community + villa number(s) to link — the admin will create the account and map the villas for you.
+        """)
+
     st.subheader("Community Activity Log")
     st.caption("Timezone: UTC+4")
     admin_pass_val = st.session_state.get("log_admin_pass", "")
