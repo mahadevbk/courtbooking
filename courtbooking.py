@@ -34,9 +34,10 @@ DONOR_SHEET_ID = "1dKj5XkH87bdPmhXc-1inrumqXVBje8pXsl-_llrefYQ"
 DONOR_SHEET_CSV_URL = f"https://docs.google.com/spreadsheets/d/{DONOR_SHEET_ID}/export?format=csv&gid=0"
 
 _FALLBACK_DONOR_NAMES = [
-    "Abhisek", "Adam", "Adebayo", "Arlan", "Alesia", "Ameen", "Angelo", "Carlos", "Charbel", "Dev", "Elie",
-    "Farheen", "Francois", "Goncalo", "Hatem", "Hana", "Harith", "Hisham", "Katya", "Khaled", "Leina", "Marko", "Mei",
-    "Melissa", "Mustafa", "Nick", "Nikki", "Rena", "Ricardo", "Riin", "Saket", "SAS", "Sheila", "Sofia", "Timo", "Vik", "Yousef",
+    "Abhishek", "Adam", "Adebayo", "Alesia", "Ameen", "Angelo", "Arlan", "Asim", "Carlos", "Charbel", "Dev", "Elie", "Farheen", "Francois",
+    "Goncalo", "Guru", "Hana", "Harith", "Hatem", "Hisham", "Katya", "KD", "Khaled", "Laurent", "Leina", "Lisa", "Marko", "Matthieu",
+    "Mei", "Melissa", "Mostafa", "Mustafa", "Nick", "Nikki", "Peter", "Rena", "Ricardo", "Riin", "Saket", "SAS", "Sheila", "Sofia",
+    "Timo", "Vik", "Wael", "Yann", "Yousef"
 ]
 
 MAX_ACTIVE_BOOKINGS_DEFAULT = 6
