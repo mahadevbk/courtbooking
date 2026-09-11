@@ -2269,6 +2269,63 @@ def render_coach_admin_panel(key_prefix="cam"):
                             time.sleep(1)
                             st.rerun()
 
+                    with st.expander(f"✏️ Edit Profile ({c.get('coach_name', 'Coach')} — {c_email})"):
+                        edit_col1, edit_col2 = st.columns(2)
+                        with edit_col1:
+                            edited_email = st.text_input(
+                                "Email", value=c_email, key=f"{key_prefix}_edit_email_{c_email}"
+                            ).strip().lower()
+                        with edit_col2:
+                            edited_name = st.text_input(
+                                "Coach Name", value=c.get("coach_name", ""), key=f"{key_prefix}_edit_name_{c_email}"
+                            ).strip()
+
+                        if st.button("💾 Save Changes", key=f"{key_prefix}_save_edit_{c_email}", type="primary", use_container_width=True):
+                            if not edited_email or "@" not in edited_email:
+                                st.error("Please enter a valid email address (must contain '@').")
+                            elif not edited_name:
+                                st.error("Coach name cannot be empty.")
+                            else:
+                                email_changed = edited_email != c_email
+                                duplicate = False
+                                if email_changed:
+                                    dup_check = run_query(
+                                        supabase.table("coach_accounts").select("email").eq("email", edited_email)
+                                    )
+                                    if dup_check and dup_check.data:
+                                        duplicate = True
+
+                                if duplicate:
+                                    st.error(f"Another coach account already uses {edited_email}. Choose a different email.")
+                                else:
+                                    run_query(
+                                        supabase.table("coach_accounts")
+                                        .update({"email": edited_email, "coach_name": edited_name})
+                                        .eq("email", c_email)
+                                    )
+                                    if email_changed:
+                                        # Cascade the email change so existing villa mappings and past/active
+                                        # bookings tagged to this coach stay linked to the corrected email.
+                                        run_query(
+                                            supabase.table("coach_villas")
+                                            .update({"coach_email": edited_email})
+                                            .eq("coach_email", c_email)
+                                        )
+                                        run_query(
+                                            supabase.table("bookings")
+                                            .update({"coach_email": edited_email})
+                                            .eq("coach_email", c_email)
+                                        )
+                                    add_log(
+                                        "Admin Edit",
+                                        f"Admin updated coach profile {c_email} -> {edited_email} (name: {edited_name})",
+                                    )
+                                    st.success(f"Profile updated: {edited_name} ({edited_email})")
+                                    if email_changed:
+                                        st.info("This coach's email changed — if they're logged in on a device, they'll need to log in again with the new email.")
+                                    time.sleep(1.2)
+                                    st.rerun()
+
 def render_activity_log_tab(current_device):
     """Shared Community Activity Log tab body, used by both the resident and coach dashboards."""
     with st.expander("🎾 Coach Account Set Up"):
