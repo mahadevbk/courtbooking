@@ -626,14 +626,14 @@ sub_community_list = [
 ]
 
 SUB_COMMUNITY_VILLA_LIMITS = {
-    "Mira 1": 322,
-    "Mira 2": 334,
-    "Mira 3": 294,
+    "Mira 1": 400,
+    "Mira 2": 400,
+    "Mira 3": 400,
     "Mira 4": 600,
-    "Mira 5": 316,
-    "Mira Oasis 1": 483,
-    "Mira Oasis 2": 427,
-    "Mira Oasis 3": 483
+    "Mira 5": 400,
+    "Mira Oasis 1": 500,
+    "Mira Oasis 2": 500,
+    "Mira Oasis 3": 500
 }
 
 courts = ["Mira 2", "Mira 4", "Mira 5A", "Mira 5B", "Mira Oasis 1", "Mira Oasis 2", "Mira Oasis 3A", "Mira Oasis 3B", "Mira Oasis 3C"]
