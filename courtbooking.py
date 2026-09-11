@@ -2390,7 +2390,16 @@ Coach accounts exist for tennis coaches who train residents across **several vil
             (~log_df['details'].str.contains("System-Synced", case=False, na=False))
         )
         if not is_admin:
-            filters &= (log_df['event_type'] != "Coach Login") & (log_df['event_type'] != "Limit Enforcement")
+            filters &= (log_df['event_type'] != "Limit Enforcement")
+            # Hide anything coach-related from the resident-facing view entirely — not just
+            # "Coach Login", but coach profile admin actions (Admin Edit, PIN resets, deletions)
+            # and any booking/cancellation made using a coach's pooled quota.
+            is_coach_related = (
+                (log_df['event_type'] == "Coach Login") |
+                (log_df['event_type'] == "Admin Edit") |
+                (log_df['details'].str.contains(r'\bcoach\b', case=False, na=False, regex=True))
+            )
+            filters &= ~is_coach_related
 
         display_df = log_df[filters].copy()        
         display_df['details'] = display_df['details'].str.replace(r'⟦FP:.*?⟧⟦IP:.*?⟧ ', '', regex=True)
