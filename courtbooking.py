@@ -2297,15 +2297,32 @@ def render_coach_admin_panel(key_prefix="cam"):
 
                                 if duplicate:
                                     st.error(f"Another coach account already uses {edited_email}. Choose a different email.")
-                                else:
+                                elif not email_changed:
+                                    # Name-only change: safe to update the existing row in place.
                                     run_query(
                                         supabase.table("coach_accounts")
-                                        .update({"email": edited_email, "coach_name": edited_name})
+                                        .update({"coach_name": edited_name})
                                         .eq("email", c_email)
                                     )
-                                    if email_changed:
-                                        # Cascade the email change so existing villa mappings and past/active
-                                        # bookings tagged to this coach stay linked to the corrected email.
+                                    add_log("Admin Edit", f"Admin renamed coach {c_email} to '{edited_name}'")
+                                    st.success(f"Profile updated: {edited_name} ({edited_email})")
+                                    time.sleep(1.2)
+                                    st.rerun()
+                                else:
+                                    # email is the primary key here and coach_villas / bookings reference it
+                                    # via a foreign key, so we can't UPDATE it in place (Postgres rejects
+                                    # changing a parent key while child rows still point at the old value).
+                                    # Instead: insert a new parent row with the corrected email, re-point the
+                                    # children at it, then remove the old parent row.
+                                    try:
+                                        run_query(
+                                            supabase.table("coach_accounts").insert({
+                                                "email": edited_email,
+                                                "coach_name": edited_name,
+                                                "pin": c.get("pin"),
+                                                "is_active": c.get("is_active", True),
+                                            })
+                                        )
                                         run_query(
                                             supabase.table("coach_villas")
                                             .update({"coach_email": edited_email})
@@ -2316,15 +2333,19 @@ def render_coach_admin_panel(key_prefix="cam"):
                                             .update({"coach_email": edited_email})
                                             .eq("coach_email", c_email)
                                         )
-                                    add_log(
-                                        "Admin Edit",
-                                        f"Admin updated coach profile {c_email} -> {edited_email} (name: {edited_name})",
-                                    )
-                                    st.success(f"Profile updated: {edited_name} ({edited_email})")
-                                    if email_changed:
+                                        run_query(
+                                            supabase.table("coach_accounts").delete().eq("email", c_email)
+                                        )
+                                        add_log(
+                                            "Admin Edit",
+                                            f"Admin updated coach profile {c_email} -> {edited_email} (name: {edited_name})",
+                                        )
+                                        st.success(f"Profile updated: {edited_name} ({edited_email})")
                                         st.info("This coach's email changed — if they're logged in on a device, they'll need to log in again with the new email.")
-                                    time.sleep(1.2)
-                                    st.rerun()
+                                        time.sleep(1.2)
+                                        st.rerun()
+                                    except Exception as e:
+                                        st.error(f"Failed to update email — no changes were left partially applied beyond what's shown here. Details: {e}")
 
 def render_activity_log_tab(current_device):
     """Shared Community Activity Log tab body, used by both the resident and coach dashboards."""
