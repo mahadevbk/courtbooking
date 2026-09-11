@@ -44,6 +44,19 @@ MAX_ACTIVE_BOOKINGS_DEFAULT = 6
 MAX_ACTIVE_BOOKINGS_DONOR = 8
 MAX_VILLAS_PER_COACH = 10
 
+# ==========================================
+# --- COACH FEATURE MASTER SWITCH ---
+# ==========================================
+# The coach pooling facility (coach login, coach dashboard, coach admin panel, coach
+# explainer, coach detection at login) is fully built but suppressed for regular users
+# for now, since it triggered a negative reaction from residents. Every coach-related
+# code path below is gated behind this single flag rather than deleted, so the whole
+# feature can be switched back on later just by setting this to True — no other code
+# changes needed. All existing coach-made bookings have been migrated to plain villa
+# ownership (coach_email cleared) via the one-time admin migration tool, so nothing is
+# stuck in a coach-only state while this is off.
+COACH_FEATURE_ENABLED = False
+
 @st.cache_data(ttl=600, show_spinner=False)
 def get_donor_data():
     try:
@@ -1571,7 +1584,7 @@ if url_token and not st.session_state.authenticated:
         st.session_state.is_coach = False
 
 url_coach_token = st.query_params.get("cauth")
-if url_coach_token and not st.session_state.authenticated:
+if COACH_FEATURE_ENABLED and url_coach_token and not st.session_state.authenticated:
     verified_coach_email = decode_coach_token(url_coach_token)
     if verified_coach_email:
         coach_restore = run_query(supabase.table("coach_accounts").select("*").eq("email", verified_coach_email).eq("is_active", True))
@@ -1581,7 +1594,7 @@ if url_coach_token and not st.session_state.authenticated:
             st.session_state.coach_email = verified_coach_email
             st.session_state.coach_name = coach_restore.data[0].get("coach_name", "Coach")
 
-if not st.session_state.authenticated:
+if COACH_FEATURE_ENABLED and not st.session_state.authenticated:
     stored_coach_email = st_javascript("localStorage.getItem('court_coach_email') || '';", key="js_stored_coach")
     if isinstance(stored_coach_email, str) and stored_coach_email and "@" in stored_coach_email:
         coach_restore2 = run_query(supabase.table("coach_accounts").select("*").eq("email", stored_coach_email).eq("is_active", True))
@@ -1668,8 +1681,9 @@ if not st.session_state.authenticated:
             # requirement entirely and are routed straight into the coach PIN flow — unless
             # the same email is also a registered resident, in which case we ask which
             # account they want to use.
+            # Suppressed while COACH_FEATURE_ENABLED is False — see master switch above.
             coach_lookup = None
-            if otp_email_input and "@" in otp_email_input:
+            if COACH_FEATURE_ENABLED and otp_email_input and "@" in otp_email_input:
                 coach_res = run_query(supabase.table("coach_accounts").select("*").eq("email", otp_email_input).eq("is_active", True))
                 if coach_res and coach_res.data:
                     coach_lookup = coach_res.data[0]
@@ -2349,8 +2363,9 @@ def render_coach_admin_panel(key_prefix="cam"):
 
 def render_activity_log_tab(current_device):
     """Shared Community Activity Log tab body, used by both the resident and coach dashboards."""
-    with st.expander("🎾 Coach Account Set Up"):
-        st.markdown("""
+    if COACH_FEATURE_ENABLED:
+        with st.expander("🎾 Coach Account Set Up"):
+            st.markdown("""
 Coach accounts exist for tennis coaches who train residents across **several villas**, so they can manage all their sessions from one login instead of juggling separate villa credentials.
 
 **Why a coach account works differently from a normal resident login:**
@@ -2374,7 +2389,7 @@ Coach accounts exist for tennis coaches who train residents across **several vil
 - A coach cannot book, view, or cancel anything for a villa that isn't in their assigned pool.
 
 **Setting up a coach account:** Coach accounts are not self-service. If you're a coach who needs an account, or a resident who wants to authorize a coach to book on your villa's behalf, please **contact Dev** with the coach's name, email address, and the sub-community + villa number(s) to link — the admin will create the account and map the villas for you.
-        """)
+            """)
 
     st.subheader("Community Activity Log")
     st.caption("Timezone: UTC+4")
@@ -2432,7 +2447,31 @@ Coach accounts exist for tennis coaches who train residents across **several vil
                 st.session_state.pop("log_admin_pass", None)
                 st.rerun()
 
-        render_coach_admin_panel(key_prefix="activitylog")
+        if COACH_FEATURE_ENABLED:
+            render_coach_admin_panel(key_prefix="activitylog")
+        else:
+            with st.expander("🔧 Coach Facility (currently disabled) — one-time booking migration"):
+                st.caption(
+                    "The coach pooling facility is switched off (`COACH_FEATURE_ENABLED = False` in the code). "
+                    "All coach login, coach dashboard, and coach admin tools are hidden from everyone, including here. "
+                    "Use the button below once to convert any bookings that were previously made by a coach into "
+                    "plain bookings owned by their villa (this just clears the internal coach tag — the booking "
+                    "itself, its court, date and time are untouched)."
+                )
+                pending_res = run_query(
+                    supabase.table("bookings").select("id", count="exact").not_.is_("coach_email", "null")
+                )
+                pending_count = pending_res.count if pending_res and pending_res.count is not None else 0
+                if pending_count > 0:
+                    st.warning(f"{pending_count} booking(s) are still tagged to a coach.")
+                    if st.button(f"↩️ Transfer {pending_count} coach booking(s) to villa ownership", type="primary", use_container_width=True):
+                        run_query(supabase.table("bookings").update({"coach_email": None}).not_.is_("coach_email", "null"))
+                        add_log("Admin Reset", f"Admin migrated {pending_count} coach booking(s) to plain villa ownership (coach facility disabled)")
+                        st.success(f"Done — {pending_count} booking(s) now belong to their villa like any other booking.")
+                        time.sleep(1.2)
+                        st.rerun()
+                else:
+                    st.info("No coach-tagged bookings remain — nothing to migrate.")
 
         with st.expander("🚨 Manually Apply Sniping Lockout by Email", expanded=True):
             st.markdown("### Search Associated Villas & Enforce Lockout")
@@ -2912,7 +2951,7 @@ def render_availability_tab(is_coach, current_device, resident_ctx=None, coach_c
 # --- ROUTING: COACH VIEW VS RESIDENT VIEW ---
 # ==========================================
 
-if st.session_state.get('is_coach'):
+if COACH_FEATURE_ENABLED and st.session_state.get('is_coach'):
     coach_email = st.session_state.coach_email
     coach_name = st.session_state.coach_name
     current_device = st.session_state.get("device_uuid")
