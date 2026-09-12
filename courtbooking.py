@@ -95,11 +95,57 @@ def is_donor_villa(sub_community, villa):
     norm_villa = str(villa).strip()
     return (norm_sub, norm_villa) in DONOR_VILLAS
 
-def get_active_booking_limit(sub_community, villa):
-    """Donor villas get an increased quota of 8 active bookings instead of 6."""
-    return MAX_ACTIVE_BOOKINGS_DONOR if is_donor_villa(sub_community, villa) else MAX_ACTIVE_BOOKINGS_DEFAULT
+# "Legends of Mira" donor perk window: the elevated 8-slot quota runs for 6 months from
+# 1 Sept 2026 and reverts to the normal 6-slot quota afterwards.
+DONOR_PERK_START_DATE = datetime(2026, 9, 1).date()
+DONOR_PERK_END_DATE = datetime(2027, 3, 1).date()  # exclusive — this date itself is back to 6
+
+def get_active_booking_limit(sub_community, villa, for_date=None):
+    """Donor villas get an increased quota of 8 active bookings instead of 6 — but only for
+    slots dated within the perk's 6-month window (2026-09-01 up to, not including,
+    2027-03-01). A slot dated on/after the end date is capped at the normal 6-slot limit
+    even while the perk is still running for nearer-term dates.
+
+    This is the "intelligent transition" mechanism: because the booking horizon only looks
+    ~14 days ahead, the only way a donor villa could ever end up holding more than 6 active
+    bookings that are still active *after* the perk ends is if we let the elevated limit
+    apply to bookings dated past the cutoff. By gating on the requested slot's own date
+    instead of just "today", any booking dated on/after 2027-03-01 is already held to 6 the
+    whole time it's being created — so nothing needs to be force-cancelled when the perk
+    actually ends. Pre-cutoff-dated bookings still enjoy the full 8-slot quota right up
+    until their date passes, then simply age out of the active count naturally, as always.
+
+    `for_date` accepts a date/datetime, or 'YYYY-MM-DD' string, for the specific slot being
+    booked. If omitted, defaults to today — used for general dashboard-style quota displays
+    that aren't tied to one specific date.
+    """
+    if not is_donor_villa(sub_community, villa):
+        return MAX_ACTIVE_BOOKINGS_DEFAULT
+
+    ref_date = for_date if for_date is not None else get_today()
+    if isinstance(ref_date, str):
+        ref_date = datetime.strptime(ref_date, "%Y-%m-%d").date()
+    elif isinstance(ref_date, datetime):
+        ref_date = ref_date.date()
+
+    if DONOR_PERK_START_DATE <= ref_date < DONOR_PERK_END_DATE:
+        return MAX_ACTIVE_BOOKINGS_DONOR
+    return MAX_ACTIVE_BOOKINGS_DEFAULT
 
 def render_donor_legend_banner():
+    today = get_today()
+    days_left = (DONOR_PERK_END_DATE - today).days
+    if today >= DONOR_PERK_END_DATE:
+        subtitle = "Your generosity keeps these courts thriving — thank you for your support!"
+    elif days_left <= 14:
+        subtitle = (
+            f"Your enhanced 8-booking allowance winds down in {days_left} day{'s' if days_left != 1 else ''} "
+            f"(ends {DONOR_PERK_END_DATE.strftime('%-d %b %Y')}) — bookings made for dates on/after that day "
+            "already count toward the normal 6-slot quota, so nothing you've booked will ever need to be cancelled."
+        )
+    else:
+        subtitle = "Your generosity keeps these courts thriving — enjoy your enhanced 8-booking allowance!"
+
     st.markdown(
         """<style>
 @keyframes legend-gold-flow {
@@ -153,7 +199,9 @@ def render_donor_legend_banner():
 <div class="legend-banner-wrap">
     <div class="legend-banner-shimmer"></div>
     <div class="legend-banner-title">✨🏆 Thank You for Being a Mira Legend! 🏆✨</div>
-    <div class="legend-banner-sub">Your generosity keeps these courts thriving — enjoy your enhanced 8-booking allowance!</div>
+    <div class="legend-banner-sub">"""
+        + subtitle
+        + """</div>
 </div>""",
         unsafe_allow_html=True,
     )
@@ -1117,7 +1165,7 @@ def process_coach_booking(coach_email, coach_name, court, date_str, start_hours,
             villa_num = v['villa']
             
             active_count = get_active_bookings_count(villa_num, sub)
-            active_limit = get_active_booking_limit(sub, villa_num)
+            active_limit = get_active_booking_limit(sub, villa_num, for_date=date_str)
             daily_count = get_daily_bookings_count(villa_num, sub, date_str)
             
             # Check if this specific villa can take the slot
@@ -2965,7 +3013,7 @@ def render_availability_tab(is_coach, current_device, resident_ctx=None, coach_c
             if st.button("🚀 Book Now", key="q_book_btn", width='stretch'):
                 if q_time:
                     active_count = get_active_bookings_count(villa, sub_community)
-                    active_limit = get_active_booking_limit(sub_community, villa)
+                    active_limit = get_active_booking_limit(sub_community, villa, for_date=selected_date)
 
                     daily_count = get_daily_bookings_count(villa, sub_community, selected_date)
                     start_h = int(q_time.split(":")[0])
@@ -3246,7 +3294,7 @@ else:
         else:
             timing_msg = "7AM to 10PM slots."
         
-        tab2_active_limit = get_active_booking_limit(sub_community, villa)
+        tab2_active_limit = get_active_booking_limit(sub_community, villa, for_date=date_choice)
         st.info(f"App allows {tab2_active_limit} Active bookings spanning 14 days, A maximum of 2 active bookings per day. Current date choice timing: **{timing_msg}**")
         court_choice = st.selectbox("Court:", courts, key="tab2_court_select")
         free_hours = get_available_hours(court_choice, date_choice)
@@ -3280,7 +3328,7 @@ else:
         
         if st.button("Book This Slot", type="primary"):
             active_count_latest = get_active_bookings_count(villa, sub_community)
-            active_limit_latest = get_active_booking_limit(sub_community, villa)
+            active_limit_latest = get_active_booking_limit(sub_community, villa, for_date=date_choice)
             
             daily_count_latest = get_daily_bookings_count(villa, sub_community, date_choice)
             if not time_choice:
