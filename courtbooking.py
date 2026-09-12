@@ -144,7 +144,7 @@ def render_donor_legend_banner():
             "already count toward the normal 6-slot quota, so nothing you've booked will ever need to be cancelled."
         )
     else:
-        subtitle = "Your generosity keept this running — enjoy your enhanced 8-booking allowance! (till 1/3/2027)"
+        subtitle = "Your generosity helps this App running — enjoy your enhanced 8-booking allowance! (till 1/3/2027)"
 
     st.markdown(
         """<style>
