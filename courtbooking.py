@@ -98,6 +98,18 @@ def is_donor_villa(sub_community, villa):
 # "Legends of Mira" donor perk window: the elevated 8-slot quota runs for 6 months from
 # 1 Sept 2026 and reverts to the normal 6-slot quota afterwards.
 DONOR_PERK_START_DATE = datetime(2026, 9, 1).date()
+
+# Villas exempt from the villa-sniping warning/lockout system entirely — currently the same
+# three Mira 1 villas (229, 231, 233) used for the concealed Legends of Mira auto-booking
+# feature in database_cleanup.py. These are shared/community-purpose villas, not a single
+# resident's own property, so cross-villa "hopping" enforcement doesn't apply to them.
+SNIPING_EXEMPT_VILLAS = {("mira 1", "229"), ("mira 1", "231"), ("mira 1", "233")}
+
+def is_sniping_exempt_villa(sub_community, villa):
+    norm_sub = " ".join(str(sub_community).lower().split())
+    norm_villa = str(villa).strip()
+    return (norm_sub, norm_villa) in SNIPING_EXEMPT_VILLAS
+
 DONOR_PERK_END_DATE = datetime(2027, 3, 1).date()  # exclusive — this date itself is back to 6
 
 def get_active_booking_limit(sub_community, villa, for_date=None):
@@ -3351,9 +3363,12 @@ else:
 
     # --- VILLA SNIPING INTERCEPTOR & ENFORCEMENT ---
     current_device = st.session_state.get("device_uuid")
-    sniping_level, hopping_villas, cooldown_hrs = check_device_sniping_status(
-        current_device, verified_user_email, sub_community, villa
-    )
+    if is_sniping_exempt_villa(sub_community, villa):
+        sniping_level, hopping_villas, cooldown_hrs = 0, [], 0
+    else:
+        sniping_level, hopping_villas, cooldown_hrs = check_device_sniping_status(
+            current_device, verified_user_email, sub_community, villa
+        )
 
     if sniping_level == 2:
         add_log(
