@@ -2482,6 +2482,7 @@ Coach accounts exist for tennis coaches who train residents across **several vil
         filters = (
             (log_df['event_type'] != "Debug") &
             (log_df['event_type'] != "System Maintenance") &
+            (log_df['event_type'] != "Auto-Book Ledger") &
             (~log_df['details'].str.contains("System-Synced", case=False, na=False))
         )
         if not is_admin:
@@ -2804,6 +2805,36 @@ Coach accounts exist for tennis coaches who train residents across **several vil
                             st.info(f"No bookings found for {selected_villa}.")
                     except Exception as e:
                         st.error(f"Error loading bookings: {str(e)}")
+
+            with st.expander("🔁 Re-open a Date for Legends of Mira Auto-Booking", expanded=False):
+                st.caption(
+                    "The concealed Legends of Mira auto-booking feature (Mira 1 Villas 229/231/233) "
+                    "marks a date as 'handled' the moment it creates a slot for it — and remembers "
+                    "that even after the slot is cancelled, so it never recreates a slot someone "
+                    "deliberately removed. If you ever want the feature to reconsider a specific "
+                    "date (e.g. it was cancelled by mistake, or you want a fresh attempt), clear it here."
+                )
+                from database_cleanup import get_synced_dates_history
+                _ledger_dates = sorted(get_synced_dates_history(supabase, lookback_days=30))
+                _today_str_ledger = get_today().strftime("%Y-%m-%d")
+                _upcoming_locked = [d for d in _ledger_dates if d >= _today_str_ledger]
+                if not _upcoming_locked:
+                    st.info("No upcoming dates are currently locked in the auto-book ledger.")
+                else:
+                    _ledger_pick = st.selectbox("Select a locked date to re-open", options=_upcoming_locked, key="admin_reopen_ledger_date")
+                    st.caption(
+                        "This only clears the internal marker — it never touches an existing booking. "
+                        "If a booking still exists for this date, cancel it separately first if you "
+                        "actually want the slot to free up."
+                    )
+                    if st.button(f"🔓 Re-open {_ledger_pick} for auto-booking", type="primary", use_container_width=True, key="admin_reopen_ledger_btn"):
+                        from database_cleanup import clear_auto_book_ledger_date
+                        if clear_auto_book_ledger_date(supabase, _ledger_pick):
+                            st.success(f"Cleared — {_ledger_pick} will be reconsidered by the auto-book feature on its next run.")
+                        else:
+                            st.error("Could not clear the ledger entry — please try again.")
+                        time.sleep(1.2)
+                        st.rerun()
 
         with admin_tabs[4]:
             if COACH_FEATURE_ENABLED:
