@@ -1530,12 +1530,28 @@ if st.query_params.get("view") == "full":
         st.divider()
     st.stop()
 
+@st.cache_data(ttl=3600, show_spinner=False)
+def get_live_active_users_count():
+    """Approximates 'active users' as the number of approved villa_claims rows — i.e. real
+    households currently verified in the app — pulled live from Supabase. This is refreshed
+    at most once an hour. Streamlit Community Cloud's own analytics (page views/unique
+    viewers) aren't exposed to the running app via any API, only in the 'Manage app' owner
+    dashboard, so we can't pull that number in; this is the closest real, live equivalent
+    we have direct access to."""
+    try:
+        res = run_query(supabase.table("villa_claims").select("id", count="exact").eq("status", "approved"))
+        return res.count if res and res.count is not None else None
+    except Exception:
+        return None
+
 # --- MAIN APP ---
 st.subheader("🎾 Book that Court ...")    
 st.caption("An Un-Official & Community Driven Booking Solution.")
+_live_user_count = get_live_active_users_count()
+_user_count_label = f"{_live_user_count:,}" if _live_user_count else "2,450"
 st.markdown(
     "<p style='color:#ccff00; font-weight:700; margin-top:-8px;'>"
-    "Serving about 2,450 active users, the app is community coded and funded."
+    f"Serving {_user_count_label} active users, the app is community coded and funded."
     "</p>",
     unsafe_allow_html=True,
 )
