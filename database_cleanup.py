@@ -84,6 +84,44 @@ def enforce_active_limits(supabase, donor_villas=None):
                     add_log(supabase, "Limit Enforcement", f"Deleted {len(excess_ids)} excess bookings for {sc} Villa {v} (Max {limit} limit respected).")
                 except: pass
 
+def get_synced_dates_history(supabase, lookback_days=30):
+    """Returns the set of target dates ('YYYY-MM-DD') for which a Legends of Mira auto-booking
+    has EVER been created for the Mira 1 229/231/233 group — based on a dedicated ledger log
+    entry, independent of whether that booking still exists in the `bookings` table.
+
+    This is what lets the feature recognize a cancelled auto-booked slot as "already handled"
+    for that day: without this, deleting the booking row makes the date look untouched again,
+    so the next cleanup run would just recreate the exact slot that was just cancelled.
+    """
+    since = (get_utc_plus_4() - timedelta(days=lookback_days)).isoformat()
+    try:
+        res = run_query(
+            supabase,
+            supabase.table("logs").select("details")
+            .eq("event_type", "Auto-Book Ledger")
+            .gte("timestamp", since)
+        )
+        return {row["details"] for row in res.data} if res and res.data else set()
+    except Exception:
+        return set()
+
+def clear_auto_book_ledger_date(supabase, date_str):
+    """Deletes the Auto-Book Ledger entry for a specific date, so the next cleanup run treats
+    that date as unhandled again and may auto-book the Legends of Mira (229/231/233) evening
+    slot there once more, if it's still free and the date falls within the usual 15-day window.
+    This never touches the `bookings` table itself — only the internal marker."""
+    try:
+        run_query(
+            supabase,
+            supabase.table("logs").delete()
+            .eq("event_type", "Auto-Book Ledger")
+            .eq("details", date_str)
+        )
+        add_log(supabase, "Admin Reset", f"Admin cleared Auto-Book Ledger entry for {date_str} (Legends of Mira group)")
+        return True
+    except Exception:
+        return False
+
 def run_db_cleanup(supabase, courts, donor_villas=None):
     if st.session_state.get('background_tasks_run', False): return
     st.session_state['background_tasks_run'] = True
@@ -107,7 +145,9 @@ def run_db_cleanup(supabase, courts, donor_villas=None):
         now_hour = get_utc_plus_4().hour
 
         villa_active_slots = {v: 0 for v in group_villa_nums}
-        group_daily_occupied = {} 
+        # Seed with every date ever auto-booked for this group, whether or not that booking
+        # still exists — this is the fix that stops a cancelled slot from being recreated.
+        group_daily_occupied = {d: True for d in get_synced_dates_history(supabase)}
 
         for b in all_data:
             b_v = str(b['villa'])
@@ -154,6 +194,7 @@ def run_db_cleanup(supabase, courts, donor_villas=None):
                             
                             if res.data:
                                 add_log(supabase, "Booking Created", f"{sub_comm} Villa {v_num} System-Synced {court} for {date_str} at 19:00")
+                                add_log(supabase, "Auto-Book Ledger", date_str)
                                 group_daily_occupied[date_str] = True
                                 villa_active_slots[v_num] += 2
                                 all_data.append({"court": court, "date": date_str, "start_hour": 19})
