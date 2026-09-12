@@ -2848,6 +2848,79 @@ Coach accounts exist for tennis coaches who train residents across **several vil
                         time.sleep(1.2)
                         st.rerun()
 
+            with st.expander("🎾 Legends of Mira — Manual Booking (229 / 231 / 233)", expanded=False):
+                st.caption(
+                    "Admin-only manual booking for the 3 special Mira 1 villas used by the "
+                    "concealed auto-booking feature. If a villa is full, delete a booking for it "
+                    "above first, then come back here once it has room. This is never shown to "
+                    "regular users — the resulting booking just looks like an ordinary booking "
+                    "made by that villa, same as the auto-booked ones."
+                )
+                _special_villas = [("229", "Mira 1"), ("231", "Mira 1"), ("233", "Mira 1")]
+                _villa_capacity = {}
+                _cap_cols = st.columns(3)
+                for _i, (_v, _sc) in enumerate(_special_villas):
+                    _cnt = get_active_bookings_count(_v, _sc)
+                    _lim = get_active_booking_limit(_sc, _v)
+                    _villa_capacity[_v] = (_cnt, _lim)
+                    with _cap_cols[_i]:
+                        st.metric(f"Villa {_v}", f"{_cnt} / {_lim}")
+
+                _villa_labels = [f"Villa {v} ({sc}) — {_villa_capacity[v][0]}/{_villa_capacity[v][1]} active" for v, sc in _special_villas]
+                _villa_pick_label = st.selectbox("Villa to book under", options=_villa_labels, key="admin_special_manual_villa")
+                _pick_villa, _pick_sub = _special_villas[_villa_labels.index(_villa_pick_label)]
+
+                _mdate_options = [f"{d.strftime('%Y-%m-%d')} ({d.strftime('%A')})" for d in get_next_14_days()]
+                _mdate_choice = st.selectbox("Date:", _mdate_options, key="admin_special_manual_date").split(" (")[0]
+                _mcourt_choice = st.selectbox("Court:", courts, key="admin_special_manual_court")
+
+                _mbooked = run_query(supabase.table("bookings").select("start_hour").eq("court", _mcourt_choice).eq("date", _mdate_choice))
+                _mbooked_hours = [r['start_hour'] for r in _mbooked.data] if _mbooked and _mbooked.data else []
+                _mfree_hours = [h for h in get_start_hours_for_date(_mdate_choice) if h not in _mbooked_hours and not is_slot_in_past(_mdate_choice, h)]
+
+                if not _mfree_hours:
+                    st.warning(f"No free slots on {_mcourt_choice} for {_mdate_choice}.")
+                else:
+                    _mtime_choice = st.selectbox("Time Slot:", [f"{h:02d}:00 - {h+1:02d}:00" for h in _mfree_hours], key="admin_special_manual_time")
+                    _mstart_h = int(_mtime_choice.split(":")[0])
+                    _mslots_2h = st.checkbox("Book for 2 hours", key="admin_special_manual_2h", disabled=(_mstart_h + 1 not in _mfree_hours))
+                    _mhours_needed = 2 if _mslots_2h else 1
+
+                    _mlimit_for_date = get_active_booking_limit(_pick_sub, _pick_villa, for_date=_mdate_choice)
+                    _mcurrent_count = _villa_capacity[_pick_villa][0]
+                    if _mcurrent_count + _mhours_needed > _mlimit_for_date:
+                        st.error(f"Villa {_pick_villa} would exceed its {_mlimit_for_date}-active-booking limit for that date — pick a different villa, date, or delete a booking first.")
+                    else:
+                        if st.button("📌 Create Manual Booking", type="primary", use_container_width=True, key="admin_special_manual_book_btn"):
+                            _mhours_to_book = [_mstart_h, _mstart_h + 1] if _mslots_2h else [_mstart_h]
+                            _minserted_hours, _mall_ok = [], True
+                            for _h in _mhours_to_book:
+                                if book_slot(_pick_villa, _pick_sub, _mcourt_choice, _mdate_choice, _h, fingerprint=current_device):
+                                    _minserted_hours.append(_h)
+                                else:
+                                    _mall_ok = False
+                                    break
+                            if not _mall_ok and _minserted_hours:
+                                _mrollback = run_query(
+                                    supabase.table("bookings").select("id")
+                                    .eq("villa", _pick_villa).eq("sub_community", _pick_sub)
+                                    .eq("court", _mcourt_choice).eq("date", _mdate_choice)
+                                    .in_("start_hour", _minserted_hours)
+                                )
+                                for _r in (_mrollback.data if _mrollback and _mrollback.data else []):
+                                    delete_booking(_r["id"], _pick_villa, _pick_sub, fingerprint=current_device)
+                            if _mall_ok:
+                                add_log(
+                                    "Admin Edit",
+                                    f"Admin manually booked {_mcourt_choice} on {_mdate_choice} at {_mtime_choice} "
+                                    f"for {_pick_sub} Villa {_pick_villa} (Legends of Mira group)"
+                                )
+                                st.success(f"Booked {_mcourt_choice} on {_mdate_choice} at {_mtime_choice} for Villa {_pick_villa}.")
+                                time.sleep(1.2)
+                                st.rerun()
+                            else:
+                                st.error("One of those slots was just taken by someone else — please pick another time.")
+
         with admin_tabs[4]:
             if COACH_FEATURE_ENABLED:
                 render_coach_admin_panel(key_prefix="activitylog")
