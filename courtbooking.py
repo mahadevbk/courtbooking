@@ -715,6 +715,21 @@ def add_log(event_type, details, fingerprint=None):
     except Exception:
         pass 
 
+def purge_old_logs(days=90):
+    """Deletes activity-log rows older than `days` to keep the logs table small and the
+    Community Activity Log tab fast to load. Timestamps are stored as naive UTC+4
+    isoformat strings by add_log(), so the cutoff is computed the same way."""
+    try:
+        cutoff = (get_utc_plus_4() - timedelta(days=days)).isoformat()
+        run_query(supabase.table("logs").delete().lt("timestamp", cutoff))
+    except Exception:
+        pass
+
+@st.cache_data(ttl=21600, show_spinner=False)  # at most once every 6 hours per running app instance
+def _run_scheduled_log_retention():
+    purge_old_logs(days=90)
+    return True
+
 def purge_out_of_range_records():
     try:
         claims_res = run_query(supabase.table("villa_claims").select("id, sub_community, villa"))
@@ -1236,6 +1251,7 @@ def get_bookings_for_villa(villa, sub_community):
 def _process_background_tasks():
     try:
         purge_out_of_range_records()
+        _run_scheduled_log_retention()
         # database_cleanup.py remains separate but we mimic the call
         from database_cleanup import run_db_cleanup
         run_db_cleanup(supabase, courts, donor_villas=DONOR_VILLAS)
@@ -2472,6 +2488,24 @@ Coach accounts exist for tennis coaches who train residents across **several vil
                         st.rerun()
                 else:
                     st.info("No coach-tagged bookings remain — nothing to migrate.")
+
+        with st.expander("🧹 Activity Log Retention (auto-purges logs older than 3 months)"):
+            st.caption(
+                "To keep the logs table small and this tab fast to load, activity log entries older than "
+                "3 months are automatically deleted in the background (checked at most once every few hours). "
+                "This only affects the log table shown above — it never touches bookings or villa claims."
+            )
+            old_logs_res = run_query(
+                supabase.table("logs").select("id", count="exact")
+                .lt("timestamp", (get_utc_plus_4() - timedelta(days=90)).isoformat())
+            )
+            old_logs_count = old_logs_res.count if old_logs_res and old_logs_res.count is not None else 0
+            st.caption(f"{old_logs_count} log entr{'y is' if old_logs_count == 1 else 'ies are'} currently older than 3 months.")
+            if old_logs_count > 0 and st.button(f"🗑️ Purge {old_logs_count} log entr{'y' if old_logs_count == 1 else 'ies'} now", use_container_width=True):
+                purge_old_logs(days=90)
+                st.success("Old log entries purged.")
+                time.sleep(1)
+                st.rerun()
 
         with st.expander("🚨 Manually Apply Sniping Lockout by Email", expanded=True):
             st.markdown("### Search Associated Villas & Enforce Lockout")
