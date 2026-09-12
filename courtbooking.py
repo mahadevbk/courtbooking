@@ -2739,36 +2739,82 @@ Coach accounts exist for tennis coaches who train residents across **several vil
 
             st.divider()
             st.markdown("### Database Backup (ZIP)")
+            st.caption(
+                "Exports every table Supabase holds for this app — not just bookings and logs — as both "
+                "CSV and JSON, plus a single consolidated SQLite file (`full_backup.sqlite`) containing all "
+                "tables together. CSV/JSON are here because you asked for them and they're easy to open in "
+                "Excel/Sheets; the SQLite file is the one worth keeping if you only grab one thing — it's a "
+                "single portable file you can open with any SQL tool (or Python's built-in `sqlite3`) and "
+                "query or join across tables, which a folder of CSVs can't do. Note: this captures table "
+                "*data*, not Supabase's internal schema/constraints (column types, indexes, RLS policies) — "
+                "for a true point-in-time Postgres-level backup including schema, Supabase's own project "
+                "backups (Settings → Database → Backups) or running `pg_dump` against your connection string "
+                "is the gold standard; this in-app export is the fast, no-setup option for everyday safety."
+            )
+
+            BACKUP_TABLES = ["bookings", "logs", "villa_claims", "coach_accounts", "coach_villas", "court_maintenance"]
+
+            def _fetch_all_rows(table_name):
+                data = []
+                chunk_size = 1000
+                offset = 0
+                while True:
+                    res = run_query(supabase.table(table_name).select("*").range(offset, offset + chunk_size - 1))
+                    if not res or res.data is None:
+                        break
+                    data.extend(res.data)
+                    if len(res.data) < chunk_size:
+                        break
+                    offset += chunk_size
+                return data
+
             def get_zip_data():
+                import sqlite3, tempfile, os as _os
+                tmp_db_path = None
                 try:
-                    b_data, l_data = [], []
-                    chunk_size = 1000
-                    offset = 0
-                    while True:
-                        res = run_query(supabase.table("bookings").select("*").range(offset, offset + chunk_size - 1))
-                        if not res or res.data is None: break
-                        b_data.extend(res.data)
-                        if len(res.data) < chunk_size: break
-                        offset += chunk_size
-                    offset = 0
-                    while True:
-                        res = run_query(supabase.table("logs").select("*").range(offset, offset + chunk_size - 1).order("timestamp", desc=True))
-                        if not res or res.data is None: break
-                        l_data.extend(res.data)
-                        if len(res.data) < chunk_size: break
-                        offset += chunk_size
+                    today_str = get_today()
                     buf = io.BytesIO()
+                    tmp_fd, tmp_db_path = tempfile.mkstemp(suffix=".sqlite")
+                    _os.close(tmp_fd)
+                    sconn = sqlite3.connect(tmp_db_path)
+
+                    manifest_lines = [
+                        f"Court Booking App — Full Database Backup",
+                        f"Generated: {get_utc_plus_4().isoformat()} (UTC+4)",
+                        "",
+                    ]
+
                     with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as vz:
-                        vz.writestr(f"bookings_{get_today()}.csv", pd.DataFrame(b_data).to_csv(index=False))
-                        vz.writestr(f"logs_{get_today()}.csv", pd.DataFrame(l_data).to_csv(index=False))
+                        for table_name in BACKUP_TABLES:
+                            rows = _fetch_all_rows(table_name)
+                            df = pd.DataFrame(rows)
+                            vz.writestr(f"{table_name}.csv", df.to_csv(index=False))
+                            vz.writestr(
+                                f"{table_name}.json",
+                                df.to_json(orient="records", indent=2) if not df.empty else "[]",
+                            )
+                            if not df.empty:
+                                df.to_sql(table_name, sconn, if_exists="replace", index=False)
+                            manifest_lines.append(f"{table_name}: {len(df)} row(s)")
+                        sconn.close()
+
+                        with open(tmp_db_path, "rb") as f:
+                            vz.writestr(f"full_backup_{today_str}.sqlite", f.read())
+
+                        vz.writestr("MANIFEST.txt", "\n".join(manifest_lines))
+
                     return buf.getvalue()
                 except Exception as e:
                     st.error(f"Backup Error: {str(e)}")
                     return None
+                finally:
+                    if tmp_db_path and _os.path.exists(tmp_db_path):
+                        _os.remove(tmp_db_path)
 
             if st.button("Generate Backup Link"):
-                data = get_zip_data()
-                if data: st.download_button(label="Click here to Download ZIP", data=data, file_name=f"court_booking_backup_{get_today()}.zip", mime="application/zip")
+                with st.spinner("Fetching every table from Supabase — this may take a moment..."):
+                    data = get_zip_data()
+                if data: st.download_button(label="Click here to Download ZIP", data=data, file_name=f"court_booking_full_backup_{get_today()}.zip", mime="application/zip")
                 else: st.error("Failed to fetch data for backup.")
 
     elif admin_pass:
