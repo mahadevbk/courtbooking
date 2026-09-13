@@ -463,6 +463,23 @@ def send_gmail_smtp(recipient_email, subject, html_content):
     if not g_pass or not recipient_email or "@" not in recipient_email:
         return False
     try:
+        # Appended to every outgoing email, regardless of template, since every email in the
+        # app funnels through this one function. Handles both full HTML-document emails (which
+        # have a closing </body>) and the simpler one-off snippet emails (which don't).
+        whatsapp_footer = (
+            '<div style="text-align:center; padding:16px 20px; margin-top:8px; font-size:13px; '
+            'color:#4a5568; background-color:#eafaf1; border-top:1px solid #d4f4e2; '
+            'font-family: -apple-system, BlinkMacSystemFont, \'Segoe UI\', Roboto, Helvetica, Arial, sans-serif;">'
+            'Join the WhatsApp group for this App using this Link: '
+            '<a href="https://chat.whatsapp.com/CbIV9EV53PLBz2HvqamA7V" style="color:#128C7E; font-weight:600; text-decoration:none;">'
+            'https://chat.whatsapp.com/CbIV9EV53PLBz2HvqamA7V</a>'
+            '</div>'
+        )
+        if "</body>" in html_content:
+            html_content = html_content.replace("</body>", whatsapp_footer + "</body>", 1)
+        else:
+            html_content = html_content + whatsapp_footer
+
         msg = MIMEMultipart("alternative")
         msg["Subject"] = subject
         msg["From"] = f"Mira Court Booking <{g_user}>"
