@@ -630,6 +630,50 @@ def send_booking_notification_once(action_type, villa, sub_community, court, dat
     sent_signatures.add(signature)
     send_booking_notification(action_type, villa, sub_community, court, date_str, start_hours, recipient_email)
 
+def report_booked_not_used(sub_community, villa, court, date_str, hour):
+    """Notifies the villa's registered resident email(s) that their booking was flagged as
+    sitting unused, and writes a public log entry (deliberately NOT hidden from residents —
+    this is a 'name and shame' deterrent) that includes how many times this villa has been
+    reported in the last 30 days."""
+    since = (get_utc_plus_4() - timedelta(days=30)).isoformat()
+    prior_res = run_query(
+        supabase.table("logs").select("id", count="exact")
+        .eq("event_type", "Booked Not Used Report")
+        .ilike("details", f"{sub_community} Villa {villa} reported%")
+        .gte("timestamp", since)
+    )
+    prior_count = prior_res.count if prior_res and prior_res.count is not None else 0
+    new_count = prior_count + 1
+
+    formatted_date = datetime.strptime(date_str, "%Y-%m-%d").strftime("%A, %b %d, %Y")
+    time_display = f"{hour:02d}:00 - {hour+1:02d}:00"
+
+    owner_res = run_query(
+        supabase.table("villa_claims").select("email")
+        .eq("sub_community", sub_community).eq("villa", villa).eq("status", "approved")
+    )
+    owner_emails = [r["email"] for r in owner_res.data] if owner_res and owner_res.data else []
+    for email in owner_emails:
+        subject = "⚠️ Your Court Booking Was Reported as Unused"
+        html_content = f"""
+        <html><body style="font-family: Arial, sans-serif; color: #222;">
+        <h3>Booking Reported as Unused</h3>
+        <p>A fellow resident reported that the booking below appears to be sitting empty right now:</p>
+        <p><b>Court:</b> {court}<br><b>Date:</b> {formatted_date}<br><b>Time:</b> {time_display}<br>
+        <b>Residence:</b> {sub_community} - Villa {villa}</p>
+        <p>If you're not able to use a slot you've booked, please cancel it in the app as early as
+        possible so someone else can enjoy the court. Thanks for being considerate of your
+        fellow residents — courts are a shared, limited resource!</p>
+        </body></html>
+        """
+        send_gmail_smtp(email, subject, html_content)
+
+    add_log(
+        "Booked Not Used Report",
+        f"{sub_community} Villa {villa} reported as booked-but-unused for {court} on {date_str} "
+        f"at {time_display} — {new_count} report(s) in the last 30 days."
+    )
+
 def notify_owner_of_coach_booking(coach_name, villa, sub_community, court, date_str, hour, action="booked"):
     owner_res = run_query(supabase.table("villa_claims").select("email").eq("sub_community", sub_community).eq("villa", villa).eq("status", "approved"))
     if owner_res and owner_res.data:
@@ -3143,6 +3187,43 @@ def render_availability_tab(is_coach, current_device, resident_ctx=None, coach_c
         hist_key = (hist_court, hist_hour)
         if hist_key in bookings_with_details:
             st.error(f"🔒 Currently **BOOKED** — {bookings_with_details[hist_key]}")
+
+            _bnu_key = f"bnu_pending_{hist_court}_{selected_date}_{hist_hour}"
+            if st.session_state.get(_bnu_key):
+                st.warning(
+                    f"⚠️ You're about to report **{hist_court}** on **{selected_date}** at "
+                    f"**{hist_time_label}** (currently held by {bookings_with_details[hist_key]}) "
+                    "as booked but sitting unused. This will email the resident and add a "
+                    "public note to the Community Activity Log. Only confirm if the court is "
+                    "genuinely empty right now — please don't report a slot as a joke or out of spite."
+                )
+                bnu_c1, bnu_c2 = st.columns(2)
+                with bnu_c1:
+                    if st.button("✅ Yes, Confirm Report", key=f"{_bnu_key}_yes", type="primary", use_container_width=True):
+                        # Re-verify the slot is still actually booked before acting on it —
+                        # it may have been cancelled in the moments since the page loaded.
+                        recheck = run_query(
+                            supabase.table("bookings").select("villa, sub_community")
+                            .eq("court", hist_court).eq("date", selected_date).eq("start_hour", hist_hour)
+                        )
+                        if not recheck or not recheck.data:
+                            st.info("This slot is no longer booked — it looks like it just freed up. No report needed.")
+                        else:
+                            r_villa = recheck.data[0]["villa"]
+                            r_sub = recheck.data[0]["sub_community"]
+                            report_booked_not_used(r_sub, r_villa, hist_court, selected_date, hist_hour)
+                            st.success("Reported — the resident has been emailed, and this has been logged.")
+                        st.session_state.pop(_bnu_key, None)
+                        time.sleep(1.5)
+                        st.rerun()
+                with bnu_c2:
+                    if st.button("Cancel", key=f"{_bnu_key}_no", use_container_width=True):
+                        st.session_state.pop(_bnu_key, None)
+                        st.rerun()
+            else:
+                if st.button("🚨 Booked but Not Used!", key=f"bnu_btn_{hist_court}_{selected_date}_{hist_hour}"):
+                    st.session_state[_bnu_key] = True
+                    st.rerun()
         else:
             st.success("✅ Currently **AVAILABLE**")
 
