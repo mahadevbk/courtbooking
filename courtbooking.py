@@ -630,16 +630,19 @@ def send_booking_notification_once(action_type, villa, sub_community, court, dat
     sent_signatures.add(signature)
     send_booking_notification(action_type, villa, sub_community, court, date_str, start_hours, recipient_email)
 
-def report_booked_not_used(sub_community, villa, court, date_str, hour):
+def report_booked_not_used(sub_community, villa, court, date_str, hour, reporter_label):
     """Notifies the villa's registered resident email(s) that their booking was flagged as
-    sitting unused, and writes a public log entry (deliberately NOT hidden from residents —
-    this is a 'name and shame' deterrent) that includes how many times this villa has been
-    reported in the last 30 days."""
+    sitting unused, and writes a log entry that always shows the offending villa and a running
+    30-day report count to everyone (a deliberate name-and-shame deterrent). The reporter's own
+    identity is appended separately and stripped out of the resident-facing log view — visible
+    to admins only, so no one is publicly named for reporting a neighbor."""
+    slot_tag = f"⟦SLOT:{court}|{date_str}|{hour}⟧"
+
     since = (get_utc_plus_4() - timedelta(days=30)).isoformat()
     prior_res = run_query(
         supabase.table("logs").select("id", count="exact")
-        .eq("event_type", "Booked Not Used Report")
-        .ilike("details", f"{sub_community} Villa {villa} reported%")
+        .eq("event_type", "Booked but not used")
+        .ilike("details", f"%{sub_community} Villa {villa}%")
         .gte("timestamp", since)
     )
     prior_count = prior_res.count if prior_res and prior_res.count is not None else 0
@@ -668,11 +671,23 @@ def report_booked_not_used(sub_community, villa, court, date_str, hour):
         """
         send_gmail_smtp(email, subject, html_content)
 
-    add_log(
-        "Booked Not Used Report",
-        f"{sub_community} Villa {villa} reported as booked-but-unused for {court} on {date_str} "
-        f"at {time_display} — {new_count} report(s) in the last 30 days."
+    public_part = (
+        f"Booked but not used reported for {sub_community} Villa {villa} on {court} "
+        f"({time_display}, {formatted_date}) — {new_count} report(s) in the last 30 days."
     )
+    add_log("Booked but not used", f"{public_part} Reported by {reporter_label}. {slot_tag}")
+
+def is_slot_already_reported(court, date_str, hour):
+    """True if this exact court/date/hour slot has already had a 'Booked but not used' report
+    filed against it, so a second person can't report the same slot twice."""
+    slot_tag = f"⟦SLOT:{court}|{date_str}|{hour}⟧"
+    res = run_query(
+        supabase.table("logs").select("id")
+        .eq("event_type", "Booked but not used")
+        .ilike("details", f"%{slot_tag}%")
+        .limit(1)
+    )
+    return bool(res and res.data)
 
 def notify_owner_of_coach_booking(coach_name, villa, sub_community, court, date_str, hour, action="booked"):
     owner_res = run_query(supabase.table("villa_claims").select("email").eq("sub_community", sub_community).eq("villa", villa).eq("status", "approved"))
@@ -2191,7 +2206,7 @@ def render_court_maintenance_tab(reporter_label, current_device):
                         "reported_by": reporter_label,
                         "is_fixed": False
                     }))
-                    add_log("Maintenance Reported", f"Issue reported for {m_court} by {reporter_label}", fingerprint=current_device)
+                    add_log("Maintenance Reported", f"Issue reported for {m_court}. Reported by {reporter_label}.", fingerprint=current_device)
                     st.cache_data.clear()
                     st.success("✅ Maintenance report submitted successfully!")
                     time.sleep(1)
@@ -2597,7 +2612,11 @@ Coach accounts exist for tennis coaches who train residents across **several vil
 
         display_df = log_df[filters].copy()        
         display_df['details'] = display_df['details'].str.replace(r'⟦FP:.*?⟧⟦IP:.*?⟧ ', '', regex=True)
+        display_df['details'] = display_df['details'].str.replace(r'\s*⟦SLOT:.*?⟧', '', regex=True)
         if not is_admin:
+            # Who filed a "Booked but not used" report is admin-only — residents still see which
+            # villa was reported and the running 30-day count, just not who reported them.
+            display_df['details'] = display_df['details'].str.replace(r'\s*Reported by [^.]+\.', '', regex=True)
             display_df['details'] = display_df['details'].apply(mask_emails_in_text)
 
         cols = ['timestamp', 'event_type', 'details']
@@ -3208,10 +3227,16 @@ def render_availability_tab(is_coach, current_device, resident_ctx=None, coach_c
                         )
                         if not recheck or not recheck.data:
                             st.info("This slot is no longer booked — it looks like it just freed up. No report needed.")
+                        elif is_slot_already_reported(hist_court, selected_date, hist_hour):
+                            st.info("\"Booked but not used\" has already been reported for this slot — no need to report it again.")
                         else:
                             r_villa = recheck.data[0]["villa"]
                             r_sub = recheck.data[0]["sub_community"]
-                            report_booked_not_used(r_sub, r_villa, hist_court, selected_date, hist_hour)
+                            reporter_label = (
+                                f"Coach {coach_ctx['coach_name']}" if is_coach
+                                else f"{resident_ctx['sub_community']} Villa {resident_ctx['villa']}"
+                            )
+                            report_booked_not_used(r_sub, r_villa, hist_court, selected_date, hist_hour, reporter_label)
                             st.success("Reported — the resident has been emailed, and this has been logged.")
                         st.session_state.pop(_bnu_key, None)
                         time.sleep(1.5)
@@ -3221,7 +3246,9 @@ def render_availability_tab(is_coach, current_device, resident_ctx=None, coach_c
                         st.session_state.pop(_bnu_key, None)
                         st.rerun()
             else:
-                if st.button("🚨 Booked but Not Used!", key=f"bnu_btn_{hist_court}_{selected_date}_{hist_hour}"):
+                if is_slot_already_reported(hist_court, selected_date, hist_hour):
+                    st.caption("ℹ️ \"Booked but not used\" has already been reported for this slot.")
+                elif st.button("🚨 Booked but Not Used!", key=f"bnu_btn_{hist_court}_{selected_date}_{hist_hour}"):
                     st.session_state[_bnu_key] = True
                     st.rerun()
         else:
