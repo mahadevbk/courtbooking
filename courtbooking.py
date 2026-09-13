@@ -18,7 +18,6 @@ from PIL import Image, ImageDraw, ImageFont # For dynamic JPG card rendering
 from streamlit_javascript import st_javascript
 import streamlit.components.v1 as components
 import urllib.parse
-import requests
 
 # Set page configuration to wide mode by default
 st.set_page_config(
@@ -28,17 +27,58 @@ st.set_page_config(
 )
 
 # ==========================================
-# --- DONOR NAMES & TICKER (LIVE FROM GOOGLE SHEET) ---
+# --- LEGENDS OF MIRA — DONOR NAMES & VILLAS (FINALIZED, HARD-CODED) ---
 # ==========================================
-DONOR_SHEET_ID = "1dKj5XkH87bdPmhXc-1inrumqXVBje8pXsl-_llrefYQ"
-DONOR_SHEET_CSV_URL = f"https://docs.google.com/spreadsheets/d/{DONOR_SHEET_ID}/export?format=csv&gid=0"
-
-_FALLBACK_DONOR_NAMES = [
-    "Abhishek", "Adam", "Adebayo", "Alesia", "Ameen", "Angelo", "Arlan", "Asim", "Carlos", "Charbel", "Dev", "Elie", "Farheen", "Francois",
-    "Goncalo", "Guru", "Hana", "Harith", "Hatem", "Hisham", "Katya", "KD", "Khaled", "Laurent", "Leina", "Lisa", "Marko", "Matthieu",
-    "Mei", "Melissa", "Mostafa", "Mustafa", "Nick", "Nikki", "Peter", "Rena", "Ricardo", "Riin", "Saket", "SAS", "Sheila", "Sofia",
-    "Timo", "Vik", "Wael", "Yann", "Yousef"
+# This list is now final and no longer pulled from the shared Google Sheet. DONOR_NAMES may
+# still grow over time (new donors can be added here and will appear in the thank-you ticker),
+# but per policy any new donor does NOT receive "Legends of Mira" status — only the villas
+# explicitly listed in DONOR_VILLAS below get the enhanced 8-active-booking allowance. Adding a
+# name to DONOR_NAMES alone does not grant that perk.
+DONOR_NAMES = [
+    "Abhishek", "Adam", "Adebayo", "Alesia", "Ameen", "Angelo", "Anastasia", "Arlan", "Asim", "Carlos", "Charbel",
+    "Dev", "Elie", "Farheen", "Francois", "Goncalo", "Guru", "Hana", "Harith", "Hatem", "Hisham",
+    "Katya", "KD", "Khaled", "Laurent", "Leina", "Lisa", "Marko", "Matthieu", "Mei", "Melissa",
+    "Mostafa", "Mustafa", "Nick", "Nikki", "Phillip", "Rena", "Ricardo", "Riin", "Saket", "SAS",
+    "Sheila", "Sofia", "Timo", "Vik", "Wael", "Yann", "Yousef",
 ]
+
+# Each tuple is (sub_community, villa) — sub_community lowercased and whitespace-collapsed, villa
+# as a plain string — matching the normalization is_donor_villa() applies when checking a booking.
+# This is the final, closed list of villas that receive the 8-active-booking "Legends of Mira"
+# allowance (instead of the standard 6). It will not grow with future donors.
+DONOR_VILLAS = {
+    ("mira oasis 1", "148"),
+    ("mira oasis 3", "188"),
+    ("mira 1", "307"),
+    ("mira 2", "223"),
+    ("mira 2", "128"),
+    ("mira 1", "229"),
+    ("mira oasis 1", "476"),
+    ("mira 2", "321"),
+    ("mira 2", "66"),
+    ("mira oasis 3", "359"),
+    ("mira oasis 3", "231"),
+    ("mira 1", "177"),
+    ("mira oasis 3", "482"),
+    ("mira 1", "157"),
+    ("mira 4", "115"),
+    ("mira 5", "83"),
+    ("mira 4", "138"),
+    ("mira oasis 3", "139"),
+    ("mira oasis 3", "408"),
+    ("mira 2", "250"),
+    ("mira oasis 3", "11"),
+    ("mira 2", "186"),
+    ("mira 4", "84"),
+    ("mira 5", "92"),
+    ("mira oasis 1", "417"),
+    ("mira 4", "459"),
+    ("mira 3", "142"),
+    ("mira 3", "159"),
+    ("mira 3", "92"),
+    ("mira oasis 2", "64"),
+    ("mira 3", "39"),
+}
 
 MAX_ACTIVE_BOOKINGS_DEFAULT = 6
 MAX_ACTIVE_BOOKINGS_DONOR = 8
@@ -56,38 +96,6 @@ MAX_VILLAS_PER_COACH = 10
 # ownership (coach_email cleared) via the one-time admin migration tool, so nothing is
 # stuck in a coach-only state while this is off.
 COACH_FEATURE_ENABLED = False
-
-@st.cache_data(ttl=600, show_spinner=False)
-def get_donor_data():
-    try:
-        resp = requests.get(DONOR_SHEET_CSV_URL, timeout=10)
-        resp.raise_for_status()
-        df = pd.read_csv(io.StringIO(resp.text))
-        df.columns = [str(c).strip() for c in df.columns]
-        if df.shape[1] < 1:
-            raise ValueError("Donor sheet has no columns")
-
-        name_col = df.columns[0]
-        names = [str(n).strip() for n in df[name_col].dropna().tolist() if str(n).strip()]
-        if not names:
-            raise ValueError("Donor sheet has no names")
-
-        donor_villas = set()
-        if df.shape[1] >= 3:
-            sub_col, villa_col = df.columns[1], df.columns[2]
-            for _, row in df.iterrows():
-                sub_val = " ".join(str(row.get(sub_col, "")).lower().split())
-                villa_val = str(row.get(villa_col, "")).strip()
-                if villa_val.endswith(".0"):
-                    villa_val = villa_val[:-2]
-                if sub_val and villa_val and sub_val != "nan" and villa_val.lower() != "nan":
-                    donor_villas.add((sub_val, villa_val))
-
-        return names, donor_villas
-    except Exception:
-        return list(_FALLBACK_DONOR_NAMES), set()
-
-DONOR_NAMES, DONOR_VILLAS = get_donor_data()
 
 def is_donor_villa(sub_community, villa):
     """True if this Sub Community + Villa belongs to a recorded donor (whitespace and case normalized)."""
