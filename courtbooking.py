@@ -35,7 +35,7 @@ st.set_page_config(
 # explicitly listed in DONOR_VILLAS below get the enhanced 8-active-booking allowance. Adding a
 # name to DONOR_NAMES alone does not grant that perk.
 DONOR_NAMES = [
-    "Abhishek", "Adam", "Adebayo", "Alesia", "Ameen", "Angelo", "Anastasia", "Arlan", "Asim", "Carlos", "Charbel",
+    "Abhishek", "Adam", "Adebayo", "Alesia", "Ameen", "Angelo", "Arlan", "Asim", "Carlos", "Charbel",
     "Dev", "Elie", "Farheen", "Francois", "Goncalo", "Guru", "Hana", "Harith", "Hatem", "Hisham",
     "Katya", "KD", "Khaled", "Laurent", "Leina", "Lisa", "Marko", "Matthieu", "Mei", "Melissa",
     "Mostafa", "Mustafa", "Nick", "Nikki", "Phillip", "Rena", "Ricardo", "Riin", "Saket", "SAS",
@@ -1591,6 +1591,105 @@ def logout_action():
     time.sleep(0.8)
     st.rerun()
 
+def build_ban_tag(email, villa_pairs):
+    """Embeds the banned email and villa list as a machine-readable tag inside a Sniping
+    Penalty log entry, so get_active_ban() can check it reliably regardless of sub-community
+    naming quirks (e.g. 'Mira Oasis 3A'), rather than parsing free-text prose."""
+    email_part = (email or "").strip().lower()
+    villas_part = ";".join(f"{s}|{v}" for s, v in villa_pairs if s and v)
+    return f"⟦BAN_EMAIL:{email_part}⟧⟦BAN_VILLAS:{villas_part}⟧"
+
+def get_active_ban(email=None, sub_community=None, villa=None):
+    """Checks whether the given email and/or villa is currently covered by an active Sniping
+    Penalty/Lockout that hasn't since been cleared by an Admin Reset. Returns
+    (expiry_datetime, raw_reason_text) if banned, else (None, None).
+
+    Understands the structured ⟦BAN_EMAIL:...⟧⟦BAN_VILLAS:...⟧ tags written by newer penalty
+    entries, and falls back to parsing the free-text 'Mira X Villa Y' / email mentions in older
+    penalty log entries for backward compatibility with penalties applied before this tagging
+    existed.
+    """
+    email_clean = (email or "").strip().lower()
+    villa_tag = f"{sub_community} - {villa}" if (sub_community and villa) else None
+    if not email_clean and not villa_tag:
+        return None, None
+
+    now = get_utc_plus_4()
+    cutoff = (now - timedelta(hours=96)).isoformat()
+    try:
+        res = run_query(
+            supabase.table("logs").select("timestamp, event_type, details, fingerprint")
+            .gte("timestamp", cutoff)
+            .in_("event_type", ["Sniping Penalty", "Sniping Lockout", "Admin Reset"])
+            .order("timestamp", desc=True)
+        )
+        logs = res.data if res and res.data else []
+    except Exception:
+        return None, None
+
+    cleared = []
+    for entry in logs:
+        if entry.get("event_type") != "Admin Reset":
+            continue
+        try:
+            ts = datetime.fromisoformat(entry["timestamp"].replace("Z", "+00:00")).replace(tzinfo=None)
+        except Exception:
+            continue
+        details = entry.get("details") or ""
+        if not any(term in details.lower() for term in ["cleared cooldown", "reset cooldown", "cleared restrictions", "ownership reset", "wrong villa"]):
+            continue
+        m_email = re.search(r'[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+', details)
+        if m_email:
+            cleared.append((m_email.group(0).lower(), ts))
+        if entry.get("fingerprint"):
+            cleared.append((entry["fingerprint"], ts))
+
+    def _is_cleared(key, penalty_ts):
+        return any(k == key and reset_ts >= penalty_ts for k, reset_ts in cleared)
+
+    latest_expiry, latest_reason = None, None
+    for entry in logs:
+        if entry.get("event_type") not in ("Sniping Penalty", "Sniping Lockout"):
+            continue
+        try:
+            ts = datetime.fromisoformat(entry["timestamp"].replace("Z", "+00:00")).replace(tzinfo=None)
+        except Exception:
+            continue
+        expiry = ts + timedelta(hours=96)
+        if expiry <= now:
+            continue
+
+        details = entry.get("details") or ""
+        fp = entry.get("fingerprint") or ""
+
+        banned_email, banned_villas = None, set()
+        m_tag_email = re.search(r'⟦BAN_EMAIL:(.*?)⟧', details)
+        m_tag_villas = re.search(r'⟦BAN_VILLAS:(.*?)⟧', details)
+        if m_tag_email or m_tag_villas:
+            if m_tag_email and m_tag_email.group(1):
+                banned_email = m_tag_email.group(1).strip().lower()
+            if m_tag_villas and m_tag_villas.group(1):
+                for pair in m_tag_villas.group(1).split(";"):
+                    if "|" in pair:
+                        s, v = pair.split("|", 1)
+                        banned_villas.add(f"{s.strip()} - {v.strip()}")
+        else:
+            m_email = re.search(r'[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+', details)
+            if m_email:
+                banned_email = m_email.group(0).lower()
+            for m in re.finditer(r"(Mira(?:\s+Oasis)?\s+\w+)\s+Villa\s+(\d+)", details):
+                banned_villas.add(f"{m.group(1)} - {m.group(2)}")
+
+        cleared_key = banned_email or fp
+        if cleared_key and _is_cleared(cleared_key, ts):
+            continue
+
+        matches = (email_clean and banned_email and banned_email == email_clean) or (villa_tag and villa_tag in banned_villas)
+        if matches and (not latest_expiry or expiry > latest_expiry):
+            latest_expiry, latest_reason = expiry, details
+
+    return latest_expiry, latest_reason
+
 def _attempt_resident_login(otp_sub, otp_villa, otp_email_input):
     """Runs the normal resident validation + OTP/PIN routing. Shared by the main login form
     and by the 'Continue as Resident' choice offered to emails that are registered as both
@@ -1602,6 +1701,40 @@ def _attempt_resident_login(otp_sub, otp_villa, otp_email_input):
         st.error(f"Invalid villa number for {otp_sub}. Must be between 1 and {max_allowed}.")
     elif not otp_email_input or "@" not in otp_email_input:
         st.error("Please provide a valid email address.")
+    elif (_ban_check := get_active_ban(email=otp_email_input, sub_community=otp_sub, villa=otp_villa))[0]:
+        current_uuid_precheck = st.session_state.get("device_uuid", "device_pending")
+        ban_expiry, ban_reason = _ban_check
+        now_precheck = get_utc_plus_4()
+        hours_left = max(1, int((ban_expiry - now_precheck).total_seconds() // 3600))
+        until_str = ban_expiry.strftime("%A, %b %d at %H:%M")
+        st.error(
+            f"🚫 **Misuse of System — Access Banned**\n\n"
+            f"This villa and/or email address is currently under a fair-use suspension due to "
+            f"detected court-booking sniping. Access is **banned until {until_str}** "
+            f"(~{hours_left}h remaining).\n\n"
+            "If you believe this is a mistake, please contact Dev via Court Maintenance."
+        )
+        add_log(
+            "Access Denied",
+            f"Banned login/registration attempt blocked for {otp_sub} Villa {otp_villa} by {otp_email_input} "
+            f"(ban active until {ban_expiry.isoformat()})",
+            fingerprint=current_uuid_precheck
+        )
+        # If this villa is already banned but the SPECIFIC email attempting it isn't the one on
+        # record (i.e. someone is trying a fresh email to dodge the lockout), extend the ban to
+        # cover this new email too, so switching emails doesn't bypass it.
+        existing_banned_email = None
+        m_existing_email = re.search(r'⟦BAN_EMAIL:(.*?)⟧', ban_reason or "")
+        if m_existing_email and m_existing_email.group(1):
+            existing_banned_email = m_existing_email.group(1).strip().lower()
+        if not get_existing_claim(otp_sub, otp_villa, otp_email_input) and otp_email_input.strip().lower() != existing_banned_email:
+            extra_tag = build_ban_tag(otp_email_input, [(otp_sub, otp_villa)])
+            add_log(
+                "Sniping Penalty",
+                f"Ban extended to new email {otp_email_input} attempting to register already-banned "
+                f"villa {otp_sub} Villa {otp_villa} {extra_tag}",
+                fingerprint=current_uuid_precheck
+            )
     elif is_disposable_email(otp_email_input):
         st.error("Disposable/temporary email domains are not allowed. Please use a personal or work email.")
     else:
@@ -2621,6 +2754,7 @@ Coach accounts exist for tennis coaches who train residents across **several vil
         display_df = log_df[filters].copy()        
         display_df['details'] = display_df['details'].str.replace(r'⟦FP:.*?⟧⟦IP:.*?⟧ ', '', regex=True)
         display_df['details'] = display_df['details'].str.replace(r'\s*⟦SLOT:.*?⟧', '', regex=True)
+        display_df['details'] = display_df['details'].str.replace(r'\s*⟦BAN_EMAIL:.*?⟧⟦BAN_VILLAS:.*?⟧', '', regex=True)
         if not is_admin:
             # Who filed a "Booked but not used" report is admin-only — residents still see which
             # villa was reported and the running 30-day count, just not who reported them.
@@ -2833,7 +2967,9 @@ Coach accounts exist for tennis coaches who train residents across **several vil
                         st.write("")
                         if st.button("🚫 Apply Sniping Lockout to Email & Associated Villas", type="primary", use_container_width=True, key="apply_admin_lockout_btn"):
                             villas_str = ", ".join(villa_descriptions)
-                            log_msg = f"4-day penalty active for email {lockout_email_input} across properties: {villas_str}"
+                            villa_pairs = [(c['sub_community'], c['villa']) for c in associated_claims]
+                            ban_tag = build_ban_tag(lockout_email_input, villa_pairs)
+                            log_msg = f"4-day penalty active for email {lockout_email_input} across properties: {villas_str} {ban_tag}"
                             add_log("Sniping Penalty", log_msg, fingerprint="admin_manual_lockout")
                             st.success(f"✅ Sniping lockout successfully applied and logged for `{lockout_email_input}` and associated properties ({villas_str}).")
                             time.sleep(1.5)
@@ -3607,9 +3743,16 @@ else:
         )
 
     if sniping_level == 2:
+        _hopping_pairs = []
+        for _tag in hopping_villas:
+            if " - " in _tag:
+                _s, _v = _tag.rsplit(" - ", 1)
+                _hopping_pairs.append((_s, _v))
+        _hopping_pairs.append((sub_community, villa))
+        _ban_tag = build_ban_tag(verified_user_email, _hopping_pairs)
         add_log(
             "Sniping Penalty",
-            f"4-day penalty active for {sub_community} Villa {villa} (Device: {current_device}, Email: {verified_user_email})",
+            f"4-day penalty active for {sub_community} Villa {villa} (Device: {current_device}, Email: {verified_user_email}) {_ban_tag}",
             fingerprint=current_device
         )
         show_sniping_lockout_dialog(cooldown_hrs)
