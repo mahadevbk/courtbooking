@@ -171,7 +171,7 @@ def render_whatsapp_banner():
         '-19.4 19-19.4 46.3 0 27.3 19.9 53.7 22.6 57.4 2.8 3.7 39.1 59.7 94.8 83.8 35.2 15.2 49 16.5 '
         '66.6 13.9 10.7-1.6 32.8-13.4 37.4-26.4 4.6-13 4.6-24.1 3.2-26.4-1.3-2.5-5-3.9-10.5-6.6z"/>'
         '</svg>'
-        'Click here to Join the App's WhatsApp group for bugs & Features'
+        "Click here to Join the App's WhatsApp group for bugs / Features"
         '</a>'
         '</div>',
         unsafe_allow_html=True,
