@@ -323,6 +323,35 @@ END:VEVENT
 END:VCALENDAR"""
     return ics_text.encode("utf-8")
 
+def generate_multi_ics_content(bookings_list, sub_community=None, villa=None):
+    """One .ics file containing a VEVENT for every booking in bookings_list — used for the 'My
+    Bookings' summary email so a single attachment adds every active booking to Apple/Google/
+    Outlook calendars at once, rather than needing one link per booking."""
+    now_stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    events = []
+    for b in bookings_list:
+        item_villa = b.get('v', villa)
+        item_sub = b.get('sc', sub_community)
+        court = b['court']
+        date_str = b['date']
+        sorted_hours = sorted(b['start_hours'])
+        start_h = sorted_hours[0]
+        end_h = sorted_hours[-1] + 1
+        date_clean = date_str.replace("-", "")
+        events.append(f"""BEGIN:VEVENT
+UID:mira-booking-{date_str}-{start_h}-{court.replace(' ', '')}-{item_villa}@miracourtbooking
+DTSTAMP:{now_stamp}
+DTSTART:{date_clean}T{start_h:02d}0000
+DTEND:{date_clean}T{end_h:02d}0000
+SUMMARY:🎾 Tennis at {court}
+DESCRIPTION:Court reservation at {court} for {item_sub} - Villa {item_villa}.
+LOCATION:{court} Tennis Court, Mira, Dubai, UAE
+END:VEVENT""")
+
+    ics_text = "BEGIN:VCALENDAR\nVERSION:2.0\nPRODID:-//Mira Court Booking//EN\nCALSCALE:GREGORIAN\nMETHOD:PUBLISH\n" \
+        + "\n".join(events) + "\nEND:VCALENDAR"
+    return ics_text.encode("utf-8")
+
 def get_google_calendar_url(court, date_str, start_hours, sub_community, villa):
     sorted_hours = sorted(start_hours)
     start_h = sorted_hours[0]
@@ -490,7 +519,7 @@ def render_share_or_download_button(jpg_bytes, filename, id_display, key):
         )
 
 # --- GMAIL SMTP EMAIL HELPER ---
-def send_gmail_smtp(recipient_email, subject, html_content):
+def send_gmail_smtp(recipient_email, subject, html_content, ics_content=None, ics_filename="invite.ics"):
     g_user = st.secrets.get("GMAIL_USER", "devkrea@gmail.com")
     g_pass = st.secrets.get("GMAIL_PASSWORD", "").replace(" ", "")
     if not g_pass or not recipient_email or "@" not in recipient_email:
@@ -513,13 +542,29 @@ def send_gmail_smtp(recipient_email, subject, html_content):
         else:
             html_content = html_content + whatsapp_footer
 
-        msg = MIMEMultipart("alternative")
+        # An .ics attachment is what makes "Add to Calendar" actually work on iOS/Apple Mail —
+        # a plain Google Calendar web link just opens the Google Calendar website in Safari.
+        # Attaching a calendar file (with method=PUBLISH) makes Apple Mail show its native
+        # "Add to Calendar" banner that opens straight into the Apple Calendar app, while still
+        # working fine as a normal attachment in Gmail/Outlook/etc.
+        if ics_content:
+            msg = MIMEMultipart("mixed")
+            alt_part = MIMEMultipart("alternative")
+            alt_part.attach(MIMEText(html_content, "html"))
+            msg.attach(alt_part)
+
+            ics_bytes = ics_content if isinstance(ics_content, bytes) else ics_content.encode("utf-8")
+            cal_part = MIMEText(ics_bytes.decode("utf-8"), "calendar; method=PUBLISH")
+            cal_part.add_header("Content-Disposition", "attachment", filename=ics_filename)
+            msg.attach(cal_part)
+        else:
+            msg = MIMEMultipart("alternative")
+            msg.attach(MIMEText(html_content, "html"))
+
         msg["Subject"] = subject
         msg["From"] = f"Mira Court Booking <{g_user}>"
         msg["To"] = recipient_email
-        
-        msg.attach(MIMEText(html_content, "html"))
-        
+
         with smtplib.SMTP_SSL("smtp.gmail.com", 465) as server:
             server.login(g_user, g_pass)
             server.sendmail(g_user, recipient_email, msg.as_string())
@@ -575,6 +620,7 @@ def send_booking_notification(action_type, villa, sub_community, court, date_str
                     <div class="info-row"><b>Duration:</b> {duration} hour(s)</div>
                     <div class="info-row"><b>Residence:</b> {sub_community} - Villa {villa}</div>
                   </div>
+                  <p style="font-size: 13px; color: #718096;">📅 A calendar invite is attached to this email — open it to add this booking straight to your phone's calendar (works with Apple Calendar, Google Calendar, and Outlook).</p>
                 </div>
                 <div class="footer">
                   Mira Court Booking App • Community Fair-Use Solution
@@ -583,7 +629,8 @@ def send_booking_notification(action_type, villa, sub_community, court, date_str
             </body>
             </html>
             """
-            send_gmail_smtp(recipient_email, subject, html_content)
+            ics_content = generate_ics_content(court, date_str, start_hours, sub_community, villa)
+            send_gmail_smtp(recipient_email, subject, html_content, ics_content=ics_content, ics_filename="booking.ics")
         elif action_type == "deleted":
             subject = f"❌ Booking Cancelled: {court} ({formatted_date})"
             html_content = f"""
@@ -776,6 +823,7 @@ def send_all_bookings_summary(villa, sub_community, bookings_list, recipient_ema
               <p>{intro}</p>
               <hr style="border: 0; border-top: 1px solid #e2e8f0; margin: 20px 0;">
               {items_html}
+              <p style="font-size: 13px; color: #718096; margin-top: 4px;">📅 A calendar file with all of the above bookings is attached — open it to add them straight to your phone's calendar (works with Apple Calendar, Google Calendar, and Outlook). Prefer to add just one? Use its "Add to Google Calendar" link above instead.</p>
             </div>
             <div class="footer">
               Mira Court Booking App • Community Fair-Use Solution
@@ -784,7 +832,8 @@ def send_all_bookings_summary(villa, sub_community, bookings_list, recipient_ema
         </body>
         </html>
         """
-        return send_gmail_smtp(recipient_email, subject, html_content)
+        multi_ics = generate_multi_ics_content(bookings_list, sub_community=sub_community, villa=villa)
+        return send_gmail_smtp(recipient_email, subject, html_content, ics_content=multi_ics, ics_filename="my_bookings.ics")
     except Exception as e:
         print(f"Error sending summary email: {e}")
         return False
