@@ -35,11 +35,11 @@ st.set_page_config(
 # explicitly listed in DONOR_VILLAS below get the enhanced 8-active-booking allowance. Adding a
 # name to DONOR_NAMES alone does not grant that perk.
 DONOR_NAMES = [
-    "Abhishek", "Adam", "Adebayo", "Alesia", "Ameen", "Angelo", "Arlan", "Asim", "Carlos", "Charbel",
-    "Dev", "Elie", "Farheen", "Francois", "Goncalo", "Guru", "Hana", "Harith", "Hatem", "Hisham",
-    "Katya", "KD", "Khaled", "Laurent", "Leina", "Lisa", "Marko", "Matthieu", "Mei", "Melissa",
-    "Mostafa", "Mustafa", "Nick", "Nikki", "Phillip", "Rena", "Ricardo", "Riin", "Saket", "SAS",
-    "Sheila", "Sofia", "Timo", "Vik", "Wael", "Yann", "Yousef",
+    "Abhishek", "Adam", "Adebayo", "Alesia", "Ameen", "Anastasia", "Angelo", "Arlan", "Asim", "Carlos",
+    "Charbel", "Dev", "Elie", "Farheen", "Francois", "Goncalo", "Guru", "Hana", "Harith", "Hatem",
+    "Hisham", "Katya", "KD", "Khaled", "Laurent", "Leina", "Lisa", "Marko", "Matthieu", "Mei",
+    "Melissa", "Mostafa", "Mustafa", "Nick", "Nikki", "Phillip", "Rena", "Ricardo", "Riin", "Saket",
+    "SAS", "Sheila", "Sofia", "Teresa", "Timo", "Vik", "Wael", "Yann", "Yousef",
 ]
 
 # Each tuple is (sub_community, villa) — sub_community lowercased and whitespace-collapsed, villa
@@ -2976,6 +2976,58 @@ Coach accounts exist for tennis coaches who train residents across **several vil
                             st.rerun()
                     else:
                         st.warning(f"No villas found associated with email `{lockout_email_input}`.")
+
+                st.divider()
+                st.markdown("### Send a Manual Sniping Warning (No Lockout)")
+                st.caption(
+                    "Use this to warn residents about suspected multi-email / multi-villa "
+                    "sniping without applying a lockout yet — useful as a first, softer step. "
+                    "This sends a real email to each address listed and logs a public "
+                    "'Sniping Warning' entry, but does not block their access."
+                )
+                warn_emails_raw = st.text_area(
+                    "Email address(es) to warn (one per line)",
+                    placeholder="resident1@example.com\nresident2@example.com",
+                    key="admin_warn_emails_input",
+                )
+                warn_villas_raw = st.text_area(
+                    "Villa(s) involved (one per line, e.g. 'Mira 4 - Villa 84')",
+                    placeholder="Mira 4 - Villa 84\nMira 1 - Villa 229",
+                    key="admin_warn_villas_input",
+                )
+                warn_emails = [e.strip().lower() for e in warn_emails_raw.splitlines() if e.strip() and "@" in e]
+                warn_villas = [v.strip() for v in warn_villas_raw.splitlines() if v.strip()]
+
+                if st.button("📨 Send Sniping Warning", type="primary", use_container_width=True, key="admin_send_sniping_warning_btn"):
+                    if not warn_emails:
+                        st.error("Please enter at least one valid email address.")
+                    else:
+                        villas_str = ", ".join(warn_villas) if warn_villas else "multiple properties"
+                        for w_email in warn_emails:
+                            subject = "⚠️ Fair-Use Warning — Unusual Booking Activity Detected"
+                            html_content = f"""
+                            <html><body style="font-family: Arial, sans-serif; color: #222;">
+                            <h3>Fair-Use Warning</h3>
+                            <p>Our system has detected activity suggesting possible manipulation of the
+                            court booking system using multiple email addresses and/or villas, including:</p>
+                            <p><b>{villas_str}</b></p>
+                            <p>This kind of activity — such as booking and cancelling repeatedly, or moving
+                            between different villa registrations to gain extra bookings — is considered
+                            <b>court-booking sniping</b> and is against our fair-use policy.</p>
+                            <p>This is a warning only — no lockout has been applied. However, if this pattern
+                            continues, your access to the booking system may be <b>temporarily suspended</b>.</p>
+                            </body></html>
+                            """
+                            send_gmail_smtp(w_email, subject, html_content)
+                        add_log(
+                            "Sniping Warning",
+                            f"Manual warning sent to {', '.join(warn_emails)} regarding suspected multi-email/"
+                            f"multi-villa activity across: {villas_str}",
+                            fingerprint="admin_manual_warning"
+                        )
+                        st.success(f"✅ Warning email sent to {len(warn_emails)} address(es) and logged.")
+                        time.sleep(1.5)
+                        st.rerun()
 
             with st.expander("🚫 Active Lockouts & Quota Abuse", expanded=True):
                 st.markdown("### Active 4-Day Sniping Lockouts & Quota Abuse")
