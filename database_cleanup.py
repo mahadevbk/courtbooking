@@ -1,4 +1,5 @@
 import time
+import re
 import streamlit as st
 from datetime import datetime, timedelta, timezone
 import random
@@ -92,18 +93,47 @@ def get_synced_dates_history(supabase, lookback_days=30):
     This is what lets the feature recognize a cancelled auto-booked slot as "already handled"
     for that day: without this, deleting the booking row makes the date look untouched again,
     so the next cleanup run would just recreate the exact slot that was just cancelled.
+
+    Also scans the older "Booking Created ... System-Synced ... for {date} at 19:00" log lines
+    that every auto-booking has always written (even before the dedicated ledger entry existed),
+    pulling the date out of that text. Without this, a slot that was auto-booked before the
+    ledger fix was deployed has no ledger entry to protect it — cancelling it would look
+    identical to a date that was never auto-booked at all, and get recreated on the next run.
+    This union of both sources closes that gap without needing any backfill/migration.
     """
     since = (get_utc_plus_4() - timedelta(days=lookback_days)).isoformat()
+    dates = set()
+
     try:
-        res = run_query(
+        ledger_res = run_query(
             supabase,
             supabase.table("logs").select("details")
             .eq("event_type", "Auto-Book Ledger")
             .gte("timestamp", since)
         )
-        return {row["details"] for row in res.data} if res and res.data else set()
+        if ledger_res and ledger_res.data:
+            dates.update(row["details"] for row in ledger_res.data if row.get("details"))
     except Exception:
-        return set()
+        pass
+
+    try:
+        legacy_res = run_query(
+            supabase,
+            supabase.table("logs").select("details")
+            .eq("event_type", "Booking Created")
+            .ilike("details", "%System-Synced%")
+            .gte("timestamp", since)
+        )
+        if legacy_res and legacy_res.data:
+            for row in legacy_res.data:
+                details = row.get("details") or ""
+                m = re.search(r"for (\d{4}-\d{2}-\d{2}) at", details)
+                if m:
+                    dates.add(m.group(1))
+    except Exception:
+        pass
+
+    return dates
 
 def clear_auto_book_ledger_date(supabase, date_str):
     """Deletes the Auto-Book Ledger entry for a specific date, so the next cleanup run treats
