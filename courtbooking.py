@@ -476,7 +476,7 @@ def render_share_or_download_button(jpg_bytes, filename, id_display, key):
         <button id="share_btn_{key}" style="
             width:100%; padding:0.6rem 0.4rem; margin-top:0.25rem;
             background-color:#0d5384; color:#ffffff;
-            border:1px solid rgba(250,250,250,0.3); border-radius:0.5rem;
+            border:1px solid rgba(255,255,255,0.35); border-radius:0.5rem;
             font-size:0.9rem; font-family: 'Source Sans Pro', sans-serif; cursor:pointer;">
             📤 Share
         </button>
@@ -4031,6 +4031,38 @@ else:
         if not my_b: 
             st.info("You have no active bookings.")
         else:
+            st.markdown("""
+                <style>
+                div[class*="st-key-download_jpg_"] button {
+                    background-color: #0d5384 !important;
+                    color: #ffffff !important;
+                    border: 1px solid rgba(255,255,255,0.35) !important;
+                }
+                div[class*="st-key-download_jpg_"] button:hover {
+                    background-color: #0a4269 !important;
+                    border-color: #ffffff !important;
+                }
+                div[class*="st-key-ics_download_"] button {
+                    background-color: #1f8a45 !important;
+                    color: #ffffff !important;
+                    border: 1px solid rgba(255,255,255,0.35) !important;
+                }
+                div[class*="st-key-ics_download_"] button:hover {
+                    background-color: #166534 !important;
+                    border-color: #ffffff !important;
+                }
+                div[class*="st-key-cancel_"] button {
+                    background-color: #dc2626 !important;
+                    color: #ffffff !important;
+                    border: 1px solid rgba(255,255,255,0.35) !important;
+                    font-weight: 700 !important;
+                }
+                div[class*="st-key-cancel_"] button:hover {
+                    background-color: #b91c1c !important;
+                    border-color: #ffffff !important;
+                }
+                </style>
+            """, unsafe_allow_html=True)
             for i, b in enumerate(merged_bookings):
                 b_date = datetime.strptime(b['date'], '%Y-%m-%d')
                 day_name = b_date.strftime('%A')
