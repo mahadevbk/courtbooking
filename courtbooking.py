@@ -35,7 +35,7 @@ st.set_page_config(
 # explicitly listed in DONOR_VILLAS below get the enhanced 8-active-booking allowance. Adding a
 # name to DONOR_NAMES alone does not grant that perk.
 DONOR_NAMES = [
-    "Abhishek", "Adam", "Adebayo", "Alesia", "Alex Loh", "Ameen", "Anastasia", "Angelo", "Arlan", "Ashwini", "Asim", "Carlos",
+    "Abhishek", "Adam", "Adebayo", "Alesia", "Ameen", "Anastasia", "Angelo", "Arlan", "Asim", "Carlos",
     "Charbel", "Dev", "Elie", "Farheen", "Francois", "Goncalo", "Guru", "Hana", "Harith", "Hatem",
     "Hisham", "Katya", "KD", "Khaled", "Laurent", "Leina", "Lisa", "Marko", "Matthieu", "Mei",
     "Melissa", "Mostafa", "Mustafa", "Nick", "Nikki", "Phillip", "Rena", "Ricardo", "Riin", "Saket",
@@ -470,53 +470,58 @@ def generate_booking_card_jpg(id_display, court, sub_community, villa, formatted
     return buffer.getvalue()
 
 def render_share_or_download_button(jpg_bytes, filename, id_display, key):
-    if st.session_state.get("is_mobile_device", False):
-        b64_data = base64.b64encode(jpg_bytes).decode()
-        html = f"""
-        <button id="share_btn_{key}" style="
-            width:100%; padding:0.6rem 0.4rem; margin-top:0.25rem;
-            background-color:#06b6d4; color:#ffffff;
-            border:1px solid rgba(255,255,255,0.35); border-radius:0.5rem;
-            font-size:0.9rem; font-family: 'Source Sans Pro', sans-serif; cursor:pointer;">
-            📤 Share
-        </button>
-        <script>
-        (function() {{
-            const b64 = "{b64_data}";
-            const filename = "{filename}";
-            document.getElementById("share_btn_{key}").addEventListener("click", async function() {{
-                try {{
-                    const byteChars = atob(b64);
-                    const byteNumbers = new Array(byteChars.length);
-                    for (let i = 0; i < byteChars.length; i++) {{ byteNumbers[i] = byteChars.charCodeAt(i); }}
-                    const byteArray = new Uint8Array(byteNumbers);
-                    const file = new File([byteArray], filename, {{ type: "image/jpeg" }});
-                    if (navigator.canShare && navigator.canShare({{ files: [file] }})) {{
+    # Always attempt native sharing first, on every device/OS/browser — no more relying on
+    # user-agent sniffing to decide. The JS itself feature-detects at click time: if
+    # navigator.canShare(files) isn't supported (most desktop browsers, some older mobile
+    # browsers), it automatically falls back to a plain file download instead — so this is
+    # safe everywhere and never leaves the button doing nothing.
+    b64_data = base64.b64encode(jpg_bytes).decode()
+    html = f"""
+    <button id="share_btn_{key}" style="
+        width:100%; padding:0.6rem 0.4rem; margin-top:0.25rem;
+        background-color:#06b6d4; color:#ffffff;
+        border:1px solid rgba(255,255,255,0.35); border-radius:0.5rem;
+        font-size:0.9rem; font-family: 'Source Sans Pro', sans-serif; cursor:pointer;">
+        📤 Share
+    </button>
+    <script>
+    (function() {{
+        const b64 = "{b64_data}";
+        const filename = "{filename}";
+        document.getElementById("share_btn_{key}").addEventListener("click", async function() {{
+            try {{
+                const byteChars = atob(b64);
+                const byteNumbers = new Array(byteChars.length);
+                for (let i = 0; i < byteChars.length; i++) {{ byteNumbers[i] = byteChars.charCodeAt(i); }}
+                const byteArray = new Uint8Array(byteNumbers);
+                const file = new File([byteArray], filename, {{ type: "image/jpeg" }});
+                let shared = false;
+                if (navigator.canShare && navigator.canShare({{ files: [file] }})) {{
+                    try {{
                         await navigator.share({{ files: [file], title: "Tennis Court Booking" }});
-                    }} else {{
-                        const url = URL.createObjectURL(file);
-                        const a = document.createElement('a');
-                        a.href = url; a.download = filename;
-                        document.body.appendChild(a); a.click(); document.body.removeChild(a);
-                        URL.revokeObjectURL(url);
+                        shared = true;
+                    }} catch (shareErr) {{
+                        // AbortError means the user just cancelled the share sheet — don't
+                        // fall back to a download in that case, that would be surprising.
+                        if (shareErr && shareErr.name === "AbortError") {{ shared = true; }}
+                        else {{ console.error("Share failed, falling back to download:", shareErr); }}
                     }}
-                }} catch (err) {{
-                    console.error("Share failed:", err);
                 }}
-            }});
-        }})();
-        </script>
-        """
-        components.html(html, height=52)
-    else:
-        st.download_button(
-            label="📥 Card",
-            data=jpg_bytes,
-            file_name=filename,
-            mime="image/jpeg",
-            key=f"download_jpg_{key}",
-            use_container_width=True
-        )
+                if (!shared) {{
+                    const url = URL.createObjectURL(file);
+                    const a = document.createElement('a');
+                    a.href = url; a.download = filename;
+                    document.body.appendChild(a); a.click(); document.body.removeChild(a);
+                    URL.revokeObjectURL(url);
+                }}
+            }} catch (err) {{
+                console.error("Share/download failed:", err);
+            }}
+        }});
+    }})();
+    </script>
+    """
+    components.html(html, height=52)
 
 # --- GMAIL SMTP EMAIL HELPER ---
 def send_gmail_smtp(recipient_email, subject, html_content, ics_content=None, ics_filename="invite.ics"):
@@ -4039,15 +4044,6 @@ else:
         else:
             st.markdown("""
                 <style>
-                div[class*="st-key-download_jpg_"] button {
-                    background-color: #06b6d4 !important;
-                    color: #ffffff !important;
-                    border: 1px solid rgba(255,255,255,0.35) !important;
-                }
-                div[class*="st-key-download_jpg_"] button:hover {
-                    background-color: #0891b2 !important;
-                    border-color: #ffffff !important;
-                }
                 div[class*="st-key-ics_download_"] button {
                     background-color: #1f8a45 !important;
                     color: #ffffff !important;
