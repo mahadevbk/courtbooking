@@ -1954,7 +1954,13 @@ if "is_mobile_device" not in st.session_state:
             return /Mobi|Android|iPhone|iPad|iPod/i.test(ua) ? 'mobile' : 'desktop';
         })();
     """, key="js_ua_check")
-    st.session_state.is_mobile_device = (ua_check == "mobile")
+    # st_javascript returns None/0 on the very first render while it waits for the browser
+    # round-trip. Only lock in a result once we actually get "mobile" or "desktop" back —
+    # otherwise this was permanently caching is_mobile_device=False before the real value
+    # ever arrived, which made every phone fall back to the desktop download button instead
+    # of the native share sheet.
+    if isinstance(ua_check, str) and ua_check in ("mobile", "desktop"):
+        st.session_state.is_mobile_device = (ua_check == "mobile")
 
 url_token = st.query_params.get("auth")
 if url_token and not st.session_state.authenticated:
