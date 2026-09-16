@@ -474,11 +474,11 @@ def render_share_or_download_button(jpg_bytes, filename, id_display, key):
         b64_data = base64.b64encode(jpg_bytes).decode()
         html = f"""
         <button id="share_btn_{key}" style="
-            width:100%; padding:0.6rem 1rem; margin-top:0.25rem;
+            width:100%; padding:0.6rem 0.4rem; margin-top:0.25rem;
             background-color:#0d5384; color:#ffffff;
             border:1px solid rgba(250,250,250,0.3); border-radius:0.5rem;
-            font-size:1rem; font-family: 'Source Sans Pro', sans-serif; cursor:pointer;">
-            📤 Share Booking Card {id_display}
+            font-size:0.9rem; font-family: 'Source Sans Pro', sans-serif; cursor:pointer;">
+            📤 Share
         </button>
         <script>
         (function() {{
@@ -510,7 +510,7 @@ def render_share_or_download_button(jpg_bytes, filename, id_display, key):
         components.html(html, height=52)
     else:
         st.download_button(
-            label=f"📥 Download Booking Card {id_display}",
+            label="📥 Card",
             data=jpg_bytes,
             file_name=filename,
             mime="image/jpeg",
@@ -4069,15 +4069,28 @@ else:
                     
                     jpg_bytes = generate_booking_card_jpg(id_display, b['court'], b['sc'], b['v'], f"{day_name}, {formatted_date}", time_display)
                     clean_ref_filename = id_display.replace('#', '').replace('-', '_')
-                    render_share_or_download_button(jpg_bytes, f"{clean_ref_filename}.jpg", id_display, key=i)
-                    
-                    if st.button(f"❌ Cancel Booking {id_display}", key=f"cancel_{i}", width='stretch'):
-                        for bid in b['ids']: delete_booking(bid, b['v'], b['sc'], fingerprint=current_device)
-                        send_booking_notification_once("deleted", b['v'], b['sc'], b['court'], b['date'], b['start_hours'], verified_user_email)
-                        st.success(f"Successfully cancelled booking {id_display}")
-                        if verified_user_email and "@" in verified_user_email:
-                            st.info(f"📧 A confirmation email has been sent to **{verified_user_email}** from **miracourtbooking@gmail.com**. If you don't see it, please check your spam/junk folder.")
-                        time.sleep(1.5); st.rerun()
+
+                    row_c1, row_c2, row_c3 = st.columns(3)
+                    with row_c1:
+                        render_share_or_download_button(jpg_bytes, f"{clean_ref_filename}.jpg", id_display, key=i)
+                    with row_c2:
+                        ics_bytes = generate_ics_content(b['court'], b['date'], b['start_hours'], b['sc'], b['v'])
+                        st.download_button(
+                            label="📅 Calendar",
+                            data=ics_bytes,
+                            file_name=f"{clean_ref_filename}.ics",
+                            mime="text/calendar",
+                            key=f"ics_download_{i}",
+                            use_container_width=True
+                        )
+                    with row_c3:
+                        if st.button("❌ Cancel", key=f"cancel_{i}", use_container_width=True):
+                            for bid in b['ids']: delete_booking(bid, b['v'], b['sc'], fingerprint=current_device)
+                            send_booking_notification_once("deleted", b['v'], b['sc'], b['court'], b['date'], b['start_hours'], verified_user_email)
+                            st.success(f"Successfully cancelled booking {id_display}")
+                            if verified_user_email and "@" in verified_user_email:
+                                st.info(f"📧 A confirmation email has been sent to **{verified_user_email}** from **miracourtbooking@gmail.com**. If you don't see it, please check your spam/junk folder.")
+                            time.sleep(1.5); st.rerun()
                     st.markdown('<div style="margin-bottom: 25px;"></div>', unsafe_allow_html=True)
             
             st.divider()
