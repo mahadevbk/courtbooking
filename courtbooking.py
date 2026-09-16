@@ -477,12 +477,17 @@ def render_share_or_download_button(jpg_bytes, filename, id_display, key):
     # safe everywhere and never leaves the button doing nothing.
     b64_data = base64.b64encode(jpg_bytes).decode()
     html = f"""
+    <style>
+        html, body {{ margin: 0; padding: 0; }}
+    </style>
     <button id="share_btn_{key}" style="
-        width:100%; padding:0.6rem 0.4rem; margin-top:0.25rem;
+        box-sizing: border-box; display: block;
+        width:100%; height:2.5rem; margin:0; padding:0 0.4rem;
         background-color:#06b6d4; color:#ffffff;
         border:1px solid rgba(255,255,255,0.35); border-radius:0.5rem;
-        font-size:0.9rem; font-family: 'Source Sans Pro', sans-serif; cursor:pointer;">
-        📤 Share
+        font-size:0.82rem; font-family: 'Source Sans Pro', sans-serif; font-weight:400; cursor:pointer;
+        line-height:1;">
+        📤&nbsp;Share
     </button>
     <script>
     (function() {{
@@ -521,7 +526,7 @@ def render_share_or_download_button(jpg_bytes, filename, id_display, key):
     }})();
     </script>
     """
-    components.html(html, height=52)
+    components.html(html, height=42)
 
 # --- GMAIL SMTP EMAIL HELPER ---
 def send_gmail_smtp(recipient_email, subject, html_content, ics_content=None, ics_filename="invite.ics"):
