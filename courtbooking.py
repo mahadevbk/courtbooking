@@ -4061,6 +4061,24 @@ else:
                     background-color: #b91c1c !important;
                     border-color: #ffffff !important;
                 }
+                /* Keep the Card/Calendar/Cancel row side-by-side even on narrow mobile screens,
+                   overriding Streamlit's default behavior of stacking columns vertically below
+                   a certain viewport width. */
+                div[class*="st-key-booking_action_row_"] div[data-testid="stHorizontalBlock"] {
+                    flex-wrap: nowrap !important;
+                    gap: 0.4rem !important;
+                }
+                div[class*="st-key-booking_action_row_"] div[data-testid="stHorizontalBlock"] > div[data-testid="stColumn"] {
+                    flex: 1 1 0 !important;
+                    width: auto !important;
+                    min-width: 0 !important;
+                }
+                div[class*="st-key-booking_action_row_"] button {
+                    padding-left: 0.3rem !important;
+                    padding-right: 0.3rem !important;
+                    font-size: 0.82rem !important;
+                    white-space: nowrap !important;
+                }
                 </style>
             """, unsafe_allow_html=True)
             for i, b in enumerate(merged_bookings):
@@ -4102,27 +4120,28 @@ else:
                     jpg_bytes = generate_booking_card_jpg(id_display, b['court'], b['sc'], b['v'], f"{day_name}, {formatted_date}", time_display)
                     clean_ref_filename = id_display.replace('#', '').replace('-', '_')
 
-                    row_c1, row_c2, row_c3 = st.columns(3)
-                    with row_c1:
-                        render_share_or_download_button(jpg_bytes, f"{clean_ref_filename}.jpg", id_display, key=i)
-                    with row_c2:
-                        ics_bytes = generate_ics_content(b['court'], b['date'], b['start_hours'], b['sc'], b['v'])
-                        st.download_button(
-                            label="📅 Calendar",
-                            data=ics_bytes,
-                            file_name=f"{clean_ref_filename}.ics",
-                            mime="text/calendar",
-                            key=f"ics_download_{i}",
-                            use_container_width=True
-                        )
-                    with row_c3:
-                        if st.button("❌ Cancel", key=f"cancel_{i}", use_container_width=True):
-                            for bid in b['ids']: delete_booking(bid, b['v'], b['sc'], fingerprint=current_device)
-                            send_booking_notification_once("deleted", b['v'], b['sc'], b['court'], b['date'], b['start_hours'], verified_user_email)
-                            st.success(f"Successfully cancelled booking {id_display}")
-                            if verified_user_email and "@" in verified_user_email:
-                                st.info(f"📧 A confirmation email has been sent to **{verified_user_email}** from **miracourtbooking@gmail.com**. If you don't see it, please check your spam/junk folder.")
-                            time.sleep(1.5); st.rerun()
+                    with st.container(key=f"booking_action_row_{i}"):
+                        row_c1, row_c2, row_c3 = st.columns(3)
+                        with row_c1:
+                            render_share_or_download_button(jpg_bytes, f"{clean_ref_filename}.jpg", id_display, key=i)
+                        with row_c2:
+                            ics_bytes = generate_ics_content(b['court'], b['date'], b['start_hours'], b['sc'], b['v'])
+                            st.download_button(
+                                label="📅 Calendar",
+                                data=ics_bytes,
+                                file_name=f"{clean_ref_filename}.ics",
+                                mime="text/calendar",
+                                key=f"ics_download_{i}",
+                                use_container_width=True
+                            )
+                        with row_c3:
+                            if st.button("❌ Cancel", key=f"cancel_{i}", use_container_width=True):
+                                for bid in b['ids']: delete_booking(bid, b['v'], b['sc'], fingerprint=current_device)
+                                send_booking_notification_once("deleted", b['v'], b['sc'], b['court'], b['date'], b['start_hours'], verified_user_email)
+                                st.success(f"Successfully cancelled booking {id_display}")
+                                if verified_user_email and "@" in verified_user_email:
+                                    st.info(f"📧 A confirmation email has been sent to **{verified_user_email}** from **miracourtbooking@gmail.com**. If you don't see it, please check your spam/junk folder.")
+                                time.sleep(1.5); st.rerun()
                     st.markdown('<div style="margin-bottom: 25px;"></div>', unsafe_allow_html=True)
             
             st.divider()
