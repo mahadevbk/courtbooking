@@ -35,7 +35,7 @@ st.set_page_config(
 # explicitly listed in DONOR_VILLAS below get the enhanced 8-active-booking allowance. Adding a
 # name to DONOR_NAMES alone does not grant that perk.
 DONOR_NAMES = [
-    "Abhishek", "Adam", "Adebayo", "Alesia", "Alex Loh", "Ameen", "Anastasia", "Angelo", "Arlan", "Asim", "Carlos",
+    "Abhishek", "Adam", "Adebayo", "Alesia", "Alex Loh", "Ameen", "Anastasia", "Angelo", "Arlan", "Ashwini", "Asim", "Carlos",
     "Charbel", "Dev", "Elie", "Farheen", "Francois", "Goncalo", "Guru", "Hana", "Harith", "Hatem",
     "Hisham", "Katya", "KD", "Khaled", "Laurent", "Leina", "Lisa", "Marko", "Matthieu", "Mei",
     "Melissa", "Mostafa", "Mustafa", "Nick", "Nikki", "Phillip", "Rena", "Ricardo", "Riin", "Saket",
