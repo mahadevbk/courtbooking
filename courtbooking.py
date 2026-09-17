@@ -4018,6 +4018,16 @@ def render_availability_tab(is_coach, current_device, resident_ctx=None, coach_c
                 and display_df.loc[court_p, lab_p] == "Available"
             ):
                 display_df.loc[court_p, lab_p] = "★ Selected"
+            # If user chose 2 hours, also mark the next consecutive free slot
+            if st.session_state.get("avail_grid_book_2h"):
+                next_h_p = hour_p + 1
+                next_lab_p = f"{next_h_p:02d}:00 - {next_h_p+1:02d}:00"
+                if (
+                    next_lab_p in display_df.columns
+                    and display_df.loc[court_p, next_lab_p] == "Available"
+                    and not is_slot_in_past(selected_date, next_h_p)
+                ):
+                    display_df.loc[court_p, next_lab_p] = "★ Selected"
         except Exception:
             pass
 
@@ -4060,6 +4070,8 @@ def render_availability_tab(is_coach, current_device, resident_ctx=None, coach_c
         prev = st.session_state.get("avail_grid_selected_cell")
         st.session_state["avail_grid_selected_cell"] = picked
         if prev != picked:
+            # New cell → default back to 1 hour so the second amber cell clears
+            st.session_state["avail_grid_book_2h"] = False
             st.rerun()
     elif grid_event is not None:
         sel_obj = getattr(grid_event, "selection", None)
@@ -4073,6 +4085,7 @@ def render_availability_tab(is_coach, current_device, resident_ctx=None, coach_c
         if raw_cells is not None and len(raw_cells) == 0:
             if st.session_state.get("avail_grid_selected_cell"):
                 st.session_state["avail_grid_selected_cell"] = None
+                st.session_state["avail_grid_book_2h"] = False
                 st.rerun()
 
     active_pick = st.session_state.get("avail_grid_selected_cell")
@@ -4102,6 +4115,7 @@ def render_availability_tab(is_coach, current_device, resident_ctx=None, coach_c
                     f"**{click_start:02d}:00**"
                 )
                 if can_2h:
+                    _dur_key = f"grid_duration_{click_court}_{click_start}_{selected_date}"
                     duration_choice = st.radio(
                         "Duration",
                         options=[
@@ -4109,11 +4123,16 @@ def render_availability_tab(is_coach, current_device, resident_ctx=None, coach_c
                             f"2 hours ({click_start:02d}:00 – {click_start+2:02d}:00)",
                         ],
                         horizontal=True,
-                        key=f"grid_duration_{click_court}_{click_start}_{selected_date}",
+                        key=_dur_key,
                     )
                     book_2h = duration_choice.startswith("2")
+                    # Keep grid markers in sync: 2h → amber on both consecutive cells
+                    if st.session_state.get("avail_grid_book_2h") != book_2h:
+                        st.session_state["avail_grid_book_2h"] = book_2h
+                        st.rerun()
                 else:
                     book_2h = False
+                    st.session_state["avail_grid_book_2h"] = False
                     st.caption(
                         f"Only 1 hour available from {click_start:02d}:00 "
                         "(next slot is taken or past)."
@@ -4138,6 +4157,7 @@ def render_availability_tab(is_coach, current_device, resident_ctx=None, coach_c
                         use_container_width=True,
                     ):
                         st.session_state["avail_grid_selected_cell"] = None
+                        st.session_state["avail_grid_book_2h"] = False
                         st.rerun()
 
                 if do_book:
@@ -4152,6 +4172,7 @@ def render_availability_tab(is_coach, current_device, resident_ctx=None, coach_c
                         )
                         if success:
                             st.session_state["avail_grid_selected_cell"] = None
+                            st.session_state["avail_grid_book_2h"] = False
                             st.balloons()
                             st.success(
                                 "Booked successfully using allocations from: "
@@ -4222,6 +4243,7 @@ def render_availability_tab(is_coach, current_device, resident_ctx=None, coach_c
                                     break
                             if success:
                                 st.session_state["avail_grid_selected_cell"] = None
+                                st.session_state["avail_grid_book_2h"] = False
                                 send_booking_notification_once(
                                     "created",
                                     villa,
