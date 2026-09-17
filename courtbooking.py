@@ -554,11 +554,37 @@ def render_share_or_download_button(jpg_bytes, filename, id_display, key):
     st.iframe(html, height=42)
 
 # --- GMAIL SMTP EMAIL HELPER ---
-def send_gmail_smtp(recipient_email, subject, html_content, ics_content=None, ics_filename="invite.ics"):
+def send_gmail_smtp(recipient_email, subject, html_content, ics_content=None, ics_filename="invite.ics",
+                    bcc_emails=None):
+    """Send an HTML email via Gmail SMTP.
+
+    - recipient_email: primary To address.
+    - bcc_emails: optional list of addresses delivered via BCC (envelope only — no Bcc
+      header is written, so recipients cannot see each other). When bcc_emails is used for
+      a multi-recipient broadcast, pass the system mailbox as recipient_email
+      (e.g. miracourtbooking@gmail.com) so the visible To is not any resident.
+    """
     g_user = st.secrets.get("GMAIL_USER", "devkrea@gmail.com")
     g_pass = st.secrets.get("GMAIL_PASSWORD", "").replace(" ", "")
-    if not g_pass or not recipient_email or "@" not in recipient_email:
+    bcc_list = []
+    if bcc_emails:
+        seen = set()
+        for e in bcc_emails:
+            e_clean = (e or "").strip().lower()
+            if e_clean and "@" in e_clean and e_clean not in seen:
+                seen.add(e_clean)
+                bcc_list.append(e_clean)
+
+    to_addr = (recipient_email or "").strip()
+    if not g_pass:
         return False
+    if not to_addr and not bcc_list:
+        return False
+    if to_addr and "@" not in to_addr:
+        return False
+    if not to_addr:
+        to_addr = g_user
+
     try:
         # Appended to every outgoing email, regardless of template, since every email in the
         # app funnels through this one function. Handles both full HTML-document emails (which
@@ -598,11 +624,15 @@ def send_gmail_smtp(recipient_email, subject, html_content, ics_content=None, ic
 
         msg["Subject"] = subject
         msg["From"] = f"Mira Court Booking <{g_user}>"
-        msg["To"] = recipient_email
+        msg["To"] = to_addr
+        # Intentionally omit Bcc header so recipient clients never see other addresses;
+        # delivery to BCC list is handled only via the SMTP envelope below.
+
+        envelope_recipients = [to_addr] + [e for e in bcc_list if e != to_addr.lower()]
 
         with smtplib.SMTP_SSL("smtp.gmail.com", 465) as server:
             server.login(g_user, g_pass)
-            server.sendmail(g_user, recipient_email, msg.as_string())
+            server.sendmail(g_user, envelope_recipients, msg.as_string())
         return True
     except Exception as e:
         print(f"SMTP Email Error: {e}")
@@ -871,6 +901,83 @@ def send_all_bookings_summary(villa, sub_community, bookings_list, recipient_ema
         return send_gmail_smtp(recipient_email, subject, html_content, ics_content=multi_ics, ics_filename="my_bookings.ics")
     except Exception as e:
         print(f"Error sending summary email: {e}")
+        return False
+
+def _send_broadcast_with_personal_bookings(recipient_email, subject, body_html_inner, merged_bookings):
+    """One individual email: admin notice body + that recipient's own active bookings
+    (same card layout as 'Email Me All My Bookings') + multi-event .ics attachment.
+    Never includes anyone else's bookings."""
+    if not recipient_email or "@" not in recipient_email:
+        return False
+    try:
+        items_html = ""
+        for b in merged_bookings:
+            item_villa = b.get("v", "")
+            item_sub = b.get("sc", "")
+            b_date = datetime.strptime(b["date"], "%Y-%m-%d")
+            formatted_date = b_date.strftime("%A, %b %d, %Y")
+            start_time = min(b["start_hours"])
+            end_time = max(b["start_hours"]) + 1
+            time_display = f"{start_time:02d}:00 - {end_time:02d}:00"
+            duration = len(b["start_hours"])
+            id_list = sorted(b["ids"])
+            id_display = f"#{id_list[0]}" if len(id_list) == 1 else f"#{id_list[0]}-{id_list[-1]}"
+            g_url = get_google_calendar_url(b["court"], b["date"], b["start_hours"], item_sub, item_villa)
+            villa_line = (
+                f'<p style="margin: 4px 0; color: #2d3748;"><b>Villa:</b> {item_sub} - Villa {item_villa}</p>'
+                if item_sub or item_villa else ""
+            )
+            items_html += f"""
+            <div style="background: #f8fafc; padding: 18px; border-radius: 8px; border-left: 5px solid #0d5384; margin-bottom: 15px; border: 1px solid #e2e8f0;">
+                <p style="margin: 4px 0; color: #718096; font-size: 0.8rem;"><b>Reference:</b> {id_display}</p>
+                <p style="margin: 4px 0; font-size: 1.1rem; color: #0d5384;"><b>🎾 {b['court']}</b></p>
+                <p style="margin: 4px 0; color: #2d3748;"><b>Date:</b> {formatted_date}</p>
+                <p style="margin: 4px 0; color: #2d3748;"><b>Time:</b> {time_display} ({duration} hour(s))</p>
+                {villa_line}
+                <p style="margin: 8px 0 4px 0;"><a href="{g_url}" target="_blank" style="color: #0d5384; font-size: 13px; text-decoration: none; font-weight: bold;">📅 Add to Google Calendar</a></p>
+            </div>
+            """
+
+        bookings_section = ""
+        ics_content = None
+        if merged_bookings:
+            bookings_section = f"""
+              <hr style="border: 0; border-top: 1px solid #e2e8f0; margin: 24px 0;">
+              <p style="font-weight: 700; color: #0d5384;">Your active bookings</p>
+              {items_html}
+              <p style="font-size: 13px; color: #718096;">📅 A calendar file with the bookings above is attached — open it to add them to your phone's calendar.</p>
+            """
+            ics_content = generate_multi_ics_content(merged_bookings)
+
+        html_content = f"""
+        <!DOCTYPE html>
+        <html>
+        <head><meta charset="utf-8"></head>
+        <body style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; background-color: #f4f7f6; margin: 0; padding: 0; color: #222;">
+          <div style="max-width: 600px; margin: 30px auto; background: #ffffff; border-radius: 12px; overflow: hidden; border: 1px solid #e1e8ed;">
+            <div style="background: linear-gradient(135deg, #0d5384, #052134); padding: 24px; text-align: center; color: #ffffff;">
+              <h1 style="margin: 0; font-size: 20px;">Mira Court Booking — Community Notice</h1>
+            </div>
+            <div style="padding: 28px; line-height: 1.6;">
+              <div style="white-space: normal;">{body_html_inner}</div>
+              {bookings_section}
+            </div>
+            <div style="background: #f8fafc; padding: 16px; text-align: center; font-size: 12px; color: #718096; border-top: 1px solid #e2e8f0;">
+              Mira Court Booking App • Community Fair-Use Solution
+            </div>
+          </div>
+        </body>
+        </html>
+        """
+        return send_gmail_smtp(
+            recipient_email,
+            subject,
+            html_content,
+            ics_content=ics_content,
+            ics_filename="my_bookings.ics" if ics_content else "invite.ics",
+        )
+    except Exception as e:
+        print(f"Error sending broadcast with personal bookings: {e}")
         return False
 
 # --- DATABASE SETUP ---
@@ -1484,6 +1591,91 @@ def get_villas_with_active_bookings():
         return unique_villas
     except Exception:
         return []
+
+def get_emails_with_active_bookings():
+    """Unique approved resident emails linked to any villa that currently has at least one
+    active (future or remaining-today) booking. Used by the admin Broadcast Email tool."""
+    villas = get_villas_with_active_bookings()
+    emails = set()
+    for v_str in villas:
+        try:
+            sub, villa = v_str.split(" - ", 1)
+            claims = get_claims_for_villa(sub, villa)
+            for c in claims:
+                if c.get("status") == "approved" and c.get("email") and "@" in str(c["email"]):
+                    emails.add(c["email"].strip().lower())
+        except Exception:
+            continue
+    return sorted(emails)
+
+def get_merged_active_bookings_for_email(email):
+    """Collect every active booking across all approved villas claimed by this email,
+    merged into consecutive multi-hour blocks in the same shape expected by
+    send_all_bookings_summary (list of dicts with court/date/start_hours/ids/v/sc).
+    Mirrors what a resident would see if they clicked 'Email Me All My Bookings' for
+    each of their villas, combined into one list."""
+    claims = get_all_villas_for_email(email)
+    approved = [c for c in claims if c.get("status") == "approved"]
+    if not approved:
+        return []
+
+    raw_rows = []
+    for c in approved:
+        sub = c.get("sub_community")
+        villa = c.get("villa")
+        if not sub or villa is None:
+            continue
+        bookings = get_user_bookings(str(villa), sub)
+        for b in bookings:
+            raw_rows.append({
+                "id": b["id"],
+                "court": b["court"],
+                "date": b["date"],
+                "start_hour": b["start_hour"],
+                "v": str(villa),
+                "sc": sub,
+            })
+
+    if not raw_rows:
+        return []
+
+    df = pd.DataFrame(raw_rows).sort_values(["date", "court", "sc", "v", "start_hour"])
+    merged = []
+    current = None
+    for _, row in df.iterrows():
+        if current is None:
+            current = {
+                "court": row["court"],
+                "date": row["date"],
+                "start_hours": [row["start_hour"]],
+                "ids": [row["id"]],
+                "v": row["v"],
+                "sc": row["sc"],
+            }
+        else:
+            same_block = (
+                row["date"] == current["date"]
+                and row["court"] == current["court"]
+                and row["v"] == current["v"]
+                and row["sc"] == current["sc"]
+                and row["start_hour"] == max(current["start_hours"]) + 1
+            )
+            if same_block:
+                current["start_hours"].append(row["start_hour"])
+                current["ids"].append(row["id"])
+            else:
+                merged.append(current)
+                current = {
+                    "court": row["court"],
+                    "date": row["date"],
+                    "start_hours": [row["start_hour"]],
+                    "ids": [row["id"]],
+                    "v": row["v"],
+                    "sc": row["sc"],
+                }
+    if current is not None:
+        merged.append(current)
+    return merged
 
 def get_all_villas_with_any_bookings():
     response = run_query(supabase.table("bookings").select("villa, sub_community"))
@@ -2896,6 +3088,7 @@ Coach accounts exist for tennis coaches who train residents across **several vil
             "📅 Bookings & Villas",
             "🎾 Coach Facility",
             "🗄️ Backup & Housekeeping",
+            "📧 Broadcast Email",
         ])
 
         with admin_tabs[0]:
@@ -3449,6 +3642,255 @@ Coach accounts exist for tennis coaches who train residents across **several vil
                         data = get_zip_data()
                     if data: st.download_button(label="Click here to Download ZIP", data=data, file_name=f"court_booking_full_backup_{get_today()}.zip", mime="application/zip")
                     else: st.error("Failed to fetch data for backup.")
+
+        with admin_tabs[6]:
+            st.markdown("### 📧 Broadcast Email to Residents")
+            st.caption(
+                "Send a one-off announcement to residents who currently have active bookings.\n\n"
+                "**Privacy rules:**\n"
+                "- **No bookings attached** + multiple recipients → one email with "
+                "To: `miracourtbooking@gmail.com` and all addresses in BCC (hidden from each other).\n"
+                "- **Bookings attached** → emails are sent **individually**. Each person only "
+                "receives *their own* active bookings (same content as “Email Me All My Bookings” "
+                "in My Bookings), and To: is their own address."
+            )
+
+            active_emails = get_emails_with_active_bookings()
+            if not active_emails:
+                st.warning("No residents currently have active bookings — nothing to send to.")
+            else:
+                st.info(f"**{len(active_emails)}** unique resident email(s) linked to villas with active bookings.")
+
+                sel_mode = st.radio(
+                    "Recipients",
+                    options=["Select specific emails", "All users with active bookings"],
+                    horizontal=True,
+                    key="broadcast_recipient_mode",
+                )
+
+                if sel_mode == "All users with active bookings":
+                    selected_emails = list(active_emails)
+                    st.caption(f"Will send to all **{len(selected_emails)}** addresses above.")
+                else:
+                    selected_emails = st.multiselect(
+                        "Choose one or more recipient emails",
+                        options=active_emails,
+                        default=[],
+                        key="broadcast_email_multiselect",
+                    )
+
+                broadcast_subject = st.text_input(
+                    "Email subject",
+                    value="",
+                    key="broadcast_subject",
+                    placeholder="e.g. Court maintenance this Sunday",
+                )
+                broadcast_body = st.text_area(
+                    "Email body (plain text — line breaks are preserved)",
+                    value="",
+                    height=180,
+                    key="broadcast_body",
+                    placeholder="Write your message here…",
+                )
+
+                attach_bookings = st.radio(
+                    "Attach each recipient's own active bookings?",
+                    options=[
+                        "No — plain announcement only",
+                        "Yes — include their personal bookings summary + calendar file (sent individually)",
+                    ],
+                    key="broadcast_attach_radio",
+                    help=(
+                        "When enabled, each recipient gets a separate email containing only the "
+                        "bookings for villas registered to their email — never anyone else's."
+                    ),
+                )
+                include_personal_bookings = attach_bookings.startswith("Yes")
+
+                dry_run = st.checkbox(
+                    "🧪 Dry-run: send a test copy to the admin mailbox only (do not email residents)",
+                    value=False,
+                    key="broadcast_dry_run",
+                    help=(
+                        "When checked, nothing is sent to residents. A single test email goes to "
+                        "the app Gmail account (GMAIL_USER / miracourtbooking@gmail.com). "
+                        "If personal bookings are enabled, the first selected recipient's bookings "
+                        "are used as the sample payload so you can preview the layout."
+                    ),
+                )
+
+                n_recip = len(selected_emails)
+                if n_recip == 0:
+                    st.warning("Select at least one recipient.")
+                elif not broadcast_subject.strip():
+                    st.warning("Subject is required.")
+                elif not broadcast_body.strip():
+                    st.warning("Body is required.")
+                else:
+                    admin_mailbox = st.secrets.get("GMAIL_USER", "miracourtbooking@gmail.com")
+                    if dry_run:
+                        st.markdown(
+                            f"**Dry-run mode:** 1 test email → To: `{admin_mailbox}` only. "
+                            "Residents will **not** be contacted."
+                        )
+                        if include_personal_bookings and selected_emails:
+                            st.caption(
+                                f"Sample personal bookings will be taken from: `{selected_emails[0]}`"
+                            )
+                    elif include_personal_bookings:
+                        st.markdown(
+                            f"**Delivery:** {n_recip} individual email(s). "
+                            "Each To: address is the recipient; body includes the admin message "
+                            "plus that person's own active bookings (and a multi-event .ics)."
+                        )
+                    elif n_recip == 1:
+                        st.markdown(f"**Delivery:** 1 email · To: `{selected_emails[0]}`")
+                    else:
+                        st.markdown(
+                            f"**Delivery:** 1 shared email · To: `miracourtbooking@gmail.com` · "
+                            f"BCC: {n_recip} addresses (hidden from each other)"
+                        )
+
+                    btn_label = (
+                        "🧪 Send test to admin only"
+                        if dry_run
+                        else f"📨 Send to {n_recip} recipient{'s' if n_recip != 1 else ''}"
+                    )
+                    if st.button(
+                        btn_label,
+                        type="primary",
+                        use_container_width=True,
+                        key="broadcast_send_btn",
+                    ):
+                        body_escaped = (
+                            broadcast_body.replace("&", "&amp;")
+                            .replace("<", "&lt;")
+                            .replace(">", "&gt;")
+                        )
+                        body_html_inner = body_escaped.replace("\n", "<br>")
+                        notice_html = f"""
+                        <!DOCTYPE html>
+                        <html>
+                        <head><meta charset="utf-8"></head>
+                        <body style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; color: #222; line-height: 1.55;">
+                          <div style="max-width: 600px; margin: 24px auto; padding: 24px; background: #fff; border: 1px solid #e2e8f0; border-radius: 10px;">
+                            <p style="margin: 0 0 16px 0; color: #0d5384; font-weight: 700;">Mira Court Booking — Community Notice</p>
+                            <div style="white-space: normal;">{body_html_inner}</div>
+                            <p style="margin-top: 24px; font-size: 12px; color: #718096;">
+                              You are receiving this because your villa currently has an active court booking.
+                            </p>
+                          </div>
+                        </body>
+                        </html>
+                        """
+                        subject_clean = broadcast_subject.strip()
+
+                        sent_ok = 0
+                        failed = []
+                        with st.spinner("Sending…" if dry_run else f"Sending to {n_recip} recipient(s)…"):
+                            if dry_run:
+                                test_subject = f"[TEST / DRY-RUN] {subject_clean}"
+                                if include_personal_bookings and selected_emails:
+                                    sample_email = selected_emails[0]
+                                    merged = get_merged_active_bookings_for_email(sample_email)
+                                    preview_note = (
+                                        f"<p style='background:#fff3cd;border:1px solid #ffc107;"
+                                        f"padding:10px;border-radius:6px;font-size:13px;'>"
+                                        f"<b>DRY-RUN PREVIEW</b> — sample bookings for "
+                                        f"<code>{sample_email}</code>. Residents were not emailed."
+                                        f"</p>"
+                                    )
+                                    ok = _send_broadcast_with_personal_bookings(
+                                        admin_mailbox,
+                                        test_subject,
+                                        preview_note + body_html_inner,
+                                        merged,
+                                    )
+                                else:
+                                    # Inject a dry-run banner into the plain notice
+                                    dry_banner = (
+                                        "<p style='background:#fff3cd;border:1px solid #ffc107;"
+                                        "padding:10px;border-radius:6px;font-size:13px;'>"
+                                        "<b>DRY-RUN PREVIEW</b> — residents were not emailed. "
+                                        f"This would have gone to {n_recip} recipient(s)."
+                                        "</p>"
+                                    )
+                                    dry_html = notice_html.replace(
+                                        body_html_inner,
+                                        dry_banner + body_html_inner,
+                                        1,
+                                    )
+                                    ok = send_gmail_smtp(admin_mailbox, test_subject, dry_html)
+                                if ok:
+                                    sent_ok = 1
+                                else:
+                                    failed = [admin_mailbox]
+                            elif include_personal_bookings:
+                                for email in selected_emails:
+                                    merged = get_merged_active_bookings_for_email(email)
+                                    ok = _send_broadcast_with_personal_bookings(
+                                        email, subject_clean, body_html_inner, merged
+                                    )
+                                    if ok:
+                                        sent_ok += 1
+                                    else:
+                                        failed.append(email)
+                            elif n_recip == 1:
+                                if send_gmail_smtp(selected_emails[0], subject_clean, notice_html):
+                                    sent_ok = 1
+                                else:
+                                    failed = list(selected_emails)
+                            else:
+                                if send_gmail_smtp(
+                                    "miracourtbooking@gmail.com",
+                                    subject_clean,
+                                    notice_html,
+                                    bcc_emails=selected_emails,
+                                ):
+                                    sent_ok = n_recip
+                                else:
+                                    failed = list(selected_emails)
+
+                        if dry_run:
+                            if sent_ok and not failed:
+                                add_log(
+                                    "Admin Broadcast",
+                                    f"Admin dry-run test email sent to {admin_mailbox} "
+                                    f"(subject: {subject_clean[:80]}; would target {n_recip} resident(s)"
+                                    f"{'; personal bookings' if include_personal_bookings else ''})",
+                                    fingerprint=current_device,
+                                )
+                                st.success(
+                                    f"✅ Test email sent to **{admin_mailbox}**. "
+                                    "No residents were contacted."
+                                )
+                            else:
+                                st.error("❌ Failed to send test email. Check Gmail SMTP credentials in secrets.")
+                        elif sent_ok and not failed:
+                            attach_note = " (with personal bookings)" if include_personal_bookings else ""
+                            add_log(
+                                "Admin Broadcast",
+                                f"Admin sent broadcast email to {sent_ok} recipient(s) "
+                                f"(subject: {subject_clean[:80]}){attach_note}",
+                                fingerprint=current_device,
+                            )
+                            st.success(f"✅ Email sent successfully to {sent_ok} recipient(s){attach_note}.")
+                            time.sleep(1.5)
+                            st.rerun()
+                        elif sent_ok and failed:
+                            add_log(
+                                "Admin Broadcast",
+                                f"Admin broadcast partial success: {sent_ok} sent, {len(failed)} failed "
+                                f"(subject: {subject_clean[:80]})",
+                                fingerprint=current_device,
+                            )
+                            st.warning(
+                                f"Sent to {sent_ok}, but failed for {len(failed)}: "
+                                + ", ".join(failed[:5])
+                                + ("…" if len(failed) > 5 else "")
+                            )
+                        else:
+                            st.error("❌ Failed to send. Check Gmail SMTP credentials in secrets and try again.")
 
     elif admin_pass:
         st.error("Incorrect Password")
