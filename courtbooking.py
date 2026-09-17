@@ -17,6 +17,8 @@ from postgrest.exceptions import APIError
 from PIL import Image, ImageDraw, ImageFont # For dynamic JPG card rendering
 from streamlit_javascript import st_javascript
 import urllib.parse
+import os
+import csv
 
 # Set page configuration to wide mode by default
 st.set_page_config(
@@ -26,20 +28,44 @@ st.set_page_config(
 )
 
 # ==========================================
-# --- LEGENDS OF MIRA — DONOR NAMES & VILLAS (FINALIZED, HARD-CODED) ---
+# --- LEGENDS OF MIRA — DONOR NAMES & VILLAS ---
 # ==========================================
-# This list is now final and no longer pulled from the shared Google Sheet. DONOR_NAMES may
-# still grow over time (new donors can be added here and will appear in the thank-you ticker),
-# but per policy any new donor does NOT receive "Legends of Mira" status — only the villas
-# explicitly listed in DONOR_VILLAS below get the enhanced 8-active-booking allowance. Adding a
-# name to DONOR_NAMES alone does not grant that perk.
-DONOR_NAMES = [
-    "Abhishek", "Adam", "Adebayo", "Alesia", "Alex Loh", "Ameen", "Anastasia", "Angelo", "Arlan", "Ashwini", "Asim", "Cars", "Carlos",
-    "Casey", "Charbel", "Daniel", "Dev", "Elie", "Farheen", "Francois", "Goncalo", "Guru", "Hana", "Harith", "Hatem",
+# Names are loaded from donors.csv, a single-column CSV (header "Name") kept in the same
+# folder as this script/repo. This list is purely for recognition in the thank-you ticker and
+# can be freely edited — adding a name here does NOT grant the "Legends of Mira" 8-active-
+# booking perk. DONOR_VILLAS below is the separate, frozen, closed list that actually grants
+# that perk, and is intentionally NOT read from any file — it only changes via a direct code
+# edit, so a routine edit to donors.csv can never accidentally hand out the perk.
+_FALLBACK_DONOR_NAMES = [
+    "Abhishek", "Adam", "Adebayo", "Alesia", "Ameen", "Anastasia", "Angelo", "Arlan", "Asim", "Carlos",
+    "Charbel", "Dev", "Elie", "Farheen", "Francois", "Goncalo", "Guru", "Hana", "Harith", "Hatem",
     "Hisham", "Katya", "KD", "Khaled", "Laurent", "Leina", "Lisa", "Marko", "Matthieu", "Mei",
     "Melissa", "Mostafa", "Mustafa", "Nick", "Nikki", "Phillip", "Rena", "Ricardo", "Riin", "Saket",
     "SAS", "Sheila", "Sofia", "Teresa", "Timo", "Vik", "Wael", "Yann", "Yousef",
 ]
+
+def load_donor_names():
+    """Reads donor names from donors.csv next to this script — one name per row under a
+    "Name" header. Returns them upper-cased and alphabetically sorted for the ticker. Falls
+    back to the last-known hardcoded list if the file is missing, empty, or unreadable, so a
+    deploy without the file (or a temporary file hiccup) never breaks the ticker."""
+    csv_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "donors.csv")
+    try:
+        with open(csv_path, "r", encoding="utf-8-sig", newline="") as f:
+            reader = csv.reader(f)
+            rows = list(reader)
+        if not rows:
+            raise ValueError("donors.csv is empty")
+        header = [h.strip().lower() for h in rows[0]]
+        data_rows = rows[1:] if header and header[0] == "name" else rows
+        names = [row[0].strip() for row in data_rows if row and row[0].strip()]
+        if not names:
+            raise ValueError("donors.csv has no names")
+        return sorted({n.upper() for n in names})
+    except Exception:
+        return sorted({n.upper() for n in _FALLBACK_DONOR_NAMES})
+
+DONOR_NAMES = load_donor_names()
 
 # Each tuple is (sub_community, villa) — sub_community lowercased and whitespace-collapsed, villa
 # as a plain string — matching the normalization is_donor_villa() applies when checking a booking.
