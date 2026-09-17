@@ -87,7 +87,7 @@ def enforce_active_limits(supabase, donor_villas=None):
 
 def get_synced_dates_history(supabase, lookback_days=30):
     """Returns the set of target dates ('YYYY-MM-DD') for which a Legends of Mira auto-booking
-    has EVER been created for the Mira 1 229/231/233 group — based on a dedicated ledger log
+    has EVER been created for the grp based on a dedicated ledger log
     entry, independent of whether that booking still exists in the `bookings` table.
 
     This is what lets the feature recognize a cancelled auto-booked slot as "already handled"
@@ -137,8 +137,7 @@ def get_synced_dates_history(supabase, lookback_days=30):
 
 def clear_auto_book_ledger_date(supabase, date_str):
     """Deletes the Auto-Book Ledger entry for a specific date, so the next cleanup run treats
-    that date as unhandled again and may auto-book the Legends of Mira (229/231/233) evening
-    slot there once more, if it's still free and the date falls within the usual 15-day window.
+    that date as unhandled again and slot there once more, if it's still free and the date falls within the usual 15-day window.
     This never touches the `bookings` table itself — only the internal marker."""
     try:
         run_query(
