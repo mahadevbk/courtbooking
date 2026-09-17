@@ -3949,7 +3949,247 @@ def render_availability_tab(is_coach, current_device, resident_ctx=None, coach_c
                 row.append(f"{abbr}-{villa_num}")
             else: row.append("Available")
         data[label] = row
-    st.dataframe(pd.DataFrame(data, index=courts).style.map(color_cell), width="stretch")
+    df_avail = pd.DataFrame(data, index=courts)
+    hour_col_labels = list(df_avail.columns)
+
+    # Same visual grid as before, but cells are selectable (Streamlit multi-cell).
+    # Click one or two green "Available" cells to book without using the dropdowns below.
+    grid_event = None
+    try:
+        grid_event = st.dataframe(
+            df_avail.style.map(color_cell),
+            width="stretch",
+            key="avail_grid_click",
+            on_select="rerun",
+            selection_mode="multi-cell",
+        )
+        st.caption(
+            "💡 **Tip:** Click one or two empty (green) slots on the same court to select them, "
+            "then confirm the booking below. Hold Ctrl/Cmd to select a second cell."
+        )
+    except TypeError:
+        # Older Streamlit without dataframe selection — keep the original look only.
+        st.dataframe(df_avail.style.map(color_cell), width="stretch")
+
+    def _parse_avail_grid_cells(event, df):
+        """Normalize Streamlit selection payloads across versions into (court, hour_int, col_label)."""
+        if event is None:
+            return []
+        sel = getattr(event, "selection", None)
+        if sel is None and isinstance(event, dict):
+            sel = event.get("selection")
+        raw = None
+        if sel is not None:
+            raw = getattr(sel, "cells", None)
+            if raw is None and isinstance(sel, dict):
+                raw = sel.get("cells")
+        if not raw:
+            return []
+        parsed = []
+        row_labels = list(df.index)
+        col_labels = list(df.columns)
+        for c in raw:
+            try:
+                if isinstance(c, dict):
+                    r, col = c.get("row"), c.get("column", c.get("col"))
+                elif isinstance(c, (list, tuple)) and len(c) >= 2:
+                    r, col = c[0], c[1]
+                else:
+                    continue
+                # Row may be positional int or index label (court name)
+                if isinstance(r, (int, float)) and not isinstance(r, bool):
+                    r_i = int(r)
+                    if r_i < 0 or r_i >= len(row_labels):
+                        continue
+                    court = row_labels[r_i]
+                else:
+                    court = str(r)
+                    if court not in row_labels:
+                        continue
+                # Column may be positional int or column label (time string)
+                if isinstance(col, (int, float)) and not isinstance(col, bool):
+                    c_i = int(col)
+                    if c_i < 0 or c_i >= len(col_labels):
+                        continue
+                    col_label = col_labels[c_i]
+                else:
+                    col_label = str(col)
+                    if col_label not in col_labels:
+                        continue
+                hour = int(str(col_label).split(":")[0])
+                parsed.append((court, hour, col_label))
+            except Exception:
+                continue
+        # De-dupe while preserving order
+        seen = set()
+        out = []
+        for p in parsed:
+            if p not in seen:
+                seen.add(p)
+                out.append(p)
+        return out
+
+    selected_cells = _parse_avail_grid_cells(grid_event, df_avail)
+    if selected_cells:
+        # Only keep Available cells — ignore clicks on booked/past slots
+        available_cells = [
+            (court, hour, lab)
+            for court, hour, lab in selected_cells
+            if df_avail.loc[court, lab] == "Available"
+        ]
+        if not available_cells and selected_cells:
+            st.warning("Selected slot(s) are not available (booked or past). Click a green **Available** cell.")
+        elif available_cells:
+            courts_sel = {c for c, _, _ in available_cells}
+            hours_sel = sorted({h for _, h, _ in available_cells})
+            if len(courts_sel) > 1:
+                st.error("Please select slots on **one court only**.")
+            elif len(hours_sel) > 2:
+                st.error("You can book at most **2 consecutive hours**. Select one or two slots.")
+            elif len(hours_sel) == 2 and hours_sel[1] != hours_sel[0] + 1:
+                st.error("The two selected hours must be **consecutive** (e.g. 09:00 and 10:00).")
+            else:
+                click_court = next(iter(courts_sel))
+                click_start = hours_sel[0]
+                click_hours = hours_sel
+                # If only one cell selected, optionally offer a 2-hour extension
+                can_extend = False
+                if len(click_hours) == 1:
+                    next_h = click_start + 1
+                    next_lab = f"{next_h:02d}:00 - {next_h+1:02d}:00"
+                    if (
+                        next_lab in df_avail.columns
+                        and df_avail.loc[click_court, next_lab] == "Available"
+                        and not is_slot_in_past(selected_date, next_h)
+                    ):
+                        can_extend = True
+
+                with st.container(border=True):
+                    end_h = click_hours[-1] + 1
+                    st.markdown(
+                        f"**Selected:** 🎾 **{click_court}** · {selected_date} · "
+                        f"**{click_start:02d}:00 – {end_h:02d}:00** "
+                        f"({len(click_hours)} hour{'s' if len(click_hours) != 1 else ''})"
+                    )
+                    extend_2h = False
+                    if can_extend:
+                        extend_2h = st.checkbox(
+                            f"Book 2 hours ({click_start:02d}:00 – {click_start+2:02d}:00)",
+                            key=f"grid_extend_2h_{click_court}_{click_start}_{selected_date}",
+                        )
+                        if extend_2h:
+                            click_hours = [click_start, click_start + 1]
+
+                    if st.button(
+                        f"🚀 Book {click_court} · {click_start:02d}:00 ({len(click_hours)}h)",
+                        type="primary",
+                        key=f"grid_book_btn_{click_court}_{click_start}_{selected_date}",
+                        use_container_width=True,
+                    ):
+                        hours_to_book = list(click_hours)
+                        if is_coach:
+                            success, result = process_coach_booking(
+                                coach_ctx["coach_email"],
+                                coach_ctx["coach_name"],
+                                click_court,
+                                selected_date,
+                                hours_to_book,
+                                fingerprint=current_device,
+                            )
+                            if success:
+                                st.balloons()
+                                st.success(
+                                    "Booked successfully using allocations from: "
+                                    + ", ".join([f"Villa {r['villa']}" for r in result])
+                                )
+                                time.sleep(1.5)
+                                st.rerun()
+                            else:
+                                st.error(result)
+                        else:
+                            villa = resident_ctx["villa"]
+                            sub_community = resident_ctx["sub_community"]
+                            verified_user_email = resident_ctx["verified_user_email"]
+                            active_count = get_active_bookings_count(villa, sub_community)
+                            active_limit = get_active_booking_limit(
+                                sub_community, villa, for_date=selected_date
+                            )
+                            daily_count = get_daily_bookings_count(
+                                villa, sub_community, selected_date
+                            )
+                            q_slots = len(hours_to_book)
+                            valid_hours = get_start_hours_for_date(selected_date)
+                            unavailable = []
+                            for h in hours_to_book:
+                                if (
+                                    h not in valid_hours
+                                    or is_slot_booked(click_court, selected_date, h)
+                                    or is_slot_in_past(selected_date, h)
+                                ):
+                                    unavailable.append(f"{h:02d}:00")
+                            if unavailable:
+                                st.error(f"Slot(s) {', '.join(unavailable)} are unavailable.")
+                            elif active_count + q_slots > active_limit:
+                                st.error(
+                                    f"Limit Reached (Max {active_limit} active). "
+                                    f"You can book {max(0, active_limit - active_count)} more."
+                                )
+                                add_log(
+                                    "Access Denied",
+                                    f"{sub_community} Villa {villa} reached active booking limit ({active_limit})",
+                                    fingerprint=current_device,
+                                )
+                            elif daily_count + q_slots > 2:
+                                st.error(
+                                    f"Daily Limit Reached (Max 2 per day). "
+                                    f"You can book {max(0, 2 - daily_count)} more today."
+                                )
+                                add_log(
+                                    "Access Denied",
+                                    f"{sub_community} Villa {villa} reached daily limit (2) for {selected_date}",
+                                    fingerprint=current_device,
+                                )
+                            else:
+                                success = True
+                                booked_slots = []
+                                for h in hours_to_book:
+                                    if book_slot(
+                                        villa,
+                                        sub_community,
+                                        click_court,
+                                        selected_date,
+                                        h,
+                                        fingerprint=current_device,
+                                    ):
+                                        booked_slots.append(h)
+                                    else:
+                                        success = False
+                                        break
+                                if success:
+                                    send_booking_notification_once(
+                                        "created",
+                                        villa,
+                                        sub_community,
+                                        click_court,
+                                        selected_date,
+                                        booked_slots,
+                                        verified_user_email,
+                                    )
+                                    st.balloons()
+                                    st.success(
+                                        f"Booked {q_slots} slot(s) for {click_court} "
+                                        f"starting at {click_start:02d}:00"
+                                    )
+                                    if verified_user_email and "@" in verified_user_email:
+                                        st.info(
+                                            f"📧 A confirmation email has been sent to "
+                                            f"**{verified_user_email}** from **miracourtbooking@gmail.com**. "
+                                            "If you don't see it, please check your spam/junk folder."
+                                        )
+                                    time.sleep(1.5)
+                                    st.rerun()
+                                else:
+                                    st.error("❌ One or more slots were taken! Please refresh.")
 
     curr_auth = st.query_params.get("auth")
     full_url = f"/?view=full&auth={curr_auth}" if curr_auth else "/?view=full"
