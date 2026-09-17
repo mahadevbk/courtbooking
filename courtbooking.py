@@ -1693,10 +1693,192 @@ def get_bookings_for_villa(villa, sub_community):
     )
     return response.data if response else []
 
+
+def find_double_bookings():
+    """Return groups where the same court + date + start_hour has more than one booking row.
+    Each item: {court, date, start_hour, count, bookings: [{id, villa, sub_community, coach_email}, ...]}
+    """
+    try:
+        rows = []
+        chunk_size = 1000
+        offset = 0
+        while True:
+            res = run_query(
+                supabase.table("bookings")
+                .select("id, court, date, start_hour, villa, sub_community, coach_email")
+                .range(offset, offset + chunk_size - 1)
+            )
+            if not res or res.data is None:
+                break
+            rows.extend(res.data)
+            if len(res.data) < chunk_size:
+                break
+            offset += chunk_size
+        if not rows:
+            return []
+
+        groups = {}
+        for r in rows:
+            key = (r.get("court"), r.get("date"), r.get("start_hour"))
+            groups.setdefault(key, []).append(r)
+
+        duplicates = []
+        for (court, date_str, hour), items in groups.items():
+            if len(items) < 2:
+                continue
+            duplicates.append({
+                "court": court,
+                "date": date_str,
+                "start_hour": hour,
+                "count": len(items),
+                "bookings": [
+                    {
+                        "id": b.get("id"),
+                        "villa": b.get("villa"),
+                        "sub_community": b.get("sub_community"),
+                        "coach_email": b.get("coach_email"),
+                    }
+                    for b in items
+                ],
+            })
+        duplicates.sort(key=lambda d: (d["date"] or "", d["court"] or "", d["start_hour"] or 0))
+        return duplicates
+    except Exception as e:
+        print(f"find_double_bookings error: {e}")
+        return []
+
+
+def _double_booking_signature(dup):
+    """Stable id for a duplicate group so we don't re-email the same conflict every hour."""
+    ids = sorted(str(b.get("id")) for b in dup.get("bookings") or [])
+    return f"{dup.get('court')}|{dup.get('date')}|{dup.get('start_hour')}|{','.join(ids)}"
+
+
+def _already_notified_double_booking(signature, within_hours=24):
+    """True if we already logged this exact double-booking signature recently."""
+    try:
+        cutoff = (get_utc_plus_4() - timedelta(hours=within_hours)).isoformat()
+        res = run_query(
+            supabase.table("logs")
+            .select("id, details")
+            .eq("event_type", "Double Booking Detected")
+            .gte("timestamp", cutoff)
+            .ilike("details", f"%⟦DUP:{signature}⟧%")
+            .limit(1)
+        )
+        return bool(res and res.data)
+    except Exception:
+        return False
+
+
+def notify_admin_of_double_bookings(duplicates, admin_email=None):
+    """Email admin a summary of detected double bookings. Returns True if mail sent."""
+    if not duplicates:
+        return False
+    admin_email = (admin_email or st.secrets.get("ADMIN_NOTIFY_EMAIL")
+                   or st.secrets.get("GMAIL_USER") or "devkrea@gmail.com")
+    if not admin_email or "@" not in admin_email:
+        return False
+
+    rows_html = ""
+    for d in duplicates:
+        holders = []
+        for b in d["bookings"]:
+            who = f"{b.get('sub_community')} Villa {b.get('villa')}"
+            if b.get("coach_email"):
+                who += f" (coach: {b['coach_email']})"
+            holders.append(f"id={b.get('id')} · {who}")
+        holders_list = "<br>".join(f"• {h}" for h in holders)
+        hour = d.get("start_hour")
+        time_disp = f"{int(hour):02d}:00 – {int(hour)+1:02d}:00" if hour is not None else "?"
+        rows_html += f"""
+        <div style="background:#fff5f5;border:1px solid #feb2b2;border-left:5px solid #c53030;
+                    border-radius:8px;padding:14px;margin:12px 0;">
+          <p style="margin:0 0 6px 0;"><b>Court:</b> {d.get('court')} &nbsp;|&nbsp;
+             <b>Date:</b> {d.get('date')} &nbsp;|&nbsp; <b>Time:</b> {time_disp}</p>
+          <p style="margin:0 0 6px 0;"><b>{d.get('count')} overlapping rows:</b></p>
+          <p style="margin:0;font-size:14px;color:#2d3748;">{holders_list}</p>
+        </div>
+        """
+
+    html = f"""
+    <!DOCTYPE html>
+    <html><body style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; color:#222;">
+      <div style="max-width:640px;margin:24px auto;padding:24px;border:1px solid #e2e8f0;border-radius:12px;">
+        <h2 style="color:#c53030;margin-top:0;">⚠️ Double Booking Detected</h2>
+        <p>The Mira Court Booking integrity check found <b>{len(duplicates)}</b> court/date/time
+        slot(s) with more than one booking row in the database.</p>
+        {rows_html}
+        <p style="font-size:13px;color:#718096;">Please review and remove the incorrect row(s) in Admin → Bookings &amp; Villas
+        (or via Supabase). A unique constraint on (court, date, start_hour) should normally prevent this.</p>
+      </div>
+    </body></html>
+    """
+    subject = f"⚠️ Double booking alert — {len(duplicates)} conflict(s) in Mira Court Booking"
+    return send_gmail_smtp(admin_email, subject, html)
+
+
+def check_and_flag_double_bookings(force_notify=False):
+    """Scan for double bookings; log and email admin for any group not notified in the last 24h.
+    Returns (duplicates_list, newly_notified_count).
+    force_notify=True emails even if recently notified (admin manual run).
+    """
+    duplicates = find_double_bookings()
+    if not duplicates:
+        return [], 0
+
+    to_notify = []
+    for d in duplicates:
+        sig = _double_booking_signature(d)
+        d["_signature"] = sig
+        if force_notify or not _already_notified_double_booking(sig, within_hours=24):
+            to_notify.append(d)
+
+    newly = 0
+    if to_notify:
+        ok = notify_admin_of_double_bookings(to_notify)
+        if ok:
+            newly = len(to_notify)
+            for d in to_notify:
+                holders = ", ".join(
+                    f"{b.get('sub_community')} Villa {b.get('villa')} (id={b.get('id')})"
+                    for b in d["bookings"]
+                )
+                hour = d.get("start_hour")
+                time_disp = f"{int(hour):02d}:00" if hour is not None else "?"
+                add_log(
+                    "Double Booking Detected",
+                    f"Double booking on {d.get('court')} {d.get('date')} at {time_disp}: "
+                    f"{d.get('count')} rows — {holders} ⟦DUP:{d['_signature']}⟧",
+                )
+        else:
+            # Still log so the issue is visible even if email fails
+            for d in to_notify:
+                hour = d.get("start_hour")
+                time_disp = f"{int(hour):02d}:00" if hour is not None else "?"
+                add_log(
+                    "Double Booking Detected",
+                    f"Double booking on {d.get('court')} {d.get('date')} at {time_disp} "
+                    f"({d.get('count')} rows) — admin email FAILED ⟦DUP:{d['_signature']}⟧",
+                )
+    return duplicates, newly
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def _run_scheduled_double_booking_check():
+    """Background integrity check at most once per hour per app instance."""
+    try:
+        check_and_flag_double_bookings(force_notify=False)
+    except Exception as e:
+        print(f"scheduled double-booking check error: {e}")
+    return True
+
+
 def _process_background_tasks():
     try:
         purge_out_of_range_records()
         _run_scheduled_log_retention()
+        _run_scheduled_double_booking_check()
         # database_cleanup.py remains separate but we mimic the call
         from database_cleanup import run_db_cleanup
         run_db_cleanup(supabase, courts, donor_villas=DONOR_VILLAS)
@@ -3028,7 +3210,7 @@ def _render_activity_log_table(is_admin):
             if row.event_type in ["Booking Created", "Villa Claim"]: styles[1] = 'background-color: #d4edda; color: #155724; font-weight: bold;'
             elif row.event_type in ["Booking Deleted", "Booking Cancelled", "Villa Claim Removed"]: styles[1] = 'background-color: #f8d7da; color: #721c24; font-weight: bold;'
             elif row.event_type in ["Access Denied", "Claim Held for Review", "Sniping Warning"]: styles[1] = 'background-color: #ffcc00; color: black; font-weight: bold;'
-            elif row.event_type in ["Sniping Penalty", "Sniping Lockout"]: styles[1] = 'background-color: #ff4d4d; color: white; font-weight: bold;'
+            elif row.event_type in ["Sniping Penalty", "Sniping Lockout", "Double Booking Detected"]: styles[1] = 'background-color: #ff4d4d; color: white; font-weight: bold;'
             return styles
 
         st.dataframe(display_df[cols].style.apply(style_rows, axis=1), hide_index=True, width="stretch")
@@ -3134,6 +3316,34 @@ Coach accounts exist for tennis coaches who train residents across **several vil
                 st.info("🏆 Legends of Mira donor perk has ended — all villas are back to the standard 6-slot limit.")
             else:
                 st.info(f"🏆 Legends of Mira donor perk (8 active slots) is running — {_ov_days_left} day(s) left, ends {DONOR_PERK_END_DATE.strftime('%-d %b %Y')}.")
+
+            st.divider()
+            st.markdown("### ⚠️ Double-Booking Integrity Check")
+            st.caption(
+                "Scans the bookings table for the same court + date + hour appearing more than once. "
+                "Runs automatically about once an hour in the background and emails "
+                "**devkrea@gmail.com** (or `ADMIN_NOTIFY_EMAIL` in secrets) when a *new* conflict appears. "
+                "Use the button below to scan now and force a notification."
+            )
+            if st.button("🔍 Scan for double bookings now", key="admin_scan_double_bookings", use_container_width=True):
+                with st.spinner("Scanning bookings table…"):
+                    dups, newly = check_and_flag_double_bookings(force_notify=True)
+                if not dups:
+                    st.success("✅ No double bookings found.")
+                else:
+                    st.error(f"Found **{len(dups)}** conflicting slot(s). Admin notified for {newly} of them.")
+                    for d in dups:
+                        hour = d.get("start_hour")
+                        time_disp = f"{int(hour):02d}:00" if hour is not None else "?"
+                        holders = "; ".join(
+                            f"{b.get('sub_community')} Villa {b.get('villa')} (id={b.get('id')})"
+                            + (f" coach={b.get('coach_email')}" if b.get("coach_email") else "")
+                            for b in d["bookings"]
+                        )
+                        st.warning(
+                            f"**{d.get('court')}** · {d.get('date')} · {time_disp} — "
+                            f"{d.get('count')} rows: {holders}"
+                        )
 
             st.divider()
             st.caption(
