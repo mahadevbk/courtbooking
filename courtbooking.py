@@ -3952,20 +3952,67 @@ def render_availability_tab(is_coach, current_device, resident_ctx=None, coach_c
     df_avail = pd.DataFrame(data, index=courts)
     hour_col_labels = list(df_avail.columns)
 
+    # High-contrast highlight for cells the user has selected on the grid.
+    # Streamlit's default selection tint is too close to the green "Available" fill,
+    # so we also rewrite selected Available cells to a distinct label + amber style.
+    def _color_avail_grid_cell(val):
+        if val in ("★ Selected", "✓ SELECTED", "★ SELECTED"):
+            return (
+                "background-color: #f59e0b; color: #111827; font-weight: 900; "
+                "box-shadow: inset 0 0 0 3px #b45309;"
+            )
+        return color_cell(val)
+
+    # Restore prior selection markers (so the amber cells stay visible after click-rerun)
+    _prev_sel = st.session_state.get("avail_grid_selected_cells") or []
+    display_df = df_avail.copy()
+    for court, hour, lab in _prev_sel:
+        try:
+            if court in display_df.index and lab in display_df.columns:
+                if display_df.loc[court, lab] == "Available":
+                    display_df.loc[court, lab] = "★ Selected"
+        except Exception:
+            pass
+
+    # Strong CSS fallback for environments where the grid is HTML-based (not canvas)
+    st.markdown(
+        """
+        <style>
+        /* Make Streamlit dataframe / data-grid selection unmistakable vs green Available */
+        div[data-testid="stDataFrame"] [aria-selected="true"],
+        div[data-testid="stDataFrameResizable"] [aria-selected="true"],
+        [data-testid="stDataFrame"] div[role="gridcell"][aria-selected="true"] {
+            background-color: #f59e0b !important;
+            color: #111827 !important;
+            font-weight: 800 !important;
+            outline: 3px solid #b45309 !important;
+            outline-offset: -3px !important;
+            box-shadow: inset 0 0 0 2px #92400e !important;
+        }
+        /* Glide data grid selection overlay (best-effort; canvas may ignore this) */
+        div[data-testid="stDataFrame"] canvas + div [style*="rgba(28, 131, 225"] {
+            background: rgba(245, 158, 11, 0.55) !important;
+        }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
     # Same visual grid as before, but cells are selectable (Streamlit multi-cell).
     # Click one or two green "Available" cells to book without using the dropdowns below.
     grid_event = None
     try:
         grid_event = st.dataframe(
-            df_avail.style.map(color_cell),
+            display_df.style.map(_color_avail_grid_cell),
             width="stretch",
             key="avail_grid_click",
             on_select="rerun",
             selection_mode="multi-cell",
         )
         st.caption(
-            "💡 **Tip:** Click one or two empty (green) slots on the same court to select them, "
-            "then confirm the booking below. Hold Ctrl/Cmd to select a second cell."
+            "💡 **Tip:** Click one or two empty (green) slots on the same court to select them — "
+            "they turn **amber ★ Selected**. Then confirm the booking below. "
+            "Hold Ctrl/Cmd to select a second cell."
         )
     except TypeError:
         # Older Streamlit without dataframe selection — keep the original look only.
@@ -4030,6 +4077,28 @@ def render_availability_tab(is_coach, current_device, resident_ctx=None, coach_c
         return out
 
     selected_cells = _parse_avail_grid_cells(grid_event, df_avail)
+    # Persist selection so amber "★ Selected" markers paint on the grid
+    if selected_cells:
+        prev = st.session_state.get("avail_grid_selected_cells") or []
+        st.session_state["avail_grid_selected_cells"] = selected_cells
+        # If markers weren't on the df we just rendered, rerun once so amber shows immediately
+        if prev != selected_cells:
+            st.rerun()
+    elif grid_event is not None:
+        # Explicit empty selection (user cleared) — drop markers
+        sel_obj = getattr(grid_event, "selection", None)
+        if sel_obj is None and isinstance(grid_event, dict):
+            sel_obj = grid_event.get("selection")
+        raw_cells = None
+        if sel_obj is not None:
+            raw_cells = getattr(sel_obj, "cells", None)
+            if raw_cells is None and isinstance(sel_obj, dict):
+                raw_cells = sel_obj.get("cells")
+        if raw_cells is not None and len(raw_cells) == 0:
+            if st.session_state.get("avail_grid_selected_cells"):
+                st.session_state["avail_grid_selected_cells"] = []
+                st.rerun()
+
     if selected_cells:
         # Only keep Available cells — ignore clicks on booked/past slots
         available_cells = [
@@ -4097,6 +4166,7 @@ def render_availability_tab(is_coach, current_device, resident_ctx=None, coach_c
                                 fingerprint=current_device,
                             )
                             if success:
+                                st.session_state["avail_grid_selected_cells"] = []
                                 st.balloons()
                                 st.success(
                                     "Booked successfully using allocations from: "
@@ -4166,6 +4236,7 @@ def render_availability_tab(is_coach, current_device, resident_ctx=None, coach_c
                                         success = False
                                         break
                                 if success:
+                                    st.session_state["avail_grid_selected_cells"] = []
                                     send_booking_notification_once(
                                         "created",
                                         villa,
