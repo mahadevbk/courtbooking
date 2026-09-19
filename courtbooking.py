@@ -4362,6 +4362,25 @@ def render_availability_tab(is_coach, current_device, resident_ctx=None, coach_c
     selected_date_full = st.selectbox("Select Date:", date_options, key="tab1_date_select")
     selected_date = selected_date_full.split(" (")[0]
     bookings_with_details = get_bookings_for_day_with_details(selected_date)
+
+    def _pretty_day(date_str):
+        """'2026-09-21' -> 'Monday, 21 Sep'"""
+        return datetime.strptime(date_str, "%Y-%m-%d").strftime("%A, %d %b")
+
+    def _reset_grid_selection(full=True):
+        """Forget the tapped grid cell. A tapped cell is remembered in TWO places: our own session
+        keys AND the table widget's internal selection (stored under the widget key). Resetting only
+        ours made the table re-report the tap on the next rerun, which re-selected the slot (in
+        1-hour mode). Bumping the nonce gives the table a brand-new widget key, i.e. an empty
+        selection. full=True (the Clear button) also returns the Quick Book pickers to their
+        defaults so the whole booking area is back to a blank state."""
+        st.session_state["avail_grid_selected_cell"] = None
+        st.session_state["avail_grid_book_2h"] = False
+        st.session_state["avail_grid_nonce"] = st.session_state.get("avail_grid_nonce", 0) + 1
+        if full:
+            for _k in ("q_court_select", "q_time_select", "q_2_hours_check"):
+                st.session_state.pop(_k, None)
+
     data = {}
     for h in get_start_hours_for_date(selected_date):
         label = f"{h:02d}:00 - {h+1:02d}:00"
@@ -4480,7 +4499,7 @@ def render_availability_tab(is_coach, current_device, resident_ctx=None, coach_c
         grid_event = st.dataframe(
             display_df.style.map(_color_avail_grid_cell),
             width="stretch",
-            key="avail_grid_click",
+            key=f"avail_grid_click_{st.session_state.get('avail_grid_nonce', 0)}",
             on_select="rerun",
             selection_mode="single-cell",
         )
@@ -4525,7 +4544,7 @@ def render_availability_tab(is_coach, current_device, resident_ctx=None, coach_c
 
         if cell_val != "Available":
             st.warning("That slot is no longer available. Tap another green cell.")
-            st.session_state["avail_grid_selected_cell"] = None
+            _reset_grid_selection(full=False)
         else:
             next_h = click_start + 1
             next_lab = f"{next_h:02d}:00 - {next_h+1:02d}:00"
@@ -4536,9 +4555,11 @@ def render_availability_tab(is_coach, current_device, resident_ctx=None, coach_c
             )
 
             with st.container(border=True):
+                _sel_2h = bool(can_2h and st.session_state.get("avail_grid_book_2h"))
+                _sel_end = click_start + (2 if _sel_2h else 1)
                 st.markdown(
-                    f"**Selected:** 🎾 **{click_court}** · {selected_date} · "
-                    f"**{click_start:02d}:00**"
+                    f"**Selected:** 🎾 **{click_court}** · **{_pretty_day(selected_date)}** · "
+                    f"**{click_start:02d}:00 – {_sel_end:02d}:00**"
                 )
                 if can_2h:
                     _dur_key = f"grid_duration_{click_court}_{click_start}_{selected_date}"
@@ -4582,8 +4603,7 @@ def render_availability_tab(is_coach, current_device, resident_ctx=None, coach_c
                         key=f"grid_clear_{click_court}_{click_start}_{selected_date}",
                         use_container_width=True,
                     ):
-                        st.session_state["avail_grid_selected_cell"] = None
-                        st.session_state["avail_grid_book_2h"] = False
+                        _reset_grid_selection(full=True)
                         st.rerun()
 
                 if do_book:
@@ -4597,8 +4617,7 @@ def render_availability_tab(is_coach, current_device, resident_ctx=None, coach_c
                             fingerprint=current_device,
                         )
                         if success:
-                            st.session_state["avail_grid_selected_cell"] = None
-                            st.session_state["avail_grid_book_2h"] = False
+                            _reset_grid_selection(full=False)
                             st.balloons()
                             st.success(
                                 "Booked successfully using allocations from: "
@@ -4668,8 +4687,7 @@ def render_availability_tab(is_coach, current_device, resident_ctx=None, coach_c
                                     success = False
                                     break
                             if success:
-                                st.session_state["avail_grid_selected_cell"] = None
-                                st.session_state["avail_grid_book_2h"] = False
+                                _reset_grid_selection(full=False)
                                 send_booking_notification_once(
                                     "created",
                                     villa,
@@ -4699,7 +4717,7 @@ def render_availability_tab(is_coach, current_device, resident_ctx=None, coach_c
     if is_coach:
         st.markdown("### ⚡ Quick Book")
         st.caption(
-            f"Booking for **{selected_date}** (change the date above) · Pool: "
+            f"Booking for **{_pretty_day(selected_date)}** (change date above) · Pool: "
             f"**{coach_ctx['total_active']} / {coach_ctx['total_allowed']}** active across {coach_ctx['n_villas']} villa(s). "
             "A 2-hour session that doesn't fit one villa's remaining quota is split across two of your villas automatically."
         )
@@ -4752,7 +4770,7 @@ def render_availability_tab(is_coach, current_device, resident_ctx=None, coach_c
         _q_daily = get_daily_bookings_count_display(villa, sub_community, selected_date)
         _q_timing = "7AM–12AM" if selected_date <= "2026-03-22" else "7AM–10PM"
         st.caption(
-            f"Booking for **{selected_date}** (change the date above) · Slots {_q_timing} · "
+            f"Booking for **{_pretty_day(selected_date)}** (change date above) · Slots {_q_timing} · "
             f"Your active bookings: **{_q_active} / {_q_limit}** · On this date: **{_q_daily} / 2**"
         )
         q_col1, q_col2, q_col3, q_col4 = st.columns([2, 2, 2, 2])
@@ -4821,6 +4839,13 @@ def render_availability_tab(is_coach, current_device, resident_ctx=None, coach_c
                             st.rerun()
                         else:
                             st.error("❌ One or more slots were taken! Please refresh.")
+
+    if q_time:
+        _qs = int(q_time.split(":")[0]); _qn = 2 if q_2_hours else 1
+        st.markdown(
+            f"📌 **{_pretty_day(selected_date)} · {q_court} · {_qs:02d}:00 – {_qs + _qn:02d}:00** "
+            f"({_qn} hr{'s' if _qn > 1 else ''})"
+        )
 
     curr_auth = st.query_params.get("auth")
     full_url = f"/?view=full&auth={curr_auth}" if curr_auth else "/?view=full"
