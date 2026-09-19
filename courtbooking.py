@@ -19,6 +19,8 @@ from streamlit_javascript import st_javascript
 import urllib.parse
 import os
 import csv
+import threading
+from concurrent.futures import ThreadPoolExecutor
 
 # Set page configuration to wide mode by default
 st.set_page_config(
@@ -427,6 +429,7 @@ def _draw_clock_icon(draw, x, y, size=20, color="#ffffff"):
     draw.line([cx, cy, cx, cy - size * 0.32], fill=color, width=2)
     draw.line([cx, cy, cx + size * 0.24, cy + size * 0.14], fill=color, width=2)
 
+@st.cache_data(ttl=3600, max_entries=256, show_spinner=False)
 def generate_booking_card_jpg(id_display, court, sub_community, villa, formatted_date, time_display):
     width, height = 300, 300
     BG_HEX = "#0d5384"
@@ -1065,6 +1068,34 @@ def run_query(query_method):
                 return None
             time.sleep((0.5 * (2 ** attempt)) + random.uniform(0, 0.2))
 
+try:
+    from streamlit.runtime.scriptrunner import add_script_run_ctx, get_script_run_ctx
+except Exception:  # unexpected Streamlit layout -> run_parallel quietly falls back to sequential
+    add_script_run_ctx = get_script_run_ctx = None
+
+def run_parallel(*calls):
+    """Runs independent, zero-argument callables (typically Supabase lookups) at the same time
+    and returns their results in the same order. Waiting on N network round-trips one after
+    another costs N x latency; running them together costs roughly the slowest one.
+    Streamlit's script context is handed to each worker thread so st.* calls made inside a
+    lookup (e.g. run_query's error banner) still work. Falls back to plain sequential
+    execution if that API isn't available. Exceptions propagate exactly as they would have
+    if the callables had been run one by one."""
+    if len(calls) < 2 or get_script_run_ctx is None or add_script_run_ctx is None:
+        return [c() for c in calls]
+    ctx = get_script_run_ctx()
+
+    def _with_ctx(fn):
+        def _inner():
+            if ctx is not None:
+                add_script_run_ctx(threading.current_thread(), ctx)
+            return fn()
+        return _inner
+
+    with ThreadPoolExecutor(max_workers=len(calls)) as pool:
+        futures = [pool.submit(_with_ctx(c)) for c in calls]
+        return [f.result() for f in futures]
+
 def add_log(event_type, details, fingerprint=None):
     timestamp = get_utc_plus_4().isoformat()
     try:
@@ -1186,7 +1217,20 @@ def get_claims_for_villa(sub_community, villa):
     return res.data if res and res.data else []
 
 def get_recent_claim_cooldown(sub_community, villa, requesting_email):
-    claims = get_claims_for_villa(sub_community, villa)
+    return _cooldown_from_claims(get_claims_for_villa(sub_community, villa), requesting_email)
+
+def _find_claim_for_email(claims, email):
+    """First claim in an already-fetched list of a villa's claims that belongs to this email
+    (same result as get_existing_claim(), without another database round-trip)."""
+    email_clean = (email or "").strip().lower()
+    for c in claims or []:
+        if (c.get("email") or "").strip().lower() == email_clean:
+            return c
+    return None
+
+def _cooldown_from_claims(claims, requesting_email):
+    """Cooldown logic of get_recent_claim_cooldown(), working on an already-fetched list of the
+    villa's claims so the login flow can reuse one query for several checks."""
     if not claims:
         return False, None
     req_email_clean = requesting_email.strip().lower()
@@ -1874,14 +1918,32 @@ def _run_scheduled_double_booking_check():
     return True
 
 
-def _process_background_tasks():
+@st.cache_data(ttl=3600, show_spinner=False)
+def _run_scheduled_out_of_range_purge():
+    """Out-of-range villa purge, at most once an hour per app instance. It used to run on EVERY
+    script rerun (every click/keystroke of every user) and downloads the whole villa_claims and
+    bookings tables each time. Villa numbers are already validated at login/booking time, so
+    an hourly sweep is plenty."""
+    purge_out_of_range_records()
+    return True
+
+@st.cache_data(ttl=300, show_spinner=False)
+def _run_scheduled_db_cleanup():
+    """database_cleanup.run_db_cleanup(), throttled to at most once every 5 minutes per app
+    instance instead of on every rerun. Lower ttl if that job is time-critical."""
     try:
-        purge_out_of_range_records()
-        _run_scheduled_log_retention()
-        _run_scheduled_double_booking_check()
-        # database_cleanup.py remains separate but we mimic the call
         from database_cleanup import run_db_cleanup
         run_db_cleanup(supabase, courts, donor_villas=DONOR_VILLAS)
+    except Exception as e:
+        print(f"scheduled db cleanup error: {e}")
+    return True
+
+def _process_background_tasks():
+    try:
+        _run_scheduled_out_of_range_purge()
+        _run_scheduled_log_retention()
+        _run_scheduled_double_booking_check()
+        _run_scheduled_db_cleanup()
     except Exception:
         pass
 
@@ -2151,17 +2213,38 @@ def get_active_ban(email=None, sub_community=None, villa=None):
 def _attempt_resident_login(otp_sub, otp_villa, otp_email_input):
     """Runs the normal resident validation + OTP/PIN routing. Shared by the main login form
     and by the 'Continue as Resident' choice offered to emails that are registered as both
-    a coach and a resident."""
+    a coach and a resident.
+
+    Speed: the old version ran ~6 Supabase queries one after another (three of them fetching
+    the same villa's claims). Now the four independent lookups run concurrently, and the
+    villa's claims are fetched once and reused for the existing-claim, claim-count and
+    cooldown checks. The decision logic and messages are unchanged."""
     max_allowed = SUB_COMMUNITY_VILLA_LIMITS.get(otp_sub, 9999)
     if not otp_sub or not otp_villa:
         st.error("Please specify your Sub-Community and Villa Number.")
-    elif not otp_villa.isdigit() or not (1 <= int(otp_villa) <= max_allowed):
+        return
+    if not otp_villa.isdigit() or not (1 <= int(otp_villa) <= max_allowed):
         st.error(f"Invalid villa number for {otp_sub}. Must be between 1 and {max_allowed}.")
-    elif not otp_email_input or "@" not in otp_email_input:
+        return
+    if not otp_email_input or "@" not in otp_email_input:
         st.error("Please provide a valid email address.")
-    elif (_ban_check := get_active_ban(email=otp_email_input, sub_community=otp_sub, villa=otp_villa))[0]:
-        current_uuid_precheck = st.session_state.get("device_uuid", "device_pending")
-        ban_expiry, ban_reason = _ban_check
+        return
+
+    current_uuid = st.session_state.get("device_uuid", "device_pending")
+    email_clean = otp_email_input.strip().lower()
+
+    with st.spinner("Checking your details..."):
+        ban_check, villa_claims, email_claims, uuid_villas = run_parallel(
+            lambda: get_active_ban(email=otp_email_input, sub_community=otp_sub, villa=otp_villa),
+            lambda: get_claims_for_villa(otp_sub, otp_villa),
+            lambda: get_all_villas_for_email(otp_email_input),
+            lambda: get_uuid_claimed_villas(current_uuid),
+        )
+
+    existing_claim = _find_claim_for_email(villa_claims, email_clean)
+
+    if ban_check[0]:
+        ban_expiry, ban_reason = ban_check
         now_precheck = get_utc_plus_4()
         hours_left = max(1, int((ban_expiry - now_precheck).total_seconds() // 3600))
         until_str = ban_expiry.strftime("%A, %b %d at %H:%M")
@@ -2176,7 +2259,7 @@ def _attempt_resident_login(otp_sub, otp_villa, otp_email_input):
             "Access Denied",
             f"Banned login/registration attempt blocked for {otp_sub} Villa {otp_villa} by {otp_email_input} "
             f"(ban active until {ban_expiry.isoformat()})",
-            fingerprint=current_uuid_precheck
+            fingerprint=current_uuid
         )
         # If this villa is already banned but the SPECIFIC email attempting it isn't the one on
         # record (i.e. someone is trying a fresh email to dodge the lockout), extend the ban to
@@ -2185,68 +2268,72 @@ def _attempt_resident_login(otp_sub, otp_villa, otp_email_input):
         m_existing_email = re.search(r'⟦BAN_EMAIL:(.*?)⟧', ban_reason or "")
         if m_existing_email and m_existing_email.group(1):
             existing_banned_email = m_existing_email.group(1).strip().lower()
-        if not get_existing_claim(otp_sub, otp_villa, otp_email_input) and otp_email_input.strip().lower() != existing_banned_email:
+        if not existing_claim and email_clean != existing_banned_email:
             extra_tag = build_ban_tag(otp_email_input, [(otp_sub, otp_villa)])
             add_log(
                 "Sniping Penalty",
                 f"Ban extended to new email {otp_email_input} attempting to register already-banned "
                 f"villa {otp_sub} Villa {otp_villa} {extra_tag}",
-                fingerprint=current_uuid_precheck
+                fingerprint=current_uuid
             )
-    elif is_disposable_email(otp_email_input):
+        return
+
+    if is_disposable_email(otp_email_input):
         st.error("Disposable/temporary email domains are not allowed. Please use a personal or work email.")
+        return
+
+    current_claims_count = sum(1 for c in (villa_claims or []) if c.get("status") == "approved")
+    email_villas_count = len({
+        f"{c['sub_community']}::{c['villa']}"
+        for c in (email_claims or []) if c.get("status") == "approved"
+    })
+    is_on_cooldown, hours_left = _cooldown_from_claims(villa_claims, otp_email_input)
+    target_pair = f"{otp_sub}::{otp_villa}"
+
+    if not existing_claim and is_on_cooldown:
+        st.error(
+            f"🚫 Security Lockout: This villa ({otp_sub} - Villa {otp_villa}) already has 2 registered emails, "
+            f"with an active 72-hour ownership change cooldown ({hours_left} hours remaining). "
+            "Please contact Dev in Court Maintenance for urgent reassignment."
+        )
+        add_log("Access Denied", f"Villa {otp_sub} Villa {otp_villa} 72h cooldown triggered by {otp_email_input} ({hours_left}h left)", fingerprint=current_uuid)
+    elif not existing_claim and current_claims_count >= 2:
+        st.error(
+            f"🚫 This villa ({otp_sub} - Villa {otp_villa}) already has 2 verified resident emails attached. "
+            "If you recently moved in or need to update your registered email, please reach out via the contact channels in Court Maintenance."
+        )
+    elif not existing_claim and email_villas_count >= 3:
+        st.error(
+            "Unable to register this villa to your email address. "
+            "Please contact Dev via the contact details in Court Maintenance for assistance."
+        )
+        add_log("Access Denied", f"Email {otp_email_input} exceeded 3-villa cap attempting {otp_sub} Villa {otp_villa}", fingerprint=current_uuid)
+    elif not existing_claim and target_pair not in uuid_villas and len(uuid_villas) >= 3:
+        st.error(
+            "This device has reached the maximum allowed registered villas. "
+            "Please contact Dev via Court Maintenance if you require an exception."
+        )
+        add_log("Access Denied", f"Device UUID {current_uuid} blocked from requesting access for 4th villa ({otp_sub} Villa {otp_villa})", fingerprint=current_uuid)
     else:
-        existing_claim = get_existing_claim(otp_sub, otp_villa, otp_email_input)
-        current_claims_count = get_villa_claims_count(otp_sub, otp_villa)
-        email_villas_count = get_email_claimed_villas_count(otp_email_input)
-        is_on_cooldown, hours_left = get_recent_claim_cooldown(otp_sub, otp_villa, otp_email_input)
-        target_pair = f"{otp_sub}::{otp_villa}"
-        current_uuid = st.session_state.get("device_uuid", "device_pending")
-        uuid_villas = get_uuid_claimed_villas(current_uuid)
+        st.session_state.auth_email = otp_email_input
+        st.session_state.auth_sub = otp_sub
+        st.session_state.auth_villa = otp_villa
 
-        if not existing_claim and is_on_cooldown:
-            st.error(
-                f"🚫 Security Lockout: This villa ({otp_sub} - Villa {otp_villa}) already has 2 registered emails, "
-                f"with an active 72-hour ownership change cooldown ({hours_left} hours remaining). "
-                "Please contact Dev in Court Maintenance for urgent reassignment."
-            )
-            add_log("Access Denied", f"Villa {otp_sub} Villa {otp_villa} 72h cooldown triggered by {otp_email_input} ({hours_left}h left)", fingerprint=current_uuid)
-        elif not existing_claim and current_claims_count >= 2:
-            st.error(
-                f"🚫 This villa ({otp_sub} - Villa {otp_villa}) already has 2 verified resident emails attached. "
-                "If you recently moved in or need to update your registered email, please reach out via the contact channels in Court Maintenance."
-            )
-        elif not existing_claim and email_villas_count >= 3:
-            st.error(
-                "Unable to register this villa to your email address. "
-                "Please contact Dev via the contact details in Court Maintenance for assistance."
-            )
-            add_log("Access Denied", f"Email {otp_email_input} exceeded 3-villa cap attempting {otp_sub} Villa {otp_villa}", fingerprint=current_uuid)
-        elif not existing_claim and target_pair not in uuid_villas and len(uuid_villas) >= 3:
-            st.error(
-                "This device has reached the maximum allowed registered villas. "
-                "Please contact Dev via Court Maintenance if you require an exception."
-            )
-            add_log("Access Denied", f"Device UUID {current_uuid} blocked from requesting access for 4th villa ({otp_sub} Villa {otp_villa})", fingerprint=current_uuid)
+        if existing_claim and existing_claim.get("pin"):
+            st.session_state.auth_existing_claim = existing_claim
+            st.session_state.auth_step = "enter_pin"
+            st.rerun()
         else:
-            st.session_state.auth_email = otp_email_input
-            st.session_state.auth_sub = otp_sub
-            st.session_state.auth_villa = otp_villa
-
-            if existing_claim and existing_claim.get("pin"):
-                st.session_state.auth_existing_claim = existing_claim
-                st.session_state.auth_step = "enter_pin"
-                st.rerun()
-            else:
-                with st.spinner("Sending 6-digit verification code..."):
-                    try:
-                        supabase.auth.sign_in_with_otp({"email": otp_email_input})
-                        st.session_state.auth_step = "verify_otp"
-                        st.success(f"✅ Code sent! Please check your inbox at {otp_email_input}")
-                        time.sleep(1.2)
-                        st.rerun()
-                    except Exception as e:
-                        st.error(f"Failed to send code: {str(e)}")
+            with st.spinner("Sending 6-digit verification code..."):
+                try:
+                    supabase.auth.sign_in_with_otp({"email": otp_email_input})
+                    st.session_state.auth_step = "verify_otp"
+                    # Shown once on the next screen. Replaces a fixed 1.2s time.sleep() that
+                    # only existed so the user could read this message before the rerun.
+                    st.session_state.auth_notice = f"✅ Code sent! Please check your inbox at {otp_email_input}"
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"Failed to send code: {str(e)}")
 
 # --- UI STYLING ---
 st.markdown("""
@@ -2304,6 +2391,24 @@ def get_live_active_users_count():
     except Exception:
         return None
 
+@st.cache_data(ttl=30, show_spinner=False)
+def get_home_stats():
+    """Header numbers: (list of villas with active bookings, total active bookings).
+    These used to be 4 uncached queries on every script rerun. Cached for 30s across all
+    sessions (they're cosmetic) and the queries run concurrently when the cache is cold."""
+    today_str = get_today().strftime('%Y-%m-%d')
+    now_hour = get_utc_plus_4().hour
+    villas, res_f, res_t = run_parallel(
+        get_villas_with_active_bookings,
+        lambda: run_query(supabase.table("bookings").select("id", count="exact").gt("date", today_str)),
+        lambda: run_query(supabase.table("bookings").select("id", count="exact").eq("date", today_str).gte("start_hour", now_hour)),
+    )
+    if res_f is None or res_t is None:
+        raise RuntimeError("stats query failed")  # raising means the failure is NOT cached
+    count_f = res_f.count if res_f.count is not None else 0
+    count_t = res_t.count if res_t.count is not None else 0
+    return villas, count_f + count_t
+
 # --- MAIN APP ---
 st.subheader("🎾 Book that Court ...")    
 st.caption("An Un-Official & Community Driven Booking Solution.")
@@ -2318,18 +2423,9 @@ st.markdown(
 
 try:
     _process_background_tasks()
-    villas_active = get_villas_with_active_bookings()
-    today_str = get_today().strftime('%Y-%m-%d')
-    now_hour = get_utc_plus_4().hour
-    
-    res_f = run_query(supabase.table("bookings").select("id", count="exact").gt("date", today_str))
-    res_t = run_query(supabase.table("bookings").select("id", count="exact").eq("date", today_str).gte("start_hour", now_hour))
-    
+    villas_active, total_bookings = get_home_stats()
     total_residences = len(villas_active)
-    count_f = res_f.count if res_f and res_f.count is not None else 0
-    count_t = res_t.count if res_t and res_t.count is not None else 0
-    total_bookings = count_f + count_t
-    
+
     st.write(f"**{total_residences}** Residences have **{total_bookings}** active bookings.")
 except Exception:
     st.write("Unable to load live stats (Network refreshing...)")
@@ -2629,6 +2725,9 @@ if not st.session_state.authenticated:
         st.caption("Forgot your PIN? Ask your admin to reset it for you.")
 
     elif st.session_state.auth_step == "verify_otp":
+        _auth_notice = st.session_state.pop("auth_notice", None)
+        if _auth_notice:
+            st.success(_auth_notice)
         st.info(f"Enter the 6-digit code sent to **{st.session_state.auth_email}** for **{st.session_state.auth_sub} - Villa {st.session_state.auth_villa}**.")
         st.caption("Check your spam/junk folder if the email does not appear in your inbox within a minute.")
         token_input = st.text_input("Enter 6-digit code", max_chars=6, key="otp_token_text").strip()
