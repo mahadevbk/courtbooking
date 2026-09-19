@@ -2083,16 +2083,6 @@ def get_active_bookings_for_villa_display(villa_identifier):
     except Exception:
         return []
 
-@st.cache_data(ttl=300, show_spinner=False)
-def get_peak_time_data():
-    response = run_query(supabase.table("bookings").select("date, start_hour"))
-    if not response or not response.data: return pd.DataFrame()
-    df = pd.DataFrame(response.data)
-    if df.empty: return pd.DataFrame()
-    df['date'] = pd.to_datetime(df['date'])
-    df['day_of_week'] = df['date'].dt.day_name()
-    return df
-
 def get_available_hours(court, date_str):
     # Display-only (fills the time pickers): answered from the shared booking snapshot. Booking
     # itself re-checks the slot against the database, and the DB unique constraint has the last word.
@@ -4363,11 +4353,11 @@ Coach accounts exist for tennis coaches who train residents across **several vil
 
 
 def render_availability_tab(is_coach, current_device, resident_ctx=None, coach_ctx=None, logout_label="🚪 Logout / Change Villa"):
-    """Shared Court Availability tab. The schedule grid, history lookup, community
-    insights and villa lookup are common to residents and coaches; only the Quick Book
-    action differs (single villa vs. pool booking), so it is branched via is_coach.
-    """
-    st.subheader("Court Availability")
+    """Shared Availability & Booking tab: the schedule grid, Quick Book, and the court/villa
+    lookup. Residents and coaches share everything except how Quick Book books (single villa
+    vs. pool of villas), so that part is branched via is_coach. This tab is the whole
+    check-and-book flow; there is no separate Book tab."""
+    st.subheader("Court Availability & Booking")
     date_options = [f"{d.strftime('%Y-%m-%d')} ({d.strftime('%A')})" for d in get_next_14_days()]
     selected_date_full = st.selectbox("Select Date:", date_options, key="tab1_date_select")
     selected_date = selected_date_full.split(" (")[0]
@@ -4705,95 +4695,14 @@ def render_availability_tab(is_coach, current_device, resident_ctx=None, coach_c
                             else:
                                 st.error("❌ One or more slots were taken! Please refresh.")
 
-    curr_auth = st.query_params.get("auth")
-    full_url = f"/?view=full&auth={curr_auth}" if curr_auth else "/?view=full"
-    st.link_button("🌐 View Full 14-Day Schedule (Full Page)", url=full_url)
-
     st.divider()
-    st.subheader("🔍 Court Status & Booking History")
-    st.caption("Check exactly who currently holds a slot, and see its full booking/cancellation history — useful for avoiding conflicts when a slot changed hands.")
-    hist_col1, hist_col2 = st.columns([1, 1])
-    with hist_col1:
-        hist_court = st.selectbox("Select Court", options=courts, key="hist_court_select")
-    with hist_col2:
-        hist_hours = get_start_hours_for_date(selected_date)
-        if hist_hours:
-            hist_hour_labels = [f"{h:02d}:00 - {h+1:02d}:00" for h in hist_hours]
-            hist_time_label = st.selectbox("Select Time Slot", options=hist_hour_labels, key="hist_time_select")
-            hist_hour = hist_hours[hist_hour_labels.index(hist_time_label)]
-        else:
-            hist_hour = None
-            st.warning("No time slots available for this date.")
-
-    if hist_hour is not None:
-        hist_key = (hist_court, hist_hour)
-        if hist_key in bookings_with_details:
-            st.error(f"🔒 Currently **BOOKED** — {bookings_with_details[hist_key]}")
-
-            _bnu_key = f"bnu_pending_{hist_court}_{selected_date}_{hist_hour}"
-            if st.session_state.get(_bnu_key):
-                st.warning(
-                    f"⚠️ You're about to report **{hist_court}** on **{selected_date}** at "
-                    f"**{hist_time_label}** (currently held by {bookings_with_details[hist_key]}) "
-                    "as booked but sitting unused. This will email the resident and add a "
-                    "public note to the Community Activity Log. Only confirm if the court is "
-                    "genuinely empty right now — please don't report a slot as a joke or out of spite."
-                )
-                bnu_c1, bnu_c2 = st.columns(2)
-                with bnu_c1:
-                    if st.button("✅ Yes, Confirm Report", key=f"{_bnu_key}_yes", type="primary", use_container_width=True):
-                        # Re-verify the slot is still actually booked before acting on it —
-                        # it may have been cancelled in the moments since the page loaded.
-                        recheck = run_query(
-                            supabase.table("bookings").select("villa, sub_community")
-                            .eq("court", hist_court).eq("date", selected_date).eq("start_hour", hist_hour)
-                        )
-                        if not recheck or not recheck.data:
-                            st.info("This slot is no longer booked — it looks like it just freed up. No report needed.")
-                        elif is_slot_already_reported(hist_court, selected_date, hist_hour):
-                            st.info("\"Booked but not used\" has already been reported for this slot — no need to report it again.")
-                        else:
-                            r_villa = recheck.data[0]["villa"]
-                            r_sub = recheck.data[0]["sub_community"]
-                            reporter_label = (
-                                f"Coach {coach_ctx['coach_name']}" if is_coach
-                                else f"{resident_ctx['sub_community']} Villa {resident_ctx['villa']}"
-                            )
-                            report_booked_not_used(r_sub, r_villa, hist_court, selected_date, hist_hour, reporter_label)
-                            st.success("Reported — the resident has been emailed, and this has been logged.")
-                        st.session_state.pop(_bnu_key, None)
-                        time.sleep(1.5)
-                        st.rerun()
-                with bnu_c2:
-                    if st.button("Cancel", key=f"{_bnu_key}_no", use_container_width=True):
-                        st.session_state.pop(_bnu_key, None)
-                        st.rerun()
-            else:
-                if is_slot_reported_display(hist_court, selected_date, hist_hour):
-                    st.caption("ℹ️ \"Booked but not used\" has already been reported for this slot.")
-                elif st.button("🚨 Booked but Not Used!", key=f"bnu_btn_{hist_court}_{selected_date}_{hist_hour}"):
-                    st.session_state[_bnu_key] = True
-                    st.rerun()
-        else:
-            st.success("✅ Currently **AVAILABLE**")
-
-        slot_history = get_slot_history(hist_court, selected_date, hist_hour)
-        if slot_history:
-            st.write(f"**📜 History for {hist_court} on {selected_date}, {hist_time_label}:**")
-            for entry in slot_history:
-                if entry["action"] == "booked":
-                    st.markdown(f"- 🟢 **Booked** by {entry['who']} — _{entry['display_time']}_")
-                else:
-                    st.markdown(f"- 🔴 **Cancelled** by {entry['who']} — _{entry['display_time']}_")
-            if len(slot_history) > 1:
-                st.caption("⚠️ This slot has changed hands more than once — please confirm on-court before assuming exclusive access.")
-        else:
-            st.caption("No prior booking activity recorded for this slot.")
-
-    st.divider()
-
     if is_coach:
         st.markdown("### ⚡ Quick Book")
+        st.caption(
+            f"Booking for **{selected_date}** (change the date above) · Pool: "
+            f"**{coach_ctx['total_active']} / {coach_ctx['total_allowed']}** active across {coach_ctx['n_villas']} villa(s). "
+            "A 2-hour session that doesn't fit one villa's remaining quota is split across two of your villas automatically."
+        )
         q_col1, q_col2, q_col3, q_col4 = st.columns([2, 2, 2, 2])
         with q_col1: q_court = st.selectbox("Select Court", options=courts, key="q_court_select")
         with q_col2:
@@ -4833,12 +4742,19 @@ def render_availability_tab(is_coach, current_device, resident_ctx=None, coach_c
                     else:
                         st.error(result)
 
-        st.divider()
     else:
         villa = resident_ctx["villa"]
         sub_community = resident_ctx["sub_community"]
         verified_user_email = resident_ctx["verified_user_email"]
         st.markdown("### ⚡ Quick Book")
+        _q_limit = get_active_booking_limit(sub_community, villa, for_date=selected_date)
+        _q_active = get_active_bookings_count_display(villa, sub_community)
+        _q_daily = get_daily_bookings_count_display(villa, sub_community, selected_date)
+        _q_timing = "7AM–12AM" if selected_date <= "2026-03-22" else "7AM–10PM"
+        st.caption(
+            f"Booking for **{selected_date}** (change the date above) · Slots {_q_timing} · "
+            f"Your active bookings: **{_q_active} / {_q_limit}** · On this date: **{_q_daily} / 2**"
+        )
         q_col1, q_col2, q_col3, q_col4 = st.columns([2, 2, 2, 2])
         with q_col1: q_court = st.selectbox("Select Court", options=courts, key="q_court_select")
         with q_col2:
@@ -4906,41 +4822,99 @@ def render_availability_tab(is_coach, current_device, resident_ctx=None, coach_c
                         else:
                             st.error("❌ One or more slots were taken! Please refresh.")
 
+    curr_auth = st.query_params.get("auth")
+    full_url = f"/?view=full&auth={curr_auth}" if curr_auth else "/?view=full"
+    st.link_button("🌐 View Full 14-Day Schedule (Full Page)", url=full_url)
+
+    with st.expander("🔍 Court & Booking Lookup"):
+        st.caption(f"Check who holds a slot on {selected_date} and its history, or look up a villa's bookings.")
+        st.markdown("**By court & time**")
+        hist_col1, hist_col2 = st.columns([1, 1])
+        with hist_col1:
+            hist_court = st.selectbox("Select Court", options=courts, key="hist_court_select")
+        with hist_col2:
+            hist_hours = get_start_hours_for_date(selected_date)
+            if hist_hours:
+                hist_hour_labels = [f"{h:02d}:00 - {h+1:02d}:00" for h in hist_hours]
+                hist_time_label = st.selectbox("Select Time Slot", options=hist_hour_labels, key="hist_time_select")
+                hist_hour = hist_hours[hist_hour_labels.index(hist_time_label)]
+            else:
+                hist_hour = None
+                st.warning("No time slots available for this date.")
+
+        if hist_hour is not None:
+            hist_key = (hist_court, hist_hour)
+            if hist_key in bookings_with_details:
+                st.error(f"🔒 Currently **BOOKED** — {bookings_with_details[hist_key]}")
+
+                _bnu_key = f"bnu_pending_{hist_court}_{selected_date}_{hist_hour}"
+                if st.session_state.get(_bnu_key):
+                    st.warning(
+                        f"⚠️ You're about to report **{hist_court}** on **{selected_date}** at "
+                        f"**{hist_time_label}** (currently held by {bookings_with_details[hist_key]}) "
+                        "as booked but sitting unused. This will email the resident and add a "
+                        "public note to the Community Activity Log. Only confirm if the court is "
+                        "genuinely empty right now — please don't report a slot as a joke or out of spite."
+                    )
+                    bnu_c1, bnu_c2 = st.columns(2)
+                    with bnu_c1:
+                        if st.button("✅ Yes, Confirm Report", key=f"{_bnu_key}_yes", type="primary", use_container_width=True):
+                            # Re-verify the slot is still actually booked before acting on it —
+                            # it may have been cancelled in the moments since the page loaded.
+                            recheck = run_query(
+                                supabase.table("bookings").select("villa, sub_community")
+                                .eq("court", hist_court).eq("date", selected_date).eq("start_hour", hist_hour)
+                            )
+                            if not recheck or not recheck.data:
+                                st.info("This slot is no longer booked — it looks like it just freed up. No report needed.")
+                            elif is_slot_already_reported(hist_court, selected_date, hist_hour):
+                                st.info("\"Booked but not used\" has already been reported for this slot — no need to report it again.")
+                            else:
+                                r_villa = recheck.data[0]["villa"]
+                                r_sub = recheck.data[0]["sub_community"]
+                                reporter_label = (
+                                    f"Coach {coach_ctx['coach_name']}" if is_coach
+                                    else f"{resident_ctx['sub_community']} Villa {resident_ctx['villa']}"
+                                )
+                                report_booked_not_used(r_sub, r_villa, hist_court, selected_date, hist_hour, reporter_label)
+                                st.success("Reported — the resident has been emailed, and this has been logged.")
+                            st.session_state.pop(_bnu_key, None)
+                            time.sleep(1.5)
+                            st.rerun()
+                    with bnu_c2:
+                        if st.button("Cancel", key=f"{_bnu_key}_no", use_container_width=True):
+                            st.session_state.pop(_bnu_key, None)
+                            st.rerun()
+                else:
+                    if is_slot_reported_display(hist_court, selected_date, hist_hour):
+                        st.caption("ℹ️ \"Booked but not used\" has already been reported for this slot.")
+                    elif st.button("🚨 Booked but Not Used!", key=f"bnu_btn_{hist_court}_{selected_date}_{hist_hour}"):
+                        st.session_state[_bnu_key] = True
+                        st.rerun()
+            else:
+                st.success("✅ Currently **AVAILABLE**")
+
+            slot_history = get_slot_history(hist_court, selected_date, hist_hour)
+            if slot_history:
+                st.write(f"**📜 History for {hist_court} on {selected_date}, {hist_time_label}:**")
+                for entry in slot_history:
+                    if entry["action"] == "booked":
+                        st.markdown(f"- 🟢 **Booked** by {entry['who']} — _{entry['display_time']}_")
+                    else:
+                        st.markdown(f"- 🔴 **Cancelled** by {entry['who']} — _{entry['display_time']}_")
+                if len(slot_history) > 1:
+                    st.caption("⚠️ This slot has changed hands more than once — please confirm on-court before assuming exclusive access.")
+            else:
+                st.caption("No prior booking activity recorded for this slot.")
+
         st.divider()
-
-
-    st.subheader("📊 Community Usage Insights")
-    usage_data = get_peak_time_data()
-    if not usage_data.empty:
-        col_charts1, col_charts2 = st.columns([1, 1])
-        with col_charts1:
-            st.write("**🔥 Busiest Hours**")
-            hour_counts = usage_data['start_hour'].value_counts().sort_index()
-            chart_df = pd.DataFrame({"Bookings": hour_counts.values}, index=[f"{h:02d}:00" for h in hour_counts.index])
-            st.bar_chart(chart_df, color="#4CAF50")
-        with col_charts2:
-            st.write("**📅 Busiest Days**")
-            day_counts = usage_data['day_of_week'].value_counts()
-            days_order = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
-            day_counts = day_counts.reindex(days_order).fillna(0)
-            st.area_chart(day_counts, color="#0d5384")
-        st.write("**Weekly Intensity Heatmap**")
-        heatmap_data = usage_data.groupby(['day_of_week', 'start_hour']).size().unstack(fill_value=0)
-        heatmap_data = heatmap_data.reindex(days_order).fillna(0)
-        try:
-            st.dataframe(heatmap_data.style.background_gradient(cmap="YlGnBu"), width="stretch")
-        except Exception:
-            st.dataframe(heatmap_data, width="stretch")
-    else: st.info("Charts will appear here once more bookings are made!")
-
-    st.divider()
-    st.subheader("🔍 Booking Lookup")
-    if villas_active:
-        look_villa = st.selectbox("Select Villa to see details:", options=["-- Select --"] + villas_active, key="lookup_villa_select")
-        if look_villa != "-- Select --":
-            active_list = get_active_bookings_for_villa_display(look_villa)
-            if active_list: st.selectbox("Active bookings for this villa:", options=active_list, key="lookup_villa_bookings_select")
-            else: st.write("No active bookings found for this villa.")
+        st.markdown("**By villa**")
+        if villas_active:
+            look_villa = st.selectbox("Select Villa to see details:", options=["-- Select --"] + villas_active, key="lookup_villa_select")
+            if look_villa != "-- Select --":
+                active_list = get_active_bookings_for_villa_display(look_villa)
+                if active_list: st.selectbox("Active bookings for this villa:", options=active_list, key="lookup_villa_bookings_select")
+                else: st.write("No active bookings found for this villa.")
 
     st.divider()
     if st.button(logout_label, width='stretch', key="tab1_logout"):
@@ -4968,11 +4942,14 @@ if COACH_FEATURE_ENABLED and st.session_state.get('is_coach'):
     else:
         st.caption("No villas assigned to your pool yet. Contact your admin.")
 
-    coach_ctx = {"coach_email": coach_email, "coach_name": coach_name}
+    coach_ctx = {
+        "coach_email": coach_email, "coach_name": coach_name,
+        "total_allowed": total_allowed, "total_active": total_active, "n_villas": len(assigned_villas),
+    }
 
-    c_tab1, c_tab2, c_tab3, c_tab4, c_tab5 = st.tabs(["📅 Availability", "➕ Book", "📋 My Bookings", "🛠️ Court Maint.", "📜 Activity Log"])
+    c_tab_avail, c_tab_mine, c_tab_maint, c_tab_log = st.tabs(["📅 Availability & Booking", "📋 My Bookings", "🛠️ Court Maint.", "📜 Activity Log"])
 
-    with c_tab1:
+    with c_tab_avail:
         render_whatsapp_banner()
         render_availability_tab(
             is_coach=True,
@@ -4981,51 +4958,7 @@ if COACH_FEATURE_ENABLED and st.session_state.get('is_coach'):
             logout_label="🚪 Logout",
         )
 
-    with c_tab2:
-        render_whatsapp_banner()
-        st.subheader("Book using your Villa Pool")
-        col1, col2, col3 = st.columns(3)
-        col1.metric("Villas in Pool", len(assigned_villas))
-        col2.metric("Total Allowed Quota", total_allowed)
-        col3.metric("Currently Active in Pool", f"{total_active} / {total_allowed}")
-
-        date_options = [f"{d.strftime('%Y-%m-%d')} ({d.strftime('%A')})" for d in get_next_14_days()]
-        date_choice = st.selectbox("Date:", date_options, key="coach_date_select").split(" (")[0]
-        court_choice = st.selectbox("Court:", courts, key="coach_court_select")
-
-        all_bookings = run_query(supabase.table("bookings").select("start_hour").eq("court", court_choice).eq("date", date_choice))
-        booked_hours = [r['start_hour'] for r in all_bookings.data] if all_bookings and all_bookings.data else []
-        free_hours = [h for h in get_start_hours_for_date(date_choice) if h not in booked_hours and not is_slot_in_past(date_choice, h)]
-
-        if not free_hours:
-            st.warning("No slots available.")
-            time_choice = None
-        else:
-            time_choice = st.selectbox("Time Slot:", [f"{h:02d}:00 - {h+1:02d}:00" for h in free_hours], key="coach_time_select")
-
-        slots_2_hours = st.checkbox("Book for 2 hours", disabled=(not time_choice or int(time_choice.split(":")[0])+1 not in free_hours))
-        st.caption("If a 2-hour session doesn't fit inside one villa's remaining quota, we'll automatically split it across two of your assigned villas.")
-
-        if st.button("🚀 Book as Coach", type="primary"):
-            if not time_choice:
-                st.error("Select time.")
-            else:
-                start_h = int(time_choice.split(":")[0])
-                hours_to_book = [start_h, start_h+1] if slots_2_hours else [start_h]
-                success, result = process_coach_booking(coach_email, coach_name, court_choice, date_choice, hours_to_book, fingerprint=current_device)
-                if success:
-                    st.balloons()
-                    st.success("Booked successfully using allocations from: " + ", ".join([f"Villa {r['villa']}" for r in result]))
-                    time.sleep(2)
-                    st.rerun()
-                else:
-                    st.error(result)
-
-        st.divider()
-        if st.button("🚪 Logout", width="stretch", key="coach_book_logout"):
-            logout_action()
-
-    with c_tab3:
+    with c_tab_mine:
         render_whatsapp_banner()
         st.subheader("📋 My Coach Bookings")
         my_coach_b = get_coach_bookings(coach_email)
@@ -5093,11 +5026,11 @@ if COACH_FEATURE_ENABLED and st.session_state.get('is_coach'):
                         time.sleep(1)
                         st.rerun()
 
-    with c_tab4:
+    with c_tab_maint:
         render_whatsapp_banner()
         render_court_maintenance_tab(f"Coach {coach_name}", current_device)
 
-    with c_tab5:
+    with c_tab_log:
         render_whatsapp_banner()
         render_activity_log_tab(current_device)
 
@@ -5144,9 +5077,9 @@ else:
         )
         show_sniping_warning_dialog(hopping_villas)
 
-    tab1, tab2, tab3, tab4, tab5 = st.tabs(["📅 Availability", "➕ Book", "📋 My Bookings", "🛠️ Court Maint.", "📜 Activity Log"])
+    tab_avail, tab_mine, tab_maint, tab_log = st.tabs(["📅 Availability & Booking", "📋 My Bookings", "🛠️ Court Maint.", "📜 Activity Log"])
 
-    with tab1:
+    with tab_avail:
         render_whatsapp_banner()
         render_availability_tab(
             is_coach=False,
@@ -5154,94 +5087,7 @@ else:
             resident_ctx={"villa": villa, "sub_community": sub_community, "verified_user_email": verified_user_email},
         )
 
-    with tab2:
-        render_whatsapp_banner()
-        st.subheader("Book a New Slot")
-        date_options = [f"{d.strftime('%Y-%m-%d')} ({d.strftime('%A')})" for d in get_next_14_days()]
-        selected_date_full = st.selectbox("Date:", date_options, key="tab2_date_select")
-        date_choice = selected_date_full.split(" (")[0]
-        
-        if date_choice <= "2026-03-22":
-            timing_msg = "7AM to 12AM slots."
-        else:
-            timing_msg = "7AM to 10PM slots."
-        
-        tab2_active_limit = get_active_booking_limit(sub_community, villa, for_date=date_choice)
-        st.info(f"App allows {tab2_active_limit} Active bookings spanning 14 days, A maximum of 2 active bookings per day. Current date choice timing: **{timing_msg}**")
-        court_choice = st.selectbox("Court:", courts, key="tab2_court_select")
-        free_hours = get_available_hours(court_choice, date_choice)
-        if not free_hours:
-            st.warning(f"😔 Sorry, no slots available for {court_choice} on {date_choice}."); time_choice = None
-        else:
-            time_options = [f"{h:02d}:00 - {h+1:02d}:00" for h in free_hours]
-            time_choice = st.selectbox("Time Slot:", time_options, key="tab2_time_select")
-        
-        tab2_label = "Book for 2 hours"
-        tab2_disabled = False
-        if time_choice:
-            t2_start_h = int(time_choice.split(":")[0])
-            t2_next_h = t2_start_h + 1
-            t2_valid_hours = get_start_hours_for_date(date_choice)
-            if t2_next_h not in t2_valid_hours or is_slot_booked_display(court_choice, date_choice, t2_next_h) or is_slot_in_past(date_choice, t2_next_h):
-                tab2_disabled = True
-                tab2_label = "2nd slot unavailable"
-            else:
-                tab2_label = f"Book for 2 hours ({t2_start_h:02d}:00 to {t2_start_h+2:02d}:00)"
-                
-        slots_2_hours = st.checkbox(tab2_label, key="tab2_slots_2_hours", disabled=tab2_disabled)
-        slots_choice = 2 if slots_2_hours else 1
-
-        active_count = get_active_bookings_count_display(villa, sub_community)
-        
-        daily_count = get_daily_bookings_count_display(villa, sub_community, date_choice)
-        col_status1, col_status2 = st.columns(2)
-        with col_status1: st.info(f"Total active bookings: **{active_count} / {tab2_active_limit}**")
-        with col_status2: st.info(f"Bookings for {date_choice}: **{daily_count} / 2**")
-        
-        if st.button("Book This Slot", type="primary"):
-            active_count_latest = get_active_bookings_count(villa, sub_community)
-            active_limit_latest = get_active_booking_limit(sub_community, villa, for_date=date_choice)
-            
-            daily_count_latest = get_daily_bookings_count(villa, sub_community, date_choice)
-            if not time_choice:
-                st.error("Please select an available time slot.")
-            else:
-                start_h = int(time_choice.split(":")[0])
-                slots_to_book = list(range(start_h, start_h + slots_choice))
-                valid_hours = get_start_hours_for_date(date_choice)
-                unavailable = []
-                for h in slots_to_book:
-                    if h not in valid_hours or is_slot_booked(court_choice, date_choice, h) or is_slot_in_past(date_choice, h):
-                        unavailable.append(f"{h:02d}:00")
-                if unavailable:
-                    st.error(f"Slot(s) {', '.join(unavailable)} are unavailable.")
-                elif active_count_latest + slots_choice > active_limit_latest: 
-                    st.error(f"🚫 Overall limit reached. You can book {max(0, active_limit_latest-active_count_latest)} more slots.")
-                    add_log("Access Denied", f"{sub_community} Villa {villa} reached active booking limit ({active_limit_latest})", fingerprint=current_device)
-                elif daily_count_latest + slots_choice > 2:
-                    st.error(f"🚫 Daily limit reached. You can book {max(0, 2-daily_count_latest)} more on {date_choice}.")
-                    add_log("Access Denied", f"{sub_community} Villa {villa} reached daily limit (2) for {date_choice}", fingerprint=current_device)
-                else:
-                    success = True
-                    booked_slots = []
-                    for h in slots_to_book:
-                        if book_slot(villa, sub_community, court_choice, date_choice, h, fingerprint=current_device):
-                            booked_slots.append(h)
-                        else:
-                            success = False
-                            break
-                    if success:
-                        send_booking_notification_once("created", villa, sub_community, court_choice, date_choice, booked_slots, verified_user_email)
-                        st.balloons()
-                        st.success(f"✅ SUCCESS! {court_choice} booked for {date_choice} starting at {start_h:02d}:00 ({slots_choice} slot(s))")
-                        if verified_user_email and "@" in verified_user_email:
-                            st.info(f"📧 A confirmation email has been sent to **{verified_user_email}** from **miracourtbooking@gmail.com**. If you don't see it, please check your spam/junk folder.")
-                        time.sleep(2.5) 
-                        st.rerun()
-                    else:
-                        st.error("❌ One or more slots were taken! Please refresh.")
-
-    with tab3:
+    with tab_mine:
         render_whatsapp_banner()
         st.subheader("📋 My Bookings")
         court_locations = {
@@ -5417,11 +5263,11 @@ else:
             if st.button("🚪 Logout / Change Villa", width='stretch'):
                 logout_action()
 
-    with tab4:
+    with tab_maint:
         render_whatsapp_banner()
         render_court_maintenance_tab(f"{sub_community} Villa {villa}", current_device)
 
-    with tab5:
+    with tab_log:
         render_whatsapp_banner()
         render_activity_log_tab(current_device)
 
