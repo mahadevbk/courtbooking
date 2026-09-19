@@ -322,7 +322,104 @@ def render_donor_ticker(names):
 
 render_donor_ticker(DONOR_NAMES)
 
-st.info("🕘 **Update:** New booking slots for the 15th day now open at **9:00 PM** the night before, instead of 12:00 AM — so you don't have to stay up past midnight to grab a spot.")
+# ==========================================
+# --- ANNOUNCEMENTS (announcements.csv) ---
+# ==========================================
+# To post an announcement, add a row to announcements.csv (same folder as this script) with a
+# Date and the Announcement text. It appears in the Announcements tab, newest first — no code
+# change needed. The date can be written like "1 Sep 2026", "1. Sep. 2026", "01 September 2026",
+# "2026-09-01" or "01/09/2026" (day first). A row whose date can't be read is still shown, after
+# the dated ones, so a typo never makes an announcement disappear. If the file is missing or
+# unreadable the tab simply says there are no announcements; it never breaks the app.
+_ANNOUNCEMENT_DATE_FORMATS = ("%d %b %Y", "%d %B %Y", "%Y-%m-%d", "%d/%m/%Y", "%d-%m-%Y", "%b %d %Y", "%B %d %Y")
+
+def _parse_announcement_date(raw):
+    """Best-effort date from the CSV's Date cell, or None."""
+    txt = re.sub(r"[.,]", " ", (raw or "").replace("\xa0", " "))
+    txt = re.sub(r"\bsept\b", "sep", " ".join(txt.split()), flags=re.I)
+    for fmt in _ANNOUNCEMENT_DATE_FORMATS:
+        try:
+            return datetime.strptime(txt, fmt).date()
+        except ValueError:
+            continue
+    return None
+
+def _clean_announcement_text(text):
+    """Tidy spreadsheet artefacts (non-breaking spaces, doubled spaces) but keep intentional line
+    breaks, and escape '$' so two of them can't turn a stretch of text into a maths formula."""
+    lines = [" ".join(l.replace("\xa0", " ").split()) for l in (text or "").splitlines()]
+    return "  \n".join(l for l in lines if l).replace("$", "\\$")
+
+@st.cache_data(show_spinner=False)
+def _read_announcements(csv_path, file_mtime):
+    """file_mtime is only part of the cache key: saving the file busts the cache, so a new row
+    shows up on the very next interaction instead of after some timeout."""
+    with open(csv_path, "r", encoding="utf-8-sig", newline="") as f:
+        rows = [r for r in csv.reader(f) if any(c.strip() for c in r)]
+    if not rows:
+        return []
+    head = [h.strip().lower() for h in rows[0]]
+    if head and head[0] == "date":
+        i_date = 0
+        i_text = head.index("announcement") if "announcement" in head else 1
+        rows = rows[1:]
+    else:
+        i_date, i_text = 0, 1
+    items = []
+    for order, row in enumerate(rows):
+        raw_date = row[i_date].strip() if len(row) > i_date else ""
+        # Everything from the text column onward, so an unquoted comma in the text can't cut it short.
+        text = _clean_announcement_text(", ".join(c.strip() for c in row[i_text:] if c.strip()))
+        if not text:
+            continue
+        d = _parse_announcement_date(raw_date)
+        items.append({
+            "order": order,
+            "iso": d.isoformat() if d else "",
+            "label": d.strftime("%-d %b %Y") if d else raw_date,
+            "text": text,
+        })
+    # Newest first; same-day entries: the one lower in the file is treated as newer; undated last.
+    dated = sorted((i for i in items if i["iso"]), key=lambda i: (i["iso"], i["order"]), reverse=True)
+    undated = sorted((i for i in items if not i["iso"]), key=lambda i: i["order"], reverse=True)
+    return dated + undated
+
+def load_announcements():
+    csv_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "announcements.csv")
+    try:
+        return _read_announcements(csv_path, os.path.getmtime(csv_path))
+    except Exception:
+        return []
+
+# The Announcements tab shows a red dot for this many days after an announcement's date (the day
+# itself plus this many days after it), so a new post is hard to miss without needing any
+# per-user "read" tracking. Change the number to lengthen or shorten it.
+ANNOUNCEMENT_NEW_DAYS = 3
+
+def has_recent_announcement():
+    """True if any announcement is dated from today back to ANNOUNCEMENT_NEW_DAYS days ago.
+    Future-dated or undated rows never trigger the dot (so a typo'd date can't leave it on)."""
+    today = get_today()
+    for it in load_announcements():
+        if not it["iso"]:
+            continue
+        age = (today - datetime.strptime(it["iso"], "%Y-%m-%d").date()).days
+        if 0 <= age <= ANNOUNCEMENT_NEW_DAYS:
+            return True
+    return False
+
+def announcements_tab_label():
+    return "📢 Announcements" + (" 🔴" if has_recent_announcement() else "")
+
+def render_announcements_tab():
+    items = load_announcements()
+    if not items:
+        st.info("No announcements yet.")
+        return
+    for it in items:
+        with st.container(border=True):
+            st.caption(f"📅 {it['label']}")
+            st.markdown(it["text"])
 
 # --- ICS & SQUARE JPG CARD GENERATOR HELPERS ---
 def generate_ics_content(court, date_str, start_hours, sub_community, villa):
@@ -2528,24 +2625,36 @@ def get_home_stats():
 
 # --- MAIN APP ---
 st.subheader("🎾 Book that Court ...")    
-st.caption("An Un-Official & Community Driven Booking Solution.")
+# Logged-in users should see the app itself first (tabs right under the title), especially on a
+# phone. So the tagline, user count, live stats and "logged in as" line are shown in full on the
+# login screen only; once logged in they move to a small footer just above the Logout button
+# (see render_availability_tab). The values are computed either way (villas_active is needed later).
+_show_full_header = not st.session_state.get("authenticated", False)
+if _show_full_header:
+    st.caption("An Un-Official & Community Driven Booking Solution.")
 _live_user_count = get_live_active_users_count()
 _user_count_label = f"{_live_user_count:,}" if _live_user_count else "2,450"
-st.markdown(
-    "<p style='color:#ccff00; font-weight:700; margin-top:-8px;'>"
-    f"Serving {_user_count_label} active users, the app is community coded and funded."
-    "</p>",
-    unsafe_allow_html=True,
-)
+if _show_full_header:
+    st.markdown(
+        "<p style='color:#ccff00; font-weight:700; margin-top:-8px;'>"
+        f"Serving {_user_count_label} active users, the app is community coded and funded."
+        "</p>",
+        unsafe_allow_html=True,
+    )
 
+total_residences = total_bookings = 0
+_stats_ok = True
 try:
     _process_background_tasks()
     villas_active, total_bookings = get_home_stats()
     total_residences = len(villas_active)
 
-    st.write(f"**{total_residences}** Residences have **{total_bookings}** active bookings.")
+    if _show_full_header:
+        st.write(f"**{total_residences}** Residences have **{total_bookings}** active bookings.")
 except Exception:
-    st.write("Unable to load live stats (Network refreshing...)")
+    _stats_ok = False
+    if _show_full_header:
+        st.write("Unable to load live stats (Network refreshing...)")
     villas_active = []
 
 if 'authenticated' not in st.session_state:
@@ -4755,6 +4864,19 @@ def render_availability_tab(is_coach, current_device, resident_ctx=None, coach_c
                 else: st.write("No active bookings found for this villa.")
 
     st.divider()
+    if is_coach:
+        _who = f"Coach **{coach_ctx['coach_name']}** · {coach_ctx['coach_email']}  \n🎾 {coach_ctx['villa_line']}"
+    else:
+        _who = f"**{sub_community} - Villa {villa}** · {verified_user_email}"
+    _live = (
+        f"**{total_residences}** residences have **{total_bookings}** active bookings  \n"
+        if _stats_ok else "Live stats are refreshing…  \n"
+    )
+    st.caption(
+        f"✅ Logged in as {_who}  \n"
+        f"🏘️ {_live}"
+        f"Serving {_user_count_label} active users — community coded and funded."
+    )
     if st.button(logout_label, width='stretch', key="tab1_logout"):
         logout_action()
 
@@ -4766,7 +4888,6 @@ if COACH_FEATURE_ENABLED and st.session_state.get('is_coach'):
     coach_email = st.session_state.coach_email
     coach_name = st.session_state.coach_name
     current_device = st.session_state.get("device_uuid")
-    st.success(f"✅ Logged in as Coach: **{coach_name}** (`{coach_email}`)")
 
     assigned_villas, total_allowed, total_active = get_coach_dashboard_stats(coach_email)
 
@@ -4776,16 +4897,17 @@ if COACH_FEATURE_ENABLED and st.session_state.get('is_coach'):
             v_active = get_active_bookings_count(v['villa'], v['sub_community'])
             v_limit = get_active_booking_limit(v['sub_community'], v['villa'])
             villa_summary_bits.append(f"{v['sub_community']} Villa {v['villa']} ({v_active}/{v_limit})")
-        st.caption(" • ".join(villa_summary_bits))
+        _coach_villa_line = " • ".join(villa_summary_bits)
     else:
-        st.caption("No villas assigned to your pool yet. Contact your admin.")
+        _coach_villa_line = "No villas assigned to your pool yet. Contact your admin."
 
     coach_ctx = {
+        "villa_line": _coach_villa_line,   # shown in the footer above Logout, not above the tabs
         "coach_email": coach_email, "coach_name": coach_name,
         "total_allowed": total_allowed, "total_active": total_active, "n_villas": len(assigned_villas),
     }
 
-    c_tab_avail, c_tab_mine, c_tab_maint, c_tab_log = st.tabs(["📅 Availability & Booking", "📋 My Bookings", "🛠️ Court Maint.", "📜 Activity Log"])
+    c_tab_avail, c_tab_mine, c_tab_maint, c_tab_log, c_tab_news = st.tabs(["📅 Availability & Booking", "📋 My Bookings", "🛠️ Court Maint.", "📜 Activity Log", announcements_tab_label()])
 
     with c_tab_avail:
         render_whatsapp_banner()
@@ -4872,14 +4994,15 @@ if COACH_FEATURE_ENABLED and st.session_state.get('is_coach'):
         render_whatsapp_banner()
         render_activity_log_tab(current_device)
 
+    with c_tab_news:
+        render_announcements_tab()
+
 else:
     # ----------------------------------------
     # STANDARD RESIDENT DASHBOARD
     # ----------------------------------------
     sub_community, villa = st.session_state.sub_community, st.session_state.villa
     verified_user_email = st.session_state.get("verified_email", "Verified")
-    st.success(f"✅ Logged in as: **{sub_community} - Villa {villa}** (`{verified_user_email}`)")
-
     if is_donor_villa(sub_community, villa):
         render_donor_legend_banner()
 
@@ -4915,7 +5038,7 @@ else:
         )
         show_sniping_warning_dialog(hopping_villas)
 
-    tab_avail, tab_mine, tab_maint, tab_log = st.tabs(["📅 Availability & Booking", "📋 My Bookings", "🛠️ Court Maint.", "📜 Activity Log"])
+    tab_avail, tab_mine, tab_maint, tab_log, tab_news = st.tabs(["📅 Availability & Booking", "📋 My Bookings", "🛠️ Court Maint.", "📜 Activity Log", announcements_tab_label()])
 
     with tab_avail:
         render_whatsapp_banner()
@@ -5108,6 +5231,9 @@ else:
     with tab_log:
         render_whatsapp_banner()
         render_activity_log_tab(current_device)
+
+    with tab_news:
+        render_announcements_tab()
 
 col1, col2 = st.columns([1, 5])
 with col1: st.markdown(f'<img src="https://raw.githubusercontent.com/mahadevbk/courtbooking/main/qr-code.miracourtbooking.streamlit.app.png" height="100">', unsafe_allow_html=True)
