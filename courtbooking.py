@@ -2624,6 +2624,36 @@ def get_home_stats():
     return sorted({f"{r['sub_community']} - {r['villa']}" for r in active}), len(active)
 
 # --- MAIN APP ---
+# Log-in state must be settled BEFORE anything is drawn. A browser refresh starts a brand-new session
+# (logged out), and the login is then restored from the ?auth= / ?cauth= link in the URL. That restore
+# used to happen ~150 lines below the header, in the same run, so a refreshed logged-in page showed the
+# login-screen header (tagline, "Serving…", live stats) above the tabs. Restoring first fixes that.
+if 'authenticated' not in st.session_state:
+    st.session_state.authenticated = False
+if 'is_coach' not in st.session_state:
+    st.session_state.is_coach = False
+
+url_token = st.query_params.get("auth")
+if url_token and not st.session_state.authenticated:
+    verified_claim = decode_auth_token(url_token)
+    if verified_claim and verified_claim.get("email"):
+        st.session_state.sub_community = verified_claim["sub_community"]
+        st.session_state.villa = verified_claim["villa"]
+        st.session_state.verified_email = verified_claim["email"]
+        st.session_state.authenticated = True
+        st.session_state.is_coach = False
+
+url_coach_token = st.query_params.get("cauth")
+if COACH_FEATURE_ENABLED and url_coach_token and not st.session_state.authenticated:
+    verified_coach_email = decode_coach_token(url_coach_token)
+    if verified_coach_email:
+        coach_restore = run_query(supabase.table("coach_accounts").select("*").eq("email", verified_coach_email).eq("is_active", True))
+        if coach_restore and coach_restore.data:
+            st.session_state.authenticated = True
+            st.session_state.is_coach = True
+            st.session_state.coach_email = verified_coach_email
+            st.session_state.coach_name = coach_restore.data[0].get("coach_name", "Coach")
+
 st.subheader("🎾 Book that Court ...")    
 # Logged-in users should see the app itself first (tabs right under the title), especially on a
 # phone. So the tagline, user count, live stats and "logged in as" line are shown in full on the
@@ -2657,11 +2687,6 @@ except Exception:
         st.write("Unable to load live stats (Network refreshing...)")
     villas_active = []
 
-if 'authenticated' not in st.session_state:
-    st.session_state.authenticated = False
-if 'is_coach' not in st.session_state:
-    st.session_state.is_coach = False
-
 js_device_fetch = st_javascript("""
     (function() {
         let devId = localStorage.getItem('court_device_uuid');
@@ -2692,27 +2717,6 @@ if "is_mobile_device" not in st.session_state:
     # of the native share sheet.
     if isinstance(ua_check, str) and ua_check in ("mobile", "desktop"):
         st.session_state.is_mobile_device = (ua_check == "mobile")
-
-url_token = st.query_params.get("auth")
-if url_token and not st.session_state.authenticated:
-    verified_claim = decode_auth_token(url_token)
-    if verified_claim and verified_claim.get("email"):
-        st.session_state.sub_community = verified_claim["sub_community"]
-        st.session_state.villa = verified_claim["villa"]
-        st.session_state.verified_email = verified_claim["email"]
-        st.session_state.authenticated = True
-        st.session_state.is_coach = False
-
-url_coach_token = st.query_params.get("cauth")
-if COACH_FEATURE_ENABLED and url_coach_token and not st.session_state.authenticated:
-    verified_coach_email = decode_coach_token(url_coach_token)
-    if verified_coach_email:
-        coach_restore = run_query(supabase.table("coach_accounts").select("*").eq("email", verified_coach_email).eq("is_active", True))
-        if coach_restore and coach_restore.data:
-            st.session_state.authenticated = True
-            st.session_state.is_coach = True
-            st.session_state.coach_email = verified_coach_email
-            st.session_state.coach_name = coach_restore.data[0].get("coach_name", "Coach")
 
 if COACH_FEATURE_ENABLED and not st.session_state.authenticated:
     stored_coach_email = st_javascript("localStorage.getItem('court_coach_email') || '';", key="js_stored_coach")
@@ -3536,6 +3540,7 @@ def _render_activity_log_table(is_admin):
             elif row.event_type in ["Booking Deleted", "Booking Cancelled", "Villa Claim Removed"]: styles[1] = 'background-color: #f8d7da; color: #721c24; font-weight: bold;'
             elif row.event_type in ["Access Denied", "Claim Held for Review", "Sniping Warning"]: styles[1] = 'background-color: #ffcc00; color: black; font-weight: bold;'
             elif row.event_type in ["Sniping Penalty", "Sniping Lockout", "Double Booking Detected"]: styles[1] = 'background-color: #ff4d4d; color: white; font-weight: bold;'
+            elif row.event_type == "Booked but not used": styles[1] = 'background-color: #ff9800; color: black; font-weight: bold;'  # warning orange: distinct from yellow (denied/warning) and red (penalties)
             return styles
 
         st.dataframe(display_df[cols].style.apply(style_rows, axis=1), hide_index=True, width="stretch")
