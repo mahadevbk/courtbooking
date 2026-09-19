@@ -2687,7 +2687,7 @@ except Exception:
         st.write("Unable to load live stats (Network refreshing...)")
     villas_active = []
 
-js_device_fetch = st_javascript("""
+_DEVICE_ID_JS = """
     (function() {
         let devId = localStorage.getItem('court_device_uuid');
         if (!devId) {
@@ -2696,7 +2696,36 @@ js_device_fetch = st_javascript("""
         }
         return devId;
     })();
-""", key="js_device_fetch")
+"""
+_UA_CHECK_JS = """
+        (function() {
+            const ua = navigator.userAgent || '';
+            return /Mobi|Android|iPhone|iPad|iPod/i.test(ua) ? 'mobile' : 'desktop';
+        })();
+    """
+
+# Where the two invisible browser helpers (device id + phone/desktop check) are drawn:
+#  * Login screen (not logged in): right here, because their results are needed immediately (the
+#    device id is written back to the browser and enforces the max-villas-per-device rule).
+#  * Logged in: at the very END of the page (render_deferred_helpers, below the footer). They only
+#    keep values in sync there, and drawn up here each one reserved space in the layout: a blank band
+#    between the title and the tabs. Their last reported value is read from session_state instead;
+#    the components still report on every run they are drawn, exactly as before.
+# Decided once per run, so a component can never be drawn twice in the same run.
+_helpers_deferred = bool(st.session_state.authenticated)
+
+def render_deferred_helpers():
+    """Logged-in pages: draw the invisible helpers at the end of the page (no-op on the login screen)."""
+    if not _helpers_deferred:
+        return
+    st_javascript(_DEVICE_ID_JS, key="js_device_fetch")
+    if "is_mobile_device" not in st.session_state:
+        st_javascript(_UA_CHECK_JS, key="js_ua_check")
+
+if _helpers_deferred:
+    js_device_fetch = st.session_state.get("js_device_fetch")   # last value the browser reported
+else:
+    js_device_fetch = st_javascript(_DEVICE_ID_JS, key="js_device_fetch")
 
 if isinstance(js_device_fetch, str) and js_device_fetch.startswith("dev_"):
     st.session_state.device_uuid = js_device_fetch
@@ -2704,12 +2733,10 @@ elif "device_uuid" not in st.session_state:
     st.session_state.device_uuid = f"dev_{random.randint(10000000, 99999999)}_{int(time.time())}"
 
 if "is_mobile_device" not in st.session_state:
-    ua_check = st_javascript("""
-        (function() {
-            const ua = navigator.userAgent || '';
-            return /Mobi|Android|iPhone|iPad|iPod/i.test(ua) ? 'mobile' : 'desktop';
-        })();
-    """, key="js_ua_check")
+    if _helpers_deferred:
+        ua_check = st.session_state.get("js_ua_check")
+    else:
+        ua_check = st_javascript(_UA_CHECK_JS, key="js_ua_check")
     # st_javascript returns None/0 on the very first render while it waits for the browser
     # round-trip. Only lock in a result once we actually get "mobile" or "desktop" back —
     # otherwise this was permanently caching is_mobile_device=False before the real value
@@ -5034,6 +5061,7 @@ else:
             fingerprint=current_device
         )
         show_sniping_lockout_dialog(cooldown_hrs)
+        render_deferred_helpers()
         st.stop()
     elif sniping_level == 1 and not st.session_state.get("seen_sniping_warning", False):
         add_log(
@@ -5248,3 +5276,5 @@ with col2: st.markdown("""
     <a href='https://devs-scripts.streamlit.app/' style='color: #ccff00;'>Other Scripts by dev</a> on Streamlit.
     </div>
     """, unsafe_allow_html=True)
+
+render_deferred_helpers()   # invisible; last on purpose so it takes no space between the title and the tabs
