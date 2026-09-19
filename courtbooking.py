@@ -2549,6 +2549,12 @@ st.markdown("""
 h1, h2, h3, .stTitle { font-family: 'Audiowide', cursive !important; color: #2c3e50; }
 .stButton>button { background-color: #4CAF50; color: white; font-family: 'Audiowide', cursive; }
 .stDataFrame th { font-family: 'Audiowide', cursive; font-size: 12px; background-color: #2c3e50 !important; color: white !important; }
+/* Headings inside the tabs ("Court Availability & Booking", "My Bookings", section headings...) at HALF
+   of Streamlit's default sizes (h1 2.75rem, h2 2.25rem, h3 1.75rem), keeping their proportions. The page
+   title above the tabs is outside the tab panels, so it is unaffected. */
+div[role="tabpanel"] h1 { font-size: 1.375rem !important; }
+div[role="tabpanel"] h2 { font-size: 1.125rem !important; }
+div[role="tabpanel"] h3 { font-size: 0.875rem !important; }
 </style>
 """, unsafe_allow_html=True)
 
