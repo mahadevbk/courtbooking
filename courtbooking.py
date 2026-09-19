@@ -751,7 +751,14 @@ def send_booking_notification_once(action_type, villa, sub_community, court, dat
     if signature in sent_signatures:
         return
     sent_signatures.add(signature)
-    send_booking_notification(action_type, villa, sub_community, court, date_str, start_hours, recipient_email)
+    # SMTP connect + login + send takes 1-3s. Nothing here needs its result (failures are only
+    # printed), so send it from a background thread and let the click return immediately.
+    # The once-only bookkeeping above stays on the request thread (it uses session_state).
+    threading.Thread(
+        target=send_booking_notification,
+        args=(action_type, villa, sub_community, court, date_str, list(start_hours), recipient_email),
+        daemon=True,
+    ).start()
 
 def report_booked_not_used(sub_community, villa, court, date_str, hour, reporter_label):
     """Notifies the villa's registered resident email(s) that their booking was flagged as
@@ -799,6 +806,7 @@ def report_booked_not_used(sub_community, villa, court, date_str, hour, reporter
         f"({time_display}, {formatted_date}) — {new_count} report(s) in the last 30 days."
     )
     add_log("Booked but not used", f"{public_part} Reported by {reporter_label}. {slot_tag}")
+    invalidate_booking_caches()
 
 def is_slot_already_reported(court, date_str, hour):
     """True if this exact court/date/hour slot has already had a 'Booked but not used' report
@@ -811,6 +819,12 @@ def is_slot_already_reported(court, date_str, hour):
         .limit(1)
     )
     return bool(res and res.data)
+
+@st.cache_data(ttl=30, show_spinner=False)
+def is_slot_reported_display(court, date_str, hour):
+    """Display-only cached twin of is_slot_already_reported(). The confirm-report button still
+    calls the uncached original so two people can't file the same report."""
+    return is_slot_already_reported(court, date_str, hour)
 
 def notify_owner_of_coach_booking(coach_name, villa, sub_community, court, date_str, hour, action="booked"):
     owner_res = run_query(supabase.table("villa_claims").select("email").eq("sub_community", sub_community).eq("villa", villa).eq("status", "approved"))
@@ -1254,6 +1268,7 @@ def _cooldown_from_claims(claims, requesting_email):
                 pass
     return False, None
 
+@st.cache_data(ttl=15, show_spinner=False)
 def check_device_sniping_status(device_uuid, current_email, current_sub, current_villa):
     if not device_uuid or device_uuid in ("no_uuid", "device_pending"):
         return 0, [], 0
@@ -1378,7 +1393,62 @@ def get_all_claimed_villas():
     unique_villas = sorted(list(set([f"{row['sub_community']} - {row['villa']}" for row in res.data])))
     return unique_villas
 
-def get_bookings_for_day_with_details(date_str):
+# --- BOOKING-WINDOW SNAPSHOT (the "prefetch") ---
+# Nearly every screen needs the same thing: who has booked what over the coming days. Instead of
+# each widget asking Supabase again on every rerun (and again for every date the user flips to),
+# the whole window (yesterday onward, ~2 weeks) is fetched ONCE and shared by every session for
+# a few seconds. The grid, date switching, court/time pickers, "My Bookings", the header stats
+# and the 2-hour checks are all served from memory. Every WRITE-path check (booking limits,
+# "is this slot still free") still queries the database directly, and the bookings table's
+# unique constraint stays the final arbiter of a double booking, so a slightly stale display can
+# never cause a double booking. The acting user's own changes appear instantly because writes
+# call invalidate_booking_caches(); other people's changes appear within BOOKING_SNAPSHOT_TTL.
+BOOKING_SNAPSHOT_TTL = 10
+
+@st.cache_data(ttl=BOOKING_SNAPSHOT_TTL, show_spinner=False)
+def get_booking_window_snapshot():
+    since = (get_today() - timedelta(days=1)).strftime('%Y-%m-%d')
+    rows, start, page = [], 0, 1000
+    while True:
+        res = run_query(
+            supabase.table("bookings")
+            .select("id, court, date, start_hour, villa, sub_community, coach_email")
+            .gte("date", since).order("id").range(start, start + page - 1)
+        )
+        if res is None:
+            raise RuntimeError("bookings snapshot failed")  # raising => NOT cached; callers fall back to direct queries
+        chunk = res.data or []
+        rows.extend(chunk)
+        if len(chunk) < page:
+            break
+        start += page
+    return rows, since
+
+def _snapshot_rows():
+    """(rows, since_date) from the shared snapshot, or (None, None) if it couldn't be fetched."""
+    try:
+        return get_booking_window_snapshot()
+    except Exception:
+        return None, None
+
+def _upcoming_rows(rows):
+    """Rows that are still 'active': later than today, or today at/after the current hour.
+    Evaluated against the live clock at call time, never frozen inside the cache."""
+    today_str = get_today().strftime('%Y-%m-%d')
+    now_hour = get_utc_plus_4().hour
+    return [r for r in rows if r['date'] > today_str or (r['date'] == today_str and r['start_hour'] >= now_hour)]
+
+def invalidate_booking_caches():
+    """Called after any booking write so whoever just acted sees fresh data immediately.
+    Everyone else picks the change up within the short cache TTLs."""
+    for name in ("get_booking_window_snapshot", "_get_home_stats_from_queries", "get_slot_history",
+                 "is_slot_reported_display", "check_device_sniping_status", "get_logs_last_14_days"):
+        try:
+            globals()[name].clear()
+        except Exception:
+            pass
+
+def _fetch_bookings_for_day(date_str):
     response = run_query(
         supabase.table("bookings")
         .select("court, start_hour, sub_community, villa")
@@ -1387,6 +1457,38 @@ def get_bookings_for_day_with_details(date_str):
     )
     if not response or not response.data: return {}
     return {(row['court'], row['start_hour']): f"{row['sub_community']} - {row['villa']}" for row in response.data}
+
+def get_bookings_for_day_with_details(date_str):
+    rows, since = _snapshot_rows()
+    if rows is not None and date_str >= since:
+        return {(r['court'], r['start_hour']): f"{r['sub_community']} - {r['villa']}" for r in rows if r['date'] == date_str}
+    return _fetch_bookings_for_day(date_str)
+
+def is_slot_booked_display(court, date_str, start_hour):
+    """DISPLAY-ONLY 'is this slot taken' (e.g. greying out the 2-hour option), answered from the
+    snapshot. Anything that decides whether a booking is allowed uses is_slot_booked() instead."""
+    return (court, start_hour) in get_bookings_for_day_with_details(date_str)
+
+def get_active_bookings_count_display(villa, sub_community):
+    """Display-only twin of get_active_bookings_count(), served from the snapshot."""
+    rows, _since = _snapshot_rows()
+    if rows is None:
+        return get_active_bookings_count(villa, sub_community)
+    return sum(1 for r in _upcoming_rows(rows) if str(r['villa']) == str(villa) and r['sub_community'] == sub_community)
+
+def get_daily_bookings_count_display(villa, sub_community, date_str):
+    """Display-only twin of get_daily_bookings_count() (same Mira 1 shared-villa rule)."""
+    rows, since = _snapshot_rows()
+    if rows is None or date_str < since:
+        return get_daily_bookings_count(villa, sub_community, date_str)
+    day = [r for r in rows if r['date'] == date_str]
+    mira1_group = ["229", "231", "233"]
+    if sub_community == "Mira 1" and villa in mira1_group:
+        others = [v for v in mira1_group if v != villa]
+        if any(r['sub_community'] == "Mira 1" and str(r['villa']) in others for r in day):
+            return 99
+        return sum(1 for r in day if r['sub_community'] == "Mira 1" and str(r['villa']) == str(villa))
+    return sum(1 for r in day if r['sub_community'] == sub_community and str(r['villa']) == str(villa))
 
 def abbreviate_community(full_name):
     if full_name.startswith("Mira Oasis"):
@@ -1408,13 +1510,14 @@ def color_cell(val):
 def get_active_bookings_count(villa, sub_community):
     today_str = get_today().strftime('%Y-%m-%d')
     now_hour = get_utc_plus_4().hour
-    q_future = supabase.table("bookings").select("id", count="exact")
-    q_future = q_future.eq("villa", villa).eq("sub_community", sub_community)
-    res_future = run_query(q_future.gt("date", today_str))
+    def _future():
+        q = supabase.table("bookings").select("id", count="exact").eq("villa", villa).eq("sub_community", sub_community)
+        return run_query(q.gt("date", today_str))
+    def _today():
+        q = supabase.table("bookings").select("id", count="exact").eq("villa", villa).eq("sub_community", sub_community)
+        return run_query(q.eq("date", today_str).gte("start_hour", now_hour))
+    res_future, res_today = run_parallel(_future, _today)  # independent -> one round-trip instead of two
     count_future = res_future.count if res_future and res_future.count is not None else 0
-    q_today = supabase.table("bookings").select("id", count="exact")
-    q_today = q_today.eq("villa", villa).eq("sub_community", sub_community)
-    res_today = run_query(q_today.eq("date", today_str).gte("start_hour", now_hour))
     count_today = res_today.count if res_today and res_today.count is not None else 0
     return count_future + count_today
 
@@ -1469,6 +1572,7 @@ def book_slot(villa, sub_community, court, date_str, start_hour, fingerprint=Non
             log_detail = f"{sub_community} Villa {villa} booked {court} for {date_str} at {start_hour:02d}:00"
             
         add_log("Booking Created", log_detail, fingerprint=fingerprint)
+        invalidate_booking_caches()
         return True
     except APIError as e:
         if e.code == "23505":
@@ -1487,6 +1591,7 @@ def delete_booking(booking_id, villa, sub_community, fingerprint=None, coach_ema
             log_detail = f"{sub_community} Villa {villa} cancelled {b['court']} for {b['date']} at {b['start_hour']:02d}:00"
         add_log("Booking Deleted", log_detail, fingerprint=fingerprint)
     run_query(supabase.table("bookings").delete().eq("id", booking_id))
+    invalidate_booking_caches()
 
 # --- COACH SPECIFIC HELPER FUNCTIONS ---
 
@@ -1562,7 +1667,7 @@ def convert_df_to_csv(df):
     return df.to_csv(index=False).encode('utf-8')
 
 # --- USER & MISC HELPERS ---
-def get_user_bookings(villa, sub_community):
+def _fetch_user_bookings(villa, sub_community):
     today_str = get_today().strftime('%Y-%m-%d')
     now_hour = get_utc_plus_4().hour
     response = run_query(
@@ -1576,6 +1681,20 @@ def get_user_bookings(villa, sub_community):
     )
     return response.data if response else []
 
+def get_user_bookings(villa, sub_community):
+    """A villa's own active (non-coach) bookings, served from the shared snapshot."""
+    rows, _since = _snapshot_rows()
+    if rows is None:
+        return _fetch_user_bookings(villa, sub_community)
+    mine = [
+        {"id": r["id"], "court": r["court"], "date": r["date"], "start_hour": r["start_hour"]}
+        for r in _upcoming_rows(rows)
+        if str(r["villa"]) == str(villa) and r["sub_community"] == sub_community and r.get("coach_email") is None
+    ]
+    mine.sort(key=lambda b: (b["date"], b["start_hour"]))
+    return mine
+
+@st.cache_data(ttl=30, show_spinner=False)
 def get_slot_history(court, date_str, start_hour):
     pattern = f"%{court} for {date_str} at {start_hour:02d}:00%"
     response = run_query(
@@ -1964,6 +2083,7 @@ def get_active_bookings_for_villa_display(villa_identifier):
     except Exception:
         return []
 
+@st.cache_data(ttl=300, show_spinner=False)
 def get_peak_time_data():
     response = run_query(supabase.table("bookings").select("date, start_hour"))
     if not response or not response.data: return pd.DataFrame()
@@ -1974,11 +2094,9 @@ def get_peak_time_data():
     return df
 
 def get_available_hours(court, date_str):
-    response = run_query(supabase.table("bookings").select("start_hour").eq("court", court).eq("date", date_str))
-    if not response or not response.data:
-        booked_hours = []
-    else:
-        booked_hours = [row['start_hour'] for row in response.data]
+    # Display-only (fills the time pickers): answered from the shared booking snapshot. Booking
+    # itself re-checks the slot against the database, and the DB unique constraint has the last word.
+    booked_hours = [h for (c, h) in get_bookings_for_day_with_details(date_str) if c == court]
     available = []
     for h in get_start_hours_for_date(date_str):
         if h not in booked_hours and not is_slot_in_past(date_str, h):
@@ -2392,7 +2510,7 @@ def get_live_active_users_count():
         return None
 
 @st.cache_data(ttl=30, show_spinner=False)
-def get_home_stats():
+def _get_home_stats_from_queries():
     """Header numbers: (list of villas with active bookings, total active bookings).
     These used to be 4 uncached queries on every script rerun. Cached for 30s across all
     sessions (they're cosmetic) and the queries run concurrently when the cache is cold."""
@@ -2408,6 +2526,15 @@ def get_home_stats():
     count_f = res_f.count if res_f.count is not None else 0
     count_t = res_t.count if res_t.count is not None else 0
     return villas, count_f + count_t
+
+def get_home_stats():
+    """(villas with active bookings, total active bookings) from the shared snapshot, falling
+    back to the direct queries above if the snapshot is unavailable."""
+    rows, _since = _snapshot_rows()
+    if rows is None:
+        return _get_home_stats_from_queries()
+    active = _upcoming_rows(rows)
+    return sorted({f"{r['sub_community']} - {r['villa']}" for r in active}), len(active)
 
 # --- MAIN APP ---
 st.subheader("🎾 Book that Court ...")    
@@ -4642,7 +4769,7 @@ def render_availability_tab(is_coach, current_device, resident_ctx=None, coach_c
                         st.session_state.pop(_bnu_key, None)
                         st.rerun()
             else:
-                if is_slot_already_reported(hist_court, selected_date, hist_hour):
+                if is_slot_reported_display(hist_court, selected_date, hist_hour):
                     st.caption("ℹ️ \"Booked but not used\" has already been reported for this slot.")
                 elif st.button("🚨 Booked but Not Used!", key=f"bnu_btn_{hist_court}_{selected_date}_{hist_hour}"):
                     st.session_state[_bnu_key] = True
@@ -4684,7 +4811,7 @@ def render_availability_tab(is_coach, current_device, resident_ctx=None, coach_c
                 q_start_h = int(q_time.split(":")[0])
                 q_next_h = q_start_h + 1
                 q_valid_hours = get_start_hours_for_date(selected_date)
-                if q_next_h not in q_valid_hours or is_slot_booked(q_court, selected_date, q_next_h) or is_slot_in_past(selected_date, q_next_h):
+                if q_next_h not in q_valid_hours or is_slot_booked_display(q_court, selected_date, q_next_h) or is_slot_in_past(selected_date, q_next_h):
                     q_disabled = True
                     q_label = "2nd slot unavailable"
                 else:
@@ -4729,7 +4856,7 @@ def render_availability_tab(is_coach, current_device, resident_ctx=None, coach_c
                 q_start_h = int(q_time.split(":")[0])
                 q_next_h = q_start_h + 1
                 q_valid_hours = get_start_hours_for_date(selected_date)
-                if q_next_h not in q_valid_hours or is_slot_booked(q_court, selected_date, q_next_h) or is_slot_in_past(selected_date, q_next_h):
+                if q_next_h not in q_valid_hours or is_slot_booked_display(q_court, selected_date, q_next_h) or is_slot_in_past(selected_date, q_next_h):
                     q_disabled = True
                     q_label = "2nd slot unavailable"
                 else:
@@ -5055,7 +5182,7 @@ else:
             t2_start_h = int(time_choice.split(":")[0])
             t2_next_h = t2_start_h + 1
             t2_valid_hours = get_start_hours_for_date(date_choice)
-            if t2_next_h not in t2_valid_hours or is_slot_booked(court_choice, date_choice, t2_next_h) or is_slot_in_past(date_choice, t2_next_h):
+            if t2_next_h not in t2_valid_hours or is_slot_booked_display(court_choice, date_choice, t2_next_h) or is_slot_in_past(date_choice, t2_next_h):
                 tab2_disabled = True
                 tab2_label = "2nd slot unavailable"
             else:
@@ -5064,9 +5191,9 @@ else:
         slots_2_hours = st.checkbox(tab2_label, key="tab2_slots_2_hours", disabled=tab2_disabled)
         slots_choice = 2 if slots_2_hours else 1
 
-        active_count = get_active_bookings_count(villa, sub_community)
+        active_count = get_active_bookings_count_display(villa, sub_community)
         
-        daily_count = get_daily_bookings_count(villa, sub_community, date_choice)
+        daily_count = get_daily_bookings_count_display(villa, sub_community, date_choice)
         col_status1, col_status2 = st.columns(2)
         with col_status1: st.info(f"Total active bookings: **{active_count} / {tab2_active_limit}**")
         with col_status2: st.info(f"Bookings for {date_choice}: **{daily_count} / 2**")
