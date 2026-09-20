@@ -2555,8 +2555,8 @@ h1, h2, h3, .stTitle { font-family: 'Audiowide', cursive !important; color: #2c3
 div[role="tabpanel"] h1 { font-size: 1.375rem !important; }
 div[role="tabpanel"] h2 { font-size: 1.125rem !important; }
 div[role="tabpanel"] h3 { font-size: 0.875rem !important; }
-/* Tab labels ("Book", "Mine", "Maint.", "Log", "News") in the same font as the page title. Audiowide is a
-   wide font, which is why the labels are kept short: all five stay (at least partly) visible on a phone. */
+/* Tab labels ("Plan & Book", "My Bookings", "Maint.", "Log", "News") in the same font as the page title.
+   Audiowide is a wide font, which is why the labels are kept fairly short. */
 [role="tab"], [role="tab"] p, [role="tab"] div { font-family: 'Audiowide', cursive !important; }
 </style>
 """, unsafe_allow_html=True)
@@ -4948,7 +4948,7 @@ if COACH_FEATURE_ENABLED and st.session_state.get('is_coach'):
         "total_allowed": total_allowed, "total_active": total_active, "n_villas": len(assigned_villas),
     }
 
-    c_tab_avail, c_tab_mine, c_tab_maint, c_tab_log, c_tab_news = st.tabs(["📅 Book", "📋 Mine", "🛠️ Maint.", "📜 Log", announcements_tab_label()])
+    c_tab_avail, c_tab_mine, c_tab_maint, c_tab_log, c_tab_news = st.tabs(["📅 Plan & Book", "📋 My Bookings", "🛠️ Maint.", "📜 Log", announcements_tab_label()])
 
     with c_tab_avail:
         render_whatsapp_banner()
@@ -5080,7 +5080,7 @@ else:
         )
         show_sniping_warning_dialog(hopping_villas)
 
-    tab_avail, tab_mine, tab_maint, tab_log, tab_news = st.tabs(["📅 Book", "📋 Mine", "🛠️ Maint.", "📜 Log", announcements_tab_label()])
+    tab_avail, tab_mine, tab_maint, tab_log, tab_news = st.tabs(["📅 Plan & Book", "📋 My Bookings", "🛠️ Maint.", "📜 Log", announcements_tab_label()])
 
     with tab_avail:
         render_whatsapp_banner()
