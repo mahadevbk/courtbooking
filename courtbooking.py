@@ -2555,6 +2555,9 @@ h1, h2, h3, .stTitle { font-family: 'Audiowide', cursive !important; color: #2c3
 div[role="tabpanel"] h1 { font-size: 1.375rem !important; }
 div[role="tabpanel"] h2 { font-size: 1.125rem !important; }
 div[role="tabpanel"] h3 { font-size: 0.875rem !important; }
+/* Tab labels ("Availability & Booking", "My Bookings"...) in the same font as the page title. Size is
+   left as it was; only the typeface changes. */
+[role="tab"], [role="tab"] p, [role="tab"] div { font-family: 'Audiowide', cursive !important; }
 </style>
 """, unsafe_allow_html=True)
 
