@@ -326,7 +326,7 @@ render_donor_ticker(DONOR_NAMES)
 # --- ANNOUNCEMENTS (announcements.csv) ---
 # ==========================================
 # To post an announcement, add a row to announcements.csv (same folder as this script) with a
-# Date and the Announcement text. It appears in the Announcements tab, newest first — no code
+# Date and the Announcement text. It appears in the News tab (📢), newest first — no code
 # change needed. The date can be written like "1 Sep 2026", "1. Sep. 2026", "01 September 2026",
 # "2026-09-01" or "01/09/2026" (day first). A row whose date can't be read is still shown, after
 # the dated ones, so a typo never makes an announcement disappear. If the file is missing or
@@ -391,7 +391,7 @@ def load_announcements():
     except Exception:
         return []
 
-# The Announcements tab shows a red dot for this many days after an announcement's date (the day
+# The News tab (📢) shows a red dot for this many days after an announcement's date (the day
 # itself plus this many days after it), so a new post is hard to miss without needing any
 # per-user "read" tracking. Change the number to lengthen or shorten it.
 ANNOUNCEMENT_NEW_DAYS = 3
@@ -409,7 +409,7 @@ def has_recent_announcement():
     return False
 
 def announcements_tab_label():
-    return "📢 Announcements" + (" 🔴" if has_recent_announcement() else "")
+    return "📢 News" + (" 🔴" if has_recent_announcement() else "")
 
 def render_announcements_tab():
     items = load_announcements()
@@ -2555,8 +2555,8 @@ h1, h2, h3, .stTitle { font-family: 'Audiowide', cursive !important; color: #2c3
 div[role="tabpanel"] h1 { font-size: 1.375rem !important; }
 div[role="tabpanel"] h2 { font-size: 1.125rem !important; }
 div[role="tabpanel"] h3 { font-size: 0.875rem !important; }
-/* Tab labels ("Availability & Booking", "My Bookings"...) in the same font as the page title. Size is
-   left as it was; only the typeface changes. */
+/* Tab labels ("Book", "Mine", "Maint.", "Log", "News") in the same font as the page title. Audiowide is a
+   wide font, which is why the labels are kept short: all five stay (at least partly) visible on a phone. */
 [role="tab"], [role="tab"] p, [role="tab"] div { font-family: 'Audiowide', cursive !important; }
 </style>
 """, unsafe_allow_html=True)
@@ -3715,7 +3715,7 @@ Coach accounts exist for tennis coaches who train residents across **several vil
             st.caption(
                 "**Not finding a tool here?** A couple of admin actions live elsewhere because they need a live "
                 "session to act on:\n"
-                "- **Switch your own session to a resident without OTP** — Court Maint. tab → Admin Maintenance Controls → Admin Resident Bypass.\n"
+                "- **Switch your own session to a resident without OTP** — Maint. tab → Admin Maintenance Controls → Admin Resident Bypass.\n"
                 "- **Unlock a resident from the login screen itself** (before anyone's signed in) — the 🛠️ Admin Emergency Console at the bottom of the login page."
             )
 
@@ -4948,7 +4948,7 @@ if COACH_FEATURE_ENABLED and st.session_state.get('is_coach'):
         "total_allowed": total_allowed, "total_active": total_active, "n_villas": len(assigned_villas),
     }
 
-    c_tab_avail, c_tab_mine, c_tab_maint, c_tab_log, c_tab_news = st.tabs(["📅 Availability & Booking", "📋 My Bookings", "🛠️ Court Maint.", "📜 Activity Log", announcements_tab_label()])
+    c_tab_avail, c_tab_mine, c_tab_maint, c_tab_log, c_tab_news = st.tabs(["📅 Book", "📋 Mine", "🛠️ Maint.", "📜 Log", announcements_tab_label()])
 
     with c_tab_avail:
         render_whatsapp_banner()
@@ -5080,7 +5080,7 @@ else:
         )
         show_sniping_warning_dialog(hopping_villas)
 
-    tab_avail, tab_mine, tab_maint, tab_log, tab_news = st.tabs(["📅 Availability & Booking", "📋 My Bookings", "🛠️ Court Maint.", "📜 Activity Log", announcements_tab_label()])
+    tab_avail, tab_mine, tab_maint, tab_log, tab_news = st.tabs(["📅 Book", "📋 Mine", "🛠️ Maint.", "📜 Log", announcements_tab_label()])
 
     with tab_avail:
         render_whatsapp_banner()
