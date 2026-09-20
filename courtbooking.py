@@ -3892,7 +3892,7 @@ Coach accounts exist for tennis coaches who train residents across **several vil
                             send_gmail_smtp(w_email, subject, html_content)
                         add_log(
                             "Sniping Warning",
-                            f"Manual warning sent to {', '.join(warn_emails)} regarding suspected multi-email/"
+                            f"sNIPING warning sent to {', '.join(warn_emails)} regarding suspected multi-email/"
                             f"multi-villa activity across: {villas_str}",
                             fingerprint="admin_manual_warning"
                         )
