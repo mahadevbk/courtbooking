@@ -46,24 +46,33 @@ _FALLBACK_DONOR_NAMES = [
     "SAS", "Sheila", "Sofia", "Teresa", "Timo", "Vik", "Wael", "Yann", "Yousef",
 ]
 
+@st.cache_data(show_spinner=False)
+def _read_donor_names(csv_path, file_mtime):
+    """Parses donors.csv. file_mtime is only part of the cache key: saving the file busts the
+    cache, so an edited donors.csv still shows up on the very next interaction. Raises if the
+    file is missing/empty/unreadable (exceptions are never cached)."""
+    with open(csv_path, "r", encoding="utf-8-sig", newline="") as f:
+        reader = csv.reader(f)
+        rows = list(reader)
+    if not rows:
+        raise ValueError("donors.csv is empty")
+    header = [h.strip().lower() for h in rows[0]]
+    data_rows = rows[1:] if header and header[0] == "name" else rows
+    names = [row[0].strip() for row in data_rows if row and row[0].strip()]
+    if not names:
+        raise ValueError("donors.csv has no names")
+    return sorted({n.upper() for n in names})
+
 def load_donor_names():
     """Reads donor names from donors.csv next to this script — one name per row under a
     "Name" header. Returns them upper-cased and alphabetically sorted for the ticker. Falls
     back to the last-known hardcoded list if the file is missing, empty, or unreadable, so a
-    deploy without the file (or a temporary file hiccup) never breaks the ticker."""
+    deploy without the file (or a temporary file hiccup) never breaks the ticker.
+    (This module-level call runs on every script rerun, so the parse is cached per file version
+    instead of re-reading and re-parsing the CSV each time.)"""
     csv_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "donors.csv")
     try:
-        with open(csv_path, "r", encoding="utf-8-sig", newline="") as f:
-            reader = csv.reader(f)
-            rows = list(reader)
-        if not rows:
-            raise ValueError("donors.csv is empty")
-        header = [h.strip().lower() for h in rows[0]]
-        data_rows = rows[1:] if header and header[0] == "name" else rows
-        names = [row[0].strip() for row in data_rows if row and row[0].strip()]
-        if not names:
-            raise ValueError("donors.csv has no names")
-        return sorted({n.upper() for n in names})
+        return _read_donor_names(csv_path, os.path.getmtime(csv_path))
     except Exception:
         return sorted({n.upper() for n in _FALLBACK_DONOR_NAMES})
 
@@ -1502,7 +1511,39 @@ def get_all_claimed_villas():
 # call invalidate_booking_caches(); other people's changes appear within BOOKING_SNAPSHOT_TTL.
 BOOKING_SNAPSHOT_TTL = 10
 
-@st.cache_data(ttl=BOOKING_SNAPSHOT_TTL, show_spinner=False)
+class _BookingSnapshot:
+    """The fetched booking rows plus indexes built ONCE per fetch. It is stored with
+    st.cache_resource, so every caller gets the very same object: st.cache_data would unpickle a
+    private copy of the whole row list on each call (about ten times per rerun), and each helper
+    then re-scanned every row just to pick out one day. It is strictly READ-ONLY: nobody may
+    modify `rows`, the row dicts or the indexes (all consumers only read them or build new
+    objects from them)."""
+    __slots__ = ("rows", "since", "by_date", "day_maps", "_taken_by_day")
+
+    def __init__(self, rows, since):
+        self.rows = rows
+        self.since = since
+        by_date = {}
+        for r in rows:
+            by_date.setdefault(r['date'], []).append(r)       # keeps the original row order within a day
+        self.by_date = by_date
+        # {(court, start_hour): "Sub Community - Villa"} per day (same content the old per-day scan produced)
+        self.day_maps = {
+            d: {(r['court'], r['start_hour']): f"{r['sub_community']} - {r['villa']}" for r in day_rows}
+            for d, day_rows in by_date.items()
+        }
+        self._taken_by_day = None
+
+    @property
+    def taken_by_day(self):
+        """{date: {(court, int(start_hour))}} — only the slot-alert picker needs it, so built on first use."""
+        t = self._taken_by_day
+        if t is None:
+            t = {d: {(r["court"], int(r["start_hour"])) for r in day_rows} for d, day_rows in self.by_date.items()}
+            self._taken_by_day = t
+        return t
+
+@st.cache_resource(ttl=BOOKING_SNAPSHOT_TTL, show_spinner=False)
 def get_booking_window_snapshot():
     since = (get_today() - timedelta(days=1)).strftime('%Y-%m-%d')
     rows, start, page = [], 0, 1000
@@ -1519,14 +1560,21 @@ def get_booking_window_snapshot():
         if len(chunk) < page:
             break
         start += page
-    return rows, since
+    return _BookingSnapshot(rows, since)
 
-def _snapshot_rows():
-    """(rows, since_date) from the shared snapshot, or (None, None) if it couldn't be fetched."""
+def _snapshot():
+    """The shared _BookingSnapshot (read-only!), or None if it couldn't be fetched."""
     try:
         return get_booking_window_snapshot()
     except Exception:
+        return None
+
+def _snapshot_rows():
+    """(rows, since_date) from the shared snapshot, or (None, None) if it couldn't be fetched."""
+    snap = _snapshot()
+    if snap is None:
         return None, None
+    return snap.rows, snap.since
 
 def _upcoming_rows(rows):
     """Rows that are still 'active': later than today, or today at/after the current hour.
@@ -1545,6 +1593,18 @@ def invalidate_booking_caches():
         except Exception:
             pass
 
+def refresh_after_maintenance_change():
+    """What a maintenance report / 'Fixed' click actually needs refreshed: the issue list, the activity
+    log (a report writes a log line) and the device-activity check that reads the log. This replaces
+    st.cache_data.clear(), which also threw away EVERYTHING else — the booking cards, the announcements,
+    and the 'run at most once per hour' markers, so the next visitor's page load re-ran the purge / cleanup /
+    double-booking scans that download whole tables."""
+    for name in ("get_maintenance_data", "get_logs_last_14_days", "check_device_sniping_status"):
+        try:
+            globals()[name].clear()
+        except Exception:
+            pass
+
 def _fetch_bookings_for_day(date_str):
     response = run_query(
         supabase.table("bookings")
@@ -1555,16 +1615,21 @@ def _fetch_bookings_for_day(date_str):
     if not response or not response.data: return {}
     return {(row['court'], row['start_hour']): f"{row['sub_community']} - {row['villa']}" for row in response.data}
 
-def get_bookings_for_day_with_details(date_str):
-    rows, since = _snapshot_rows()
-    if rows is not None and date_str >= since:
-        return {(r['court'], r['start_hour']): f"{r['sub_community']} - {r['villa']}" for r in rows if r['date'] == date_str}
+def _day_map(date_str):
+    """{(court, start_hour): 'Sub Community - Villa'} for one day. May be the snapshot's own shared
+    dict, so callers inside this module must treat it as READ-ONLY."""
+    snap = _snapshot()
+    if snap is not None and date_str >= snap.since:
+        return snap.day_maps.get(date_str, {})
     return _fetch_bookings_for_day(date_str)
+
+def get_bookings_for_day_with_details(date_str):
+    return dict(_day_map(date_str))     # a private copy, exactly as the old per-call dict was
 
 def is_slot_booked_display(court, date_str, start_hour):
     """DISPLAY-ONLY 'is this slot taken' (e.g. greying out the 2-hour option), answered from the
     snapshot. Anything that decides whether a booking is allowed uses is_slot_booked() instead."""
-    return (court, start_hour) in get_bookings_for_day_with_details(date_str)
+    return (court, start_hour) in _day_map(date_str)
 
 def get_active_bookings_count_display(villa, sub_community):
     """Display-only twin of get_active_bookings_count(), served from the snapshot."""
@@ -1575,10 +1640,10 @@ def get_active_bookings_count_display(villa, sub_community):
 
 def get_daily_bookings_count_display(villa, sub_community, date_str):
     """Display-only twin of get_daily_bookings_count() (same Mira 1 shared-villa rule)."""
-    rows, since = _snapshot_rows()
-    if rows is None or date_str < since:
+    snap = _snapshot()
+    if snap is None or date_str < snap.since:
         return get_daily_bookings_count(villa, sub_community, date_str)
-    day = [r for r in rows if r['date'] == date_str]
+    day = snap.by_date.get(date_str, [])
     mira1_group = ["229", "231", "233"]
     if sub_community == "Mira 1" and villa in mira1_group:
         others = [v for v in mira1_group if v != villa]
@@ -1645,6 +1710,20 @@ def is_slot_in_past(date_str, start_hour):
     if date_str < now.strftime('%Y-%m-%d'): return True
     if date_str == now.strftime('%Y-%m-%d') and (start_hour < now.hour or (start_hour == now.hour and now.minute > 0)): return True
     return False
+
+def _past_checker():
+    """Same rule as is_slot_in_past(), but bound to ONE reading of the clock. Loops that test
+    many slots (the schedule grids test ~135 cells per day, the full-page view ~2,000) used to
+    read the clock and format two date strings on every single test. Use is_slot_in_past()
+    for one-off checks and for the checks that guard a booking."""
+    now = get_utc_plus_4()
+    today = now.strftime('%Y-%m-%d')
+    hour, minute = now.hour, now.minute
+    def is_past(date_str, start_hour):
+        if date_str < today:
+            return True
+        return date_str == today and (start_hour < hour or (start_hour == hour and minute > 0))
+    return is_past
 
 
 # --- CORE BOOKING & DELETION FUNCTIONS (UPDATED FOR COACH POOL) ---
@@ -1950,12 +2029,11 @@ def get_watchable_windows(hours, selected_date=None, exclude=()):
     NO court free for `hours` consecutive hours (if one is free you can simply book it). Answered from
     the shared booking snapshot, so it costs no database query. Slots on `selected_date` (the day being
     viewed in the table) are listed first. Returns None if the snapshot isn't available."""
-    rows, _since = _snapshot_rows()
-    if rows is None:
+    snap = _snapshot()
+    if snap is None:
         return None
-    taken_by_day = {}
-    for r in rows:
-        taken_by_day.setdefault(r["date"], set()).add((r["court"], int(r["start_hour"])))
+    taken_by_day = snap.taken_by_day
+    is_past = _past_checker()
     windows = []
     for d in get_next_14_days():
         ds = d.strftime('%Y-%m-%d')
@@ -1963,7 +2041,7 @@ def get_watchable_windows(hours, selected_date=None, exclude=()):
         valid = get_start_hours_for_date(ds)
         for start in valid:
             needed = range(start, start + hours)
-            if any(h not in valid for h in needed) or is_slot_in_past(ds, start) or (ds, start, hours) in exclude:
+            if any(h not in valid for h in needed) or is_past(ds, start) or (ds, start, hours) in exclude:
                 continue
             if any(all((c, h) not in taken for h in needed) for c in courts):
                 continue                                   # some court is free for the whole window
@@ -2526,10 +2604,11 @@ def get_active_bookings_for_villa_display(villa_identifier):
 def get_available_hours(court, date_str):
     # Display-only (fills the time pickers): answered from the shared booking snapshot. Booking
     # itself re-checks the slot against the database, and the DB unique constraint has the last word.
-    booked_hours = [h for (c, h) in get_bookings_for_day_with_details(date_str) if c == court]
+    booked_hours = {h for (c, h) in _day_map(date_str) if c == court}
+    is_past = _past_checker()
     available = []
     for h in get_start_hours_for_date(date_str):
-        if h not in booked_hours and not is_slot_in_past(date_str, h):
+        if h not in booked_hours and not is_past(date_str, h):
             available.append(h)
     return available
 
@@ -2918,17 +2997,19 @@ if st.query_params.get("view") == "full":
         if curr_auth:
             st.query_params["auth"] = curr_auth
         st.rerun()
+    _is_past_now = _past_checker()
     for d in get_next_14_days():
         d_str = d.strftime('%Y-%m-%d')
         st.subheader(f"{d_str} ({d.strftime('%A')})")
-        bookings_with_details = get_bookings_for_day_with_details(d_str)
+        bookings_with_details = _day_map(d_str)
         data = {}
         for h in get_start_hours_for_date(d_str):
             label = f"{h:02d}:00 - {h+1:02d}:00"
             row = []
+            slot_past = _is_past_now(d_str, h)      # same answer for every court, so ask once per hour
             for court in courts:
                 key = (court, h)
-                if is_slot_in_past(d_str, h): row.append("—")
+                if slot_past: row.append("—")
                 elif key in bookings_with_details:
                     full_comm, villa_num = bookings_with_details[key].rsplit(" - ", 1)
                     abbr = abbreviate_community(full_comm)
@@ -3525,7 +3606,7 @@ def render_court_maintenance_tab(reporter_label, current_device):
                         "is_fixed": False
                     }))
                     add_log("Maintenance Reported", f"Issue reported for {m_court}. Reported by {reporter_label}.", fingerprint=current_device)
-                    st.cache_data.clear()
+                    refresh_after_maintenance_change()
                     st.success("✅ Maintenance report submitted successfully!")
                     time.sleep(1)
                     st.rerun()
@@ -3597,7 +3678,7 @@ def render_court_maintenance_tab(reporter_label, current_device):
                                 "is_fixed": True,
                                 "fixed_at": now_ts
                             }).eq("id", item['id']))
-                            st.cache_data.clear()
+                            refresh_after_maintenance_change()
                             st.rerun()
     else:
         st.info("No maintenance issues reported yet.")
@@ -3872,7 +3953,6 @@ def render_coach_admin_panel(key_prefix="cam"):
                                     except Exception as e:
                                         st.error(f"Failed to update email — no changes were left partially applied beyond what's shown here. Details: {e}")
 
-@st.fragment
 def _villa_line_parts(line):
     """'Mira 4 - Villa 84' / 'Mira 4 Villa 84' / 'Mira 4 - 84' -> ('Mira 4', '84'); None if it isn't that shape."""
     m = re.match(r"^\s*(.+?)\s*[-–—]?\s*(?:villa\s*)?(\d+)\s*$", line or "", flags=re.I)
@@ -3889,6 +3969,73 @@ def build_sniping_warning_details(warn_villas):
     prior = ", ".join((f"{p[0]} - {p[1]}" if p else v) for v, p in zip(warn_villas[1:], parts[1:]))
     return f"Cross-villa warning triggered for {triggered}. Prior activity on: {prior or 'multiple properties'}"
 
+# Colour of the "event type" cell in the activity log (one entry per event type).
+_ACTIVITY_EVENT_STYLES = {
+    "Booking Created": 'background-color: #d4edda; color: #155724; font-weight: bold;',
+    "Villa Claim": 'background-color: #d4edda; color: #155724; font-weight: bold;',
+    "Booking Deleted": 'background-color: #f8d7da; color: #721c24; font-weight: bold;',
+    "Booking Cancelled": 'background-color: #f8d7da; color: #721c24; font-weight: bold;',
+    "Villa Claim Removed": 'background-color: #f8d7da; color: #721c24; font-weight: bold;',
+    "Access Denied": 'background-color: #ffcc00; color: black; font-weight: bold;',
+    "Claim Held for Review": 'background-color: #ffcc00; color: black; font-weight: bold;',
+    "Sniping Warning": 'background-color: #ffcc00; color: black; font-weight: bold;',
+    "Sniping Penalty": 'background-color: #ff4d4d; color: white; font-weight: bold;',
+    "Sniping Lockout": 'background-color: #ff4d4d; color: white; font-weight: bold;',
+    "Double Booking Detected": 'background-color: #ff4d4d; color: white; font-weight: bold;',
+    "Booked but not used": 'background-color: #ff9800; color: black; font-weight: bold;',  # warning orange: distinct from yellow (denied/warning) and red (penalties)
+}
+
+def _style_activity_event(val):
+    return _ACTIVITY_EVENT_STYLES.get(val, '')
+
+def _activity_logs_content_key(logs):
+    """Cheap exact fingerprint of the log rows the table is built from (only the three fields it
+    uses), so an unchanged log list reuses the already-built table."""
+    return hash(tuple((r.get("timestamp"), r.get("event_type"), r.get("details")) for r in logs))
+
+@st.cache_data(show_spinner=False, max_entries=8)
+def _build_activity_log_view(_logs, content_key, is_admin):
+    """Filtered / cleaned / formatted activity-log table (timestamp, event_type, details) for the
+    admin or the resident view. This used to be rebuilt from scratch — five regex passes over every
+    row, date parsing, and row-by-row styling — on EVERY rerun of every logged-in user (all tabs
+    render on every rerun, not just the visible one). It is a pure function of the log rows and the
+    view, so it is now built once per distinct log list. `_logs` is excluded from Streamlit's
+    argument hashing; `content_key` is what identifies it."""
+    log_df = pd.DataFrame(_logs, columns=["timestamp", "event_type", "details"])
+    filters = (
+        (log_df['event_type'] != "Debug") &
+        (log_df['event_type'] != "System Maintenance") &
+        (log_df['event_type'] != "Auto-Book Ledger") &
+        (~log_df['details'].str.contains("System-Synced", case=False, na=False))
+    )
+    if not is_admin:
+        filters &= (log_df['event_type'] != "Limit Enforcement")
+        # Hide anything coach-related from the resident-facing view entirely — not just
+        # "Coach Login", but coach profile admin actions (Admin Edit, PIN resets, deletions)
+        # and any booking/cancellation made using a coach's pooled quota.
+        is_coach_related = (
+            (log_df['event_type'] == "Coach Login") |
+            (log_df['event_type'] == "Admin Edit") |
+            (log_df['details'].str.contains(r'\bcoach\b', case=False, na=False, regex=True))
+        )
+        filters &= ~is_coach_related
+
+    display_df = log_df[filters].copy()
+    display_df['details'] = display_df['details'].str.replace(r'⟦FP:.*?⟧⟦IP:.*?⟧ ', '', regex=True)
+    display_df['details'] = display_df['details'].str.replace(r'\s*⟦SLOT:.*?⟧', '', regex=True)
+    display_df['details'] = display_df['details'].str.replace(r'\s*⟦BAN_EMAIL:.*?⟧⟦BAN_VILLAS:.*?⟧', '', regex=True)
+    if not is_admin:
+        # Who filed a "Booked but not used" report is admin-only — residents still see which
+        # villa was reported and the running 30-day count, just not who reported them.
+        display_df['details'] = display_df['details'].str.replace(r'\s*Reported by [^.]+\.', '', regex=True)
+        # Who a warning was emailed to is kept for the admin only.
+        display_df['details'] = display_df['details'].str.replace(r'\s*⟦WARNED:.*?⟧', '', regex=True)
+        display_df['details'] = display_df['details'].apply(mask_emails_in_text)
+
+    cols = ['timestamp', 'event_type', 'details']
+    display_df['timestamp'] = pd.to_datetime(display_df['timestamp'], format='ISO8601').dt.strftime('%b %d, %H:%M')
+    return display_df[cols]
+
 def _render_activity_log_table(is_admin):
     ref_col1, ref_col2 = st.columns([5, 2])
     with ref_col1:
@@ -3902,50 +4049,10 @@ def _render_activity_log_table(is_admin):
 
     logs = get_logs_last_14_days()
     if logs:
-        log_df = pd.DataFrame(logs, columns=["timestamp", "event_type", "Fingerprint", "details"])
-        filters = (
-            (log_df['event_type'] != "Debug") &
-            (log_df['event_type'] != "System Maintenance") &
-            (log_df['event_type'] != "Auto-Book Ledger") &
-            (~log_df['details'].str.contains("System-Synced", case=False, na=False))
-        )
-        if not is_admin:
-            filters &= (log_df['event_type'] != "Limit Enforcement")
-            # Hide anything coach-related from the resident-facing view entirely — not just
-            # "Coach Login", but coach profile admin actions (Admin Edit, PIN resets, deletions)
-            # and any booking/cancellation made using a coach's pooled quota.
-            is_coach_related = (
-                (log_df['event_type'] == "Coach Login") |
-                (log_df['event_type'] == "Admin Edit") |
-                (log_df['details'].str.contains(r'\bcoach\b', case=False, na=False, regex=True))
-            )
-            filters &= ~is_coach_related
-
-        display_df = log_df[filters].copy()        
-        display_df['details'] = display_df['details'].str.replace(r'⟦FP:.*?⟧⟦IP:.*?⟧ ', '', regex=True)
-        display_df['details'] = display_df['details'].str.replace(r'\s*⟦SLOT:.*?⟧', '', regex=True)
-        display_df['details'] = display_df['details'].str.replace(r'\s*⟦BAN_EMAIL:.*?⟧⟦BAN_VILLAS:.*?⟧', '', regex=True)
-        if not is_admin:
-            # Who filed a "Booked but not used" report is admin-only — residents still see which
-            # villa was reported and the running 30-day count, just not who reported them.
-            display_df['details'] = display_df['details'].str.replace(r'\s*Reported by [^.]+\.', '', regex=True)
-            # Who a warning was emailed to is kept for the admin only.
-            display_df['details'] = display_df['details'].str.replace(r'\s*⟦WARNED:.*?⟧', '', regex=True)
-            display_df['details'] = display_df['details'].apply(mask_emails_in_text)
-
-        cols = ['timestamp', 'event_type', 'details']
-        display_df['timestamp'] = pd.to_datetime(display_df['timestamp'], format='ISO8601').dt.strftime('%b %d, %H:%M')
-
-        def style_rows(row):
-            styles = [''] * len(row)
-            if row.event_type in ["Booking Created", "Villa Claim"]: styles[1] = 'background-color: #d4edda; color: #155724; font-weight: bold;'
-            elif row.event_type in ["Booking Deleted", "Booking Cancelled", "Villa Claim Removed"]: styles[1] = 'background-color: #f8d7da; color: #721c24; font-weight: bold;'
-            elif row.event_type in ["Access Denied", "Claim Held for Review", "Sniping Warning"]: styles[1] = 'background-color: #ffcc00; color: black; font-weight: bold;'
-            elif row.event_type in ["Sniping Penalty", "Sniping Lockout", "Double Booking Detected"]: styles[1] = 'background-color: #ff4d4d; color: white; font-weight: bold;'
-            elif row.event_type == "Booked but not used": styles[1] = 'background-color: #ff9800; color: black; font-weight: bold;'  # warning orange: distinct from yellow (denied/warning) and red (penalties)
-            return styles
-
-        st.dataframe(display_df[cols].style.apply(style_rows, axis=1), hide_index=True, width="stretch")
+        display_df = _build_activity_log_view(logs, _activity_logs_content_key(logs), bool(is_admin))
+        # Only the event-type column is coloured, so style just that column cell by cell rather than
+        # building a pandas Series for every row (same CSS, a fraction of the work).
+        st.dataframe(display_df.style.map(_style_activity_event, subset=['event_type']), hide_index=True, width="stretch")
     else: st.info("No activity.")
 
 def render_activity_log_tab(current_device):
@@ -4535,11 +4642,10 @@ Coach accounts exist for tennis coaches who train residents across **several vil
                             break
                         offset += chunk_size
                     return data
-                
+
                 def get_zip_data():
                     import sqlite3, tempfile, os as _os
                     tmp_db_path = None
-                    sconn = None
                     try:
                         today_str = get_today()
                         buf = io.BytesIO()
@@ -4563,20 +4669,9 @@ Coach accounts exist for tennis coaches who train residents across **several vil
                                     df.to_json(orient="records", indent=2) if not df.empty else "[]",
                                 )
                                 if not df.empty:
-                                    # SQLite cannot bind Python dict/list objects; serialize any
-                                    # nested JSON-like columns so to_sql never raises InterfaceError.
-                                    for col in df.columns:
-                                        if df[col].map(lambda v: isinstance(v, (dict, list))).any():
-                                            df[col] = df[col].map(
-                                                lambda v: json.dumps(v) if isinstance(v, (dict, list)) else v
-                                            )
                                     df.to_sql(table_name, sconn, if_exists="replace", index=False)
                                 manifest_lines.append(f"{table_name}: {len(df)} row(s)")
-
-                            # Close the connection *before* reading the file so the OS releases
-                            # any exclusive lock (critical on Windows; harmless elsewhere).
                             sconn.close()
-                            sconn = None
 
                             with open(tmp_db_path, "rb") as f:
                                 vz.writestr(f"full_backup_{today_str}.sqlite", f.read())
@@ -4588,45 +4683,14 @@ Coach accounts exist for tennis coaches who train residents across **several vil
                         st.error(f"Backup Error: {str(e)}")
                         return None
                     finally:
-                        if sconn is not None:
-                            try:
-                                sconn.close()
-                            except Exception:
-                                pass
                         if tmp_db_path and _os.path.exists(tmp_db_path):
-                            try:
-                                _os.remove(tmp_db_path)
-                            except Exception:
-                                pass
+                            _os.remove(tmp_db_path)
 
-                # Persist generated ZIP in session_state so the download button survives the
-                # rerun that Streamlit triggers when the user actually clicks Download.
-                if st.button("Generate Backup Link", key="admin_generate_backup_btn"):
+                if st.button("Generate Backup Link"):
                     with st.spinner("Fetching every table from Supabase — this may take a moment..."):
                         data = get_zip_data()
-                    if data:
-                        st.session_state["admin_backup_zip"] = data
-                        st.session_state["admin_backup_filename"] = f"court_booking_full_backup_{get_today()}.zip"
-                    else:
-                        st.session_state.pop("admin_backup_zip", None)
-                        st.session_state.pop("admin_backup_filename", None)
-                        st.error("Failed to fetch data for backup.")
-
-                if st.session_state.get("admin_backup_zip"):
-                    st.download_button(
-                        label="Click here to Download ZIP",
-                        data=st.session_state["admin_backup_zip"],
-                        file_name=st.session_state.get(
-                            "admin_backup_filename",
-                            f"court_booking_full_backup_{get_today()}.zip",
-                        ),
-                        mime="application/zip",
-                        key="admin_download_backup_btn",
-                    )
-                    if st.button("Clear backup from memory", key="admin_clear_backup_btn"):
-                        st.session_state.pop("admin_backup_zip", None)
-                        st.session_state.pop("admin_backup_filename", None)
-                        st.rerun()
+                    if data: st.download_button(label="Click here to Download ZIP", data=data, file_name=f"court_booking_full_backup_{get_today()}.zip", mime="application/zip")
+                    else: st.error("Failed to fetch data for backup.")
 
         with admin_tabs[6]:
             st.markdown("### 📧 Broadcast Email to Residents")
@@ -4920,7 +4984,7 @@ def render_availability_tab(is_coach, current_device, resident_ctx=None, coach_c
     date_options = [f"{d.strftime('%Y-%m-%d')} ({d.strftime('%A')})" for d in get_next_14_days()]
     selected_date_full = st.selectbox("Select Date:", date_options, key="tab1_date_select")
     selected_date = selected_date_full.split(" (")[0]
-    bookings_with_details = get_bookings_for_day_with_details(selected_date)
+    bookings_with_details = _day_map(selected_date)     # read-only use below
 
     def _pretty_day(date_str):
         """'2026-09-21' -> 'Monday, 21 Sep'"""
@@ -4939,12 +5003,14 @@ def render_availability_tab(is_coach, current_device, resident_ctx=None, coach_c
         st.session_state["bar_nonce"] = st.session_state.get("bar_nonce", 0) + 1
 
     data = {}
+    _is_past_now = _past_checker()
     for h in get_start_hours_for_date(selected_date):
         label = f"{h:02d}:00 - {h+1:02d}:00"
         row = []
+        slot_past = _is_past_now(selected_date, h)      # same answer for every court, so ask once per hour
         for court in courts:
             key = (court, h)
-            if is_slot_in_past(selected_date, h): row.append("—")
+            if slot_past: row.append("—")
             elif key in bookings_with_details:
                 full_comm, villa_num = bookings_with_details[key].rsplit(" - ", 1)
                 abbr = abbreviate_community(full_comm)
@@ -5190,13 +5256,23 @@ def render_availability_tab(is_coach, current_device, resident_ctx=None, coach_c
                 else:
                     st.error(result)
             else:
-                active_count = get_active_bookings_count(villa, sub_community)
-                active_limit = get_active_booking_limit(sub_community, villa, for_date=selected_date)
-                daily_count = get_daily_bookings_count(villa, sub_community, selected_date)
                 valid_hours = get_start_hours_for_date(selected_date)
+                # These database reads don't depend on each other (active-booking count, daily count, and one
+                # "is this hour still free?" lookup per hour that is bookable at all), so they run together:
+                # one round-trip of waiting instead of three to five back to back. Every check still hits the
+                # database directly — nothing here is served from the display cache.
+                _hours_to_check = [h for h in hours_to_book if h in valid_hours]
+                _pre = run_parallel(
+                    lambda: get_active_bookings_count(villa, sub_community),
+                    lambda: get_daily_bookings_count(villa, sub_community, selected_date),
+                    *[(lambda _h=h: is_slot_booked(q_court, selected_date, _h)) for h in _hours_to_check],
+                )
+                active_count, daily_count = _pre[0], _pre[1]
+                _already_booked = dict(zip(_hours_to_check, _pre[2:]))
+                active_limit = get_active_booking_limit(sub_community, villa, for_date=selected_date)
                 unavailable = []
                 for h in hours_to_book:
-                    if h not in valid_hours or is_slot_booked(q_court, selected_date, h) or is_slot_in_past(selected_date, h):
+                    if h not in valid_hours or _already_booked[h] or is_slot_in_past(selected_date, h):
                         unavailable.append(f"{h:02d}:00")
                 if unavailable:
                     st.error(f"Slot(s) {', '.join(unavailable)} are unavailable.")
