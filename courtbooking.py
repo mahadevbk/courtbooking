@@ -1680,8 +1680,10 @@ def book_slot(villa, sub_community, court, date_str, start_hour, fingerprint=Non
 
 def delete_booking(booking_id, villa, sub_community, fingerprint=None, coach_email=None):
     record = run_query(supabase.table("bookings").select("court, date, start_hour").eq("id", booking_id).single())
+    freed_slot = None
     if record and record.data:
         b = record.data
+        freed_slot = (b['court'], b['date'], b['start_hour'])
         if coach_email:
             log_detail = f"Coach {coach_email} cancelled {b['court']} for {b['date']} at {b['start_hour']:02d}:00 (Quota returned to {sub_community} Villa {villa})"
         else:
@@ -1689,6 +1691,346 @@ def delete_booking(booking_id, villa, sub_community, fingerprint=None, coach_ema
         add_log("Booking Deleted", log_detail, fingerprint=fingerprint)
     run_query(supabase.table("bookings").delete().eq("id", booking_id))
     invalidate_booking_caches()
+    if freed_slot:
+        try:
+            spawn_slot_alert(freed_slot[0], freed_slot[1], freed_slot[2], sub_community, villa)   # never lets alerts break a cancellation
+        except Exception as e:
+            print(f"slot alert could not be started: {e}")
+
+# ==============================================================================
+# --- SLOT ALERTS: "Notify me when this slot is available" ---
+# ==============================================================================
+# A resident picks a date, a start time and 1 or 2 hours (no court: any court will do). If a booking is
+# cancelled and that leaves a court free for exactly that time, everyone watching it gets ONE email
+# ("Mira 5B is free today from 18:00 to 20:00 for 2 hours"). Needs the `slot_watches` table (see
+# slot_watches.sql). Until it exists the feature just says it isn't switched on; nothing else is affected.
+SLOT_WATCH_TABLE = "slot_watches"
+MAX_ACTIVE_WATCHES_PER_EMAIL = 5
+# Wait a moment before checking, so cancelling a 2-hour booking (two deletions in quick succession)
+# is seen as one freed 2-hour window and each person gets a single email, not one per hour.
+SLOT_ALERT_SETTLE_SECONDS = 2.0
+APP_PUBLIC_URL = "https://miracourtbooking.streamlit.app"
+
+def _slot_when_text(date_str):
+    """'today' or 'on Tuesday, 22 Sep'."""
+    if date_str == get_today().strftime('%Y-%m-%d'):
+        return "today"
+    return "on " + datetime.strptime(date_str, '%Y-%m-%d').strftime('%A, %d %b')
+
+def send_slot_available_email(recipient_email, court, date_str, start_hour, hours):
+    """The alert itself. Returns True if the email was handed to the mail server."""
+    try:
+        end_hour = start_hour + hours
+        when = _slot_when_text(date_str)
+        d = datetime.strptime(date_str, '%Y-%m-%d')
+        date_line = ("Today — " if when == "today" else "") + d.strftime('%A, %b %d, %Y')
+        hrs_word = "hour" if hours == 1 else "hours"
+        subject = f"🔔 {court} is free {when} at {start_hour:02d}:00"
+        html_content = f"""
+        <!DOCTYPE html>
+        <html>
+        <head>
+          <meta charset="utf-8">
+          <style>
+            body {{ font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; background-color: #f4f7f6; margin: 0; padding: 0; }}
+            .email-wrapper {{ max-width: 600px; margin: 30px auto; background-color: #ffffff; border-radius: 12px; overflow: hidden; box-shadow: 0 4px 15px rgba(0,0,0,0.05); border: 1px solid #e1e8ed; }}
+            .email-header {{ background: linear-gradient(135deg, #e67e22, #b85c0f); padding: 30px; text-align: center; color: #ffffff; }}
+            .email-header h1 {{ margin: 0; font-size: 22px; font-weight: 700; letter-spacing: 0.5px; }}
+            .email-body {{ padding: 30px; color: #333333; line-height: 1.6; }}
+            .info-card {{ background-color: #f8fafc; border-radius: 8px; padding: 20px; margin: 20px 0; border: 1px solid #e2e8f0; border-left: 5px solid #e67e22; }}
+            .info-row {{ margin: 8px 0; font-size: 15px; color: #2d3748; }}
+            .btn {{ display: inline-block; background-color: #0d5384; color: #ffffff !important; text-decoration: none; font-weight: 700; padding: 12px 26px; border-radius: 8px; }}
+            .footer {{ background-color: #f8fafc; padding: 20px; text-align: center; font-size: 12px; color: #718096; border-top: 1px solid #e2e8f0; }}
+          </style>
+        </head>
+        <body>
+          <div class="email-wrapper">
+            <div class="email-header">
+              <h1>🔔 A Court Just Opened Up</h1>
+            </div>
+            <div class="email-body">
+              <p>Hello Resident,</p>
+              <p>Good news! <b>{court}</b> is free <b>{when}</b> from <b>{start_hour:02d}:00 to {end_hour:02d}:00</b> for <b>{hours} {hrs_word}</b> — the slot you asked us to watch.</p>
+              <div class="info-card">
+                <div class="info-row"><b>Court:</b> {court}</div>
+                <div class="info-row"><b>Date:</b> {date_line}</div>
+                <div class="info-row"><b>Time Slot:</b> {start_hour:02d}:00 - {end_hour:02d}:00</div>
+                <div class="info-row"><b>Duration:</b> {hours} {hrs_word}</div>
+              </div>
+              <p style="text-align:center; margin: 26px 0;"><a class="btn" href="{APP_PUBLIC_URL}">Book it now</a></p>
+              <p style="font-size: 13px; color: #718096;">Slots go quickly, and it is first come, first served — other residents watching this slot were told too. This was a one-time alert; you can set another any time under Plan &amp; Book → 🔔 Notify me when a slot opens.</p>
+            </div>
+            <div class="footer">
+              Mira Court Booking App • Community Fair-Use Solution
+            </div>
+          </div>
+        </body>
+        </html>
+        """
+        return bool(send_gmail_smtp(recipient_email, subject, html_content))
+    except Exception as e:
+        print(f"Error sending slot alert email: {e}")
+        return False
+
+def notify_slot_watchers(court, date_str, freeing_households=None):
+    """Called after booking(s) on `court` were cancelled. Looks at everything people are watching on
+    `date_str` and emails those whose window (1 or 2 hours) is now completely free on this court.
+    Returns what was sent (for tests). Each alert is CLAIMED in the database before its email goes out
+    (only one caller can win the claim), so nobody is ever emailed twice for the same alert. Because it
+    looks at the court's state as a whole, one call handles a 2-hour cancellation in one go and each
+    person gets a single email (for their longest matching alert)."""
+    sent = []
+    freeing_households = {(sub, str(v)) for sub, v in (freeing_households or set())}
+    try:
+        res = supabase.table(SLOT_WATCH_TABLE).select("*").eq("date", date_str).eq("status", "active").execute()
+        candidates = res.data or []
+        if not candidates:
+            return sent
+        booked_res = supabase.table("bookings").select("start_hour").eq("court", court).eq("date", date_str).execute()
+        booked = {int(r["start_hour"]) for r in (booked_res.data or [])}
+        valid_hours = set(get_start_hours_for_date(date_str))
+
+        by_email = {}
+        for w in candidates:
+            start, n = int(w["start_hour"]), int(w["hours"])
+            needed = list(range(start, start + n))
+            if any(h not in valid_hours or h in booked for h in needed):
+                continue                                   # part of the window is still taken on this court
+            if is_slot_in_past(date_str, start):
+                continue
+            if (w.get("sub_community"), str(w.get("villa"))) in freeing_households:
+                continue                                   # the household that just cancelled already knows
+            by_email.setdefault((w.get("email") or "").strip().lower(), []).append(w)
+
+        now_iso = get_utc_plus_4().isoformat()
+        for email, watches in by_email.items():
+            if "@" not in email:
+                continue
+            claimed = []
+            for w in watches:
+                r = (supabase.table(SLOT_WATCH_TABLE)
+                     .update({"status": "notified", "notified_at": now_iso, "notified_court": court})
+                     .eq("id", w["id"]).eq("status", "active").execute())
+                if r.data:
+                    claimed.append(w)
+            if not claimed:
+                continue                                   # someone else already claimed these
+            best = max(claimed, key=lambda w: int(w["hours"]))      # one email per person: their longest ask
+            if send_slot_available_email(email, court, date_str, int(best["start_hour"]), int(best["hours"])):
+                sent.append({"email": email, "court": court, "date": date_str, "start_hour": int(best["start_hour"]), "hours": int(best["hours"])})
+            else:
+                for w in claimed:                          # email failed: put the alerts back so a later opening can retry
+                    supabase.table(SLOT_WATCH_TABLE).update({"status": "active", "notified_at": None, "notified_court": None}) \
+                        .eq("id", w["id"]).eq("status", "notified").execute()
+    except Exception as e:
+        print(f"slot alert error: {e}")
+    finally:
+        try:
+            get_my_slot_watches.clear()
+        except Exception:
+            pass
+    return sent
+
+@st.cache_resource
+def _slot_alert_state():
+    """Process-wide bookkeeping shared by every session/thread: which (court, day) already has an alert
+    job waiting, and a lock so two alert jobs never run at the same moment."""
+    return {"pending": {}, "state_lock": threading.Lock(), "run_lock": threading.Lock()}
+
+def spawn_slot_alert(court, date_str, freed_hour=None, freeing_sub=None, freeing_villa=None):
+    """Start (in the background, so the person cancelling never waits) the check for who to tell.
+    Cancelling a 2-hour booking frees two hours back to back; cancellations on the same court and day
+    that arrive while a job is still waiting simply join it, and the job looks at the court as it is
+    when it runs, so the whole burst is handled once."""
+    state = _slot_alert_state()
+    key = (court, date_str)
+    with state["state_lock"]:
+        if key in state["pending"]:
+            state["pending"][key].add((freeing_sub, str(freeing_villa)))
+            return
+        state["pending"][key] = {(freeing_sub, str(freeing_villa))}
+
+    def _run():
+        try:
+            if SLOT_ALERT_SETTLE_SECONDS:
+                time.sleep(SLOT_ALERT_SETTLE_SECONDS)
+            with state["state_lock"]:
+                households = state["pending"].pop(key, set())
+            with state["run_lock"]:
+                notify_slot_watchers(court, date_str, households)
+        except Exception as e:
+            print(f"slot alert thread error: {e}")
+    threading.Thread(target=_run, daemon=True, name="slot-alert").start()
+
+@st.cache_data(ttl=30, show_spinner=False)
+def get_my_slot_watches(email):
+    """A person's active alerts, soonest first. None means the alerts table isn't available (yet).
+    Cached briefly so a page full of reruns doesn't hit the database; create/remove clear it."""
+    try:
+        res = (supabase.table(SLOT_WATCH_TABLE).select("*").eq("email", (email or "").strip().lower())
+               .eq("status", "active").execute())
+        rows = res.data or []
+    except Exception:
+        return None
+    return sorted(rows, key=lambda w: (w["date"], int(w["start_hour"]), int(w["hours"])))
+
+def create_slot_watch(email, sub_community, villa, date_str, start_hour, hours):
+    """Returns (status, message). status: ok | available | duplicate | limit | invalid | unavailable | error."""
+    email = (email or "").strip().lower()
+    needed = list(range(start_hour, start_hour + hours))
+    valid_hours = get_start_hours_for_date(date_str)
+    window = {d.strftime('%Y-%m-%d') for d in get_next_14_days()}
+    if date_str not in window or any(h not in valid_hours for h in needed) or is_slot_in_past(date_str, start_hour):
+        return "invalid", "That time isn't available to watch. Please pick another."
+    try:
+        day = supabase.table("bookings").select("court, start_hour").eq("date", date_str).limit(2000).execute()
+        taken = {(r["court"], int(r["start_hour"])) for r in (day.data or [])}
+    except Exception:
+        return "error", "Couldn't check availability just now. Please try again."
+    free = [c for c in courts if all((c, h) not in taken for h in needed)]
+    if free:
+        return "available", (f"{', '.join(free)} {'is' if len(free) == 1 else 'are'} free at that time right now — "
+                             "you can book it above, no alert needed.")
+    try:
+        mine = (supabase.table(SLOT_WATCH_TABLE).select("id, date, start_hour, hours").eq("email", email)
+                .eq("status", "active").execute()).data or []
+    except Exception:
+        return "unavailable", "Slot alerts aren't switched on yet — please check back soon."
+    if any(w["date"] == date_str and int(w["start_hour"]) == start_hour and int(w["hours"]) == hours for w in mine):
+        return "duplicate", "You're already watching that slot."
+    if len([w for w in mine if not is_slot_in_past(w["date"], int(w["start_hour"]))]) >= MAX_ACTIVE_WATCHES_PER_EMAIL:
+        return "limit", f"You can watch up to {MAX_ACTIVE_WATCHES_PER_EMAIL} slots at once. Remove one below to add another."
+    try:
+        supabase.table(SLOT_WATCH_TABLE).insert({
+            "email": email, "sub_community": sub_community, "villa": (str(villa) if villa is not None else None),
+            "date": date_str, "start_hour": start_hour, "hours": hours, "status": "active",
+        }).execute()
+    except Exception:
+        return "error", "Couldn't save your alert. Please try again."
+    get_my_slot_watches.clear()
+    when = _slot_when_text(date_str)
+    return "ok", (f"You're on the list! We'll email {email} once if a court opens {when} "
+                  f"from {start_hour:02d}:00 to {start_hour + hours:02d}:00.")
+
+def remove_slot_watch(watch_id, email):
+    try:
+        supabase.table(SLOT_WATCH_TABLE).delete().eq("id", watch_id).eq("email", (email or "").strip().lower()).execute()
+    except Exception:
+        pass
+    get_my_slot_watches.clear()
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def _run_scheduled_watch_cleanup():
+    """Alerts for days that are over are useless: drop them (at most hourly)."""
+    try:
+        supabase.table(SLOT_WATCH_TABLE).delete().lt("date", get_today().strftime('%Y-%m-%d')).execute()
+    except Exception:
+        pass
+    return True
+
+def _watch_columns(spec):
+    """st.columns with vertically centred cells where this Streamlit version supports it."""
+    try:
+        return st.columns(spec, vertical_alignment="center")
+    except TypeError:
+        return st.columns(spec)
+
+def _slot_window_label(date_str, start_hour, hours=1, show_hours=False):
+    """'Today · 18:00 – 20:00', 'Tomorrow · ...' or 'Tue 22 Sep · ...' (+ ' · 2 hrs' when show_hours)."""
+    d = datetime.strptime(date_str, '%Y-%m-%d').date()
+    today = get_today()
+    day = "Today" if d == today else "Tomorrow" if d == today + timedelta(days=1) else d.strftime('%a %d %b')
+    label = f"{day} · {start_hour:02d}:00 – {start_hour + hours:02d}:00"
+    if show_hours:
+        label += f" · {hours} hr{'s' if hours > 1 else ''}"
+    return label
+
+def get_watchable_windows(hours, selected_date=None, exclude=()):
+    """The only slots worth setting an alert for: inside the booking window, not in the past, and with
+    NO court free for `hours` consecutive hours (if one is free you can simply book it). Answered from
+    the shared booking snapshot, so it costs no database query. Slots on `selected_date` (the day being
+    viewed in the table) are listed first. Returns None if the snapshot isn't available."""
+    rows, _since = _snapshot_rows()
+    if rows is None:
+        return None
+    taken_by_day = {}
+    for r in rows:
+        taken_by_day.setdefault(r["date"], set()).add((r["court"], int(r["start_hour"])))
+    windows = []
+    for d in get_next_14_days():
+        ds = d.strftime('%Y-%m-%d')
+        taken = taken_by_day.get(ds, set())
+        valid = get_start_hours_for_date(ds)
+        for start in valid:
+            needed = range(start, start + hours)
+            if any(h not in valid for h in needed) or is_slot_in_past(ds, start) or (ds, start, hours) in exclude:
+                continue
+            if any(all((c, h) not in taken for h in needed) for c in courts):
+                continue                                   # some court is free for the whole window
+            windows.append((ds, start))
+    windows.sort(key=lambda w: (w[0] != selected_date, w[0], w[1]))
+    return windows
+
+def render_slot_watch_section(selected_date, watch_email, sub_community, villa):
+    """'I'm looking for a slot': pick 1 or 2 hours, pick one of the FULLY BOOKED slots, tap Notify me.
+    Only fully booked slots are offered, so there is nothing to get wrong; three compact rows, inside an
+    expander so it takes a single line until opened."""
+    ss = st.session_state
+    with st.expander("🔔 I'm looking for a slot"):
+        email = (watch_email or "").strip().lower()
+        if "@" not in email:
+            st.caption("Slot alerts need a verified email address.")
+            return
+        mine = get_my_slot_watches(email)
+        if mine is None:
+            st.caption("Slot alerts aren't switched on yet — please check back soon.")
+            return
+
+        if ss.pop("watch_reset", False):
+            # After a saved alert, start from a blank picker. Just dropping the old value is not enough:
+            # the browser keeps showing the previous choice in the dropdown. A new key = a brand-new widget.
+            ss["watch_nonce"] = ss.get("watch_nonce", 0) + 1
+        slot_key = f"watch_slot_{ss.get('watch_nonce', 0)}"
+        flash = ss.pop("watch_flash", None)
+
+        st.caption(f"Pick a fully booked slot and we'll email **{email}** once if a court frees up.")
+        w_dur = st.radio("For", ["1 hour", "2 hours"], horizontal=True, key="watch_hours", label_visibility="collapsed")
+        w_n = 2 if w_dur == "2 hours" else 1
+
+        watching = {(w["date"], int(w["start_hour"]), int(w["hours"])) for w in mine}
+        windows = get_watchable_windows(w_n, selected_date, exclude=watching)
+        if windows is None:
+            st.caption("Couldn't load availability just now — please try again in a moment.")
+        elif not windows:
+            st.caption(f"No fully booked {w_n}-hour slots right now — a court is free at every time, so you can just book one above.")
+        else:
+            opts = [f"{d}|{h:02d}" for d, h in windows]
+            if ss.get(slot_key) not in opts:
+                ss.pop(slot_key, None)                       # e.g. the duration changed or the slot opened up
+            w_slot = st.selectbox(
+                "Slot", opts, index=None, placeholder="Choose a fully booked slot",
+                format_func=lambda v: _slot_window_label(v.split("|")[0], int(v.split("|")[1]), w_n),
+                key=slot_key, label_visibility="collapsed",
+            )
+            if st.button("🔔 Notify me", key="watch_submit", disabled=not w_slot, use_container_width=True):
+                d_str, h_str = w_slot.split("|")
+                status, msg = create_slot_watch(email, sub_community, villa, d_str, int(h_str), w_n)
+                ss["watch_flash"] = ("success" if status == "ok" else "info" if status in ("available", "duplicate", "invalid") else "warning", msg)
+                if status in ("ok", "available", "duplicate", "invalid"):
+                    ss["watch_reset"] = True
+                st.rerun()
+
+        if flash:
+            (st.success if flash[0] == "success" else st.info if flash[0] == "info" else st.warning)(flash[1])
+
+        live = [w for w in mine if not is_slot_in_past(w["date"], int(w["start_hour"]))]
+        if live:
+            st.caption("Your alerts — tap one to remove it")
+            for w in live:
+                if st.button(f"✕  {_slot_window_label(w['date'], int(w['start_hour']), int(w['hours']), show_hours=True)}",
+                             key=f"watch_rm_{w['id']}", use_container_width=True):
+                    remove_slot_watch(w["id"], email)
+                    st.rerun()
 
 # --- COACH SPECIFIC HELPER FUNCTIONS ---
 
@@ -2160,6 +2502,7 @@ def _process_background_tasks():
         _run_scheduled_log_retention()
         _run_scheduled_double_booking_check()
         _run_scheduled_db_cleanup()
+        _run_scheduled_watch_cleanup()
     except Exception:
         pass
 
@@ -2558,6 +2901,11 @@ div[role="tabpanel"] h3 { font-size: 0.875rem !important; }
 /* Tab labels ("Plan & Book", "My Bookings", "Maint.", "Log", "News") in the same font as the page title.
    Audiowide is a wide font, which is why the labels are kept fairly short. */
 [role="tab"], [role="tab"] p, [role="tab"] div { font-family: 'Audiowide', cursive !important; }
+/* The "I'm looking for a slot" form reads as a sentence ("on [day] at [time] for [1 hr]"). On phones
+   Streamlit stacks every column onto its own line; inside this one named container keep the cells of a row
+   side by side, with a tighter gap, so the form is two short rows instead of five. */
+.st-key-watch_form [data-testid="stHorizontalBlock"] { flex-wrap: nowrap !important; gap: 0.4rem !important; align-items: center !important; }
+.st-key-watch_form [data-testid="stColumn"] { min-width: 0 !important; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -3892,7 +4240,7 @@ Coach accounts exist for tennis coaches who train residents across **several vil
                             send_gmail_smtp(w_email, subject, html_content)
                         add_log(
                             "Sniping Warning",
-                            f"sNIPING warning sent to {', '.join(warn_emails)} regarding suspected multi-email/"
+                            f"Manual warning sent to {', '.join(warn_emails)} regarding suspected multi-email/"
                             f"multi-villa activity across: {villas_str}",
                             fingerprint="admin_manual_warning"
                         )
@@ -4522,11 +4870,12 @@ def render_availability_tab(is_coach, current_device, resident_ctx=None, coach_c
         is remembered in two places: our own keys AND the table widget's internal selection
         (stored under its widget key). Clearing only ours made the table re-report the tap on the
         next rerun and re-select the slot, so the table also gets a brand-new widget key (nonce),
-        i.e. an empty selection. Must run BEFORE the pickers are drawn (it edits their state)."""
+        i.e. an empty selection. The same goes for the court/time/2-hour widgets in the bar: deleting their
+        stored value blanks the app's copy but the BROWSER keeps showing the old text in the dropdowns, so
+        they are given brand-new widget keys instead (see _bk). Must run BEFORE the pickers are drawn."""
         st.session_state["avail_grid_last_tap"] = None
         st.session_state["avail_grid_nonce"] = st.session_state.get("avail_grid_nonce", 0) + 1
-        for _k in ("q_court_select", "q_time_select", "q_2_hours_check"):
-            st.session_state.pop(_k, None)
+        st.session_state["bar_nonce"] = st.session_state.get("bar_nonce", 0) + 1
 
     data = {}
     for h in get_start_hours_for_date(selected_date):
@@ -4605,6 +4954,13 @@ def render_availability_tab(is_coach, current_device, resident_ctx=None, coach_c
     # slot in the table. Clear (or a successful booking) blanks both.
     # ---------------------------------------------------------------------------------------------
     ss = st.session_state
+
+    def _bk(name):
+        """Widget key for one of the booking bar's controls. It carries counters so a reset (or a stale
+        value) can give the browser a genuinely new, empty widget: 'bar_nonce' for the whole bar,
+        'nonce_<name>' for a single control."""
+        return f"{name}_{ss.get('bar_nonce', 0)}_{ss.get('nonce_' + name, 0)}"
+
     if ss.pop("avail_bar_reset", False):
         _reset_booking_bar()
     if ss.get("avail_last_date") != selected_date:
@@ -4614,14 +4970,14 @@ def render_availability_tab(is_coach, current_device, resident_ctx=None, coach_c
         ss["avail_last_date"] = selected_date
 
     # Keep the pickers consistent with what is actually free on the displayed date
-    _sel_court = ss.get("q_court_select")
+    _sel_court = ss.get(_bk("q_court_select"))
     _free_sel = get_available_hours(_sel_court, selected_date) if _sel_court else []
-    _sel_time = ss.get("q_time_select")
+    _sel_time = ss.get(_bk("q_time_select"))
     if _sel_time and int(_sel_time.split(":")[0]) not in _free_sel:
-        ss.pop("q_time_select", None)
+        ss["nonce_q_time_select"] = ss.get("nonce_q_time_select", 0) + 1     # e.g. the date changed: a fresh, blank time picker
         _sel_time = None
     _sel_h = int(_sel_time.split(":")[0]) if _sel_time else None
-    _sel_two = bool(ss.get("q_2_hours_check")) and _sel_h is not None and (_sel_h + 1) in _free_sel
+    _sel_two = bool(ss.get(_bk("q_2_hours_check"))) and _sel_h is not None and (_sel_h + 1) in _free_sel
 
     display_df = df_avail.copy()
     if _sel_court and _sel_h is not None:
@@ -4667,9 +5023,9 @@ def render_availability_tab(is_coach, current_device, resident_ctx=None, coach_c
             _p_court, _p_hour, _p_lab = picked
             _p_cell = df_avail.loc[_p_court, _p_lab]
             if _p_cell == "Available":
-                ss["q_court_select"] = _p_court
-                ss["q_time_select"] = f"{_p_hour:02d}:00"
-                ss["q_2_hours_check"] = False
+                ss[_bk("q_court_select")] = _p_court
+                ss[_bk("q_time_select")] = f"{_p_hour:02d}:00"
+                ss[_bk("q_2_hours_check")] = False
             else:
                 ss["avail_bar_notice"] = (
                     "That time has passed." if _p_cell == "—" else "That slot is already booked — tap a green one."
@@ -4688,7 +5044,7 @@ def render_availability_tab(is_coach, current_device, resident_ctx=None, coach_c
             # The user un-tapped the slot. If the bar still holds that same slot, blank it too.
             _lt_court, _lt_hour, _ = ss["avail_grid_last_tap"]
             ss["avail_grid_last_tap"] = None
-            if ss.get("q_court_select") == _lt_court and ss.get("q_time_select") == f"{_lt_hour:02d}:00":
+            if ss.get(_bk("q_court_select")) == _lt_court and ss.get(_bk("q_time_select")) == f"{_lt_hour:02d}:00":
                 _reset_booking_bar()
                 st.rerun()
 
@@ -4708,23 +5064,23 @@ def render_availability_tab(is_coach, current_device, resident_ctx=None, coach_c
         with b1:
             q_court = st.selectbox(
                 "Court", options=courts, index=None, placeholder="Tap a green slot, or choose a court",
-                key="q_court_select", label_visibility="collapsed",
+                key=_bk("q_court_select"), label_visibility="collapsed",
             )
         q_free = get_available_hours(q_court, selected_date) if q_court else []
         with b2:
             q_time = st.selectbox(
                 "Time", options=[f"{h:02d}:00" for h in q_free], index=None,
                 placeholder=("Time" if q_free else ("No free slots" if q_court else "Time")),
-                disabled=not q_free, key="q_time_select", label_visibility="collapsed",
+                disabled=not q_free, key=_bk("q_time_select"), label_visibility="collapsed",
             )
         q_h = int(q_time.split(":")[0]) if q_time else None
         q_can_2h = q_h is not None and (q_h + 1) in q_free
         with b3:
-            if not q_can_2h and ss.get("q_2_hours_check"):
-                ss["q_2_hours_check"] = False    # 2nd slot not free -> untick (before the checkbox is drawn)
+            if not q_can_2h and ss.get(_bk("q_2_hours_check")):
+                ss[_bk("q_2_hours_check")] = False    # 2nd slot not free -> untick (before the checkbox is drawn)
             q_2h = st.checkbox(
                 "2 hours" if (q_time is None or q_can_2h) else "2 hours (n/a)",
-                key="q_2_hours_check", disabled=not q_can_2h,
+                key=_bk("q_2_hours_check"), disabled=not q_can_2h,
             )
         q_slots = 2 if (q_2h and q_can_2h) else 1
         q_ready = bool(q_court and q_time)
@@ -4813,6 +5169,13 @@ def render_availability_tab(is_coach, current_device, resident_ctx=None, coach_c
     curr_auth = st.query_params.get("auth")
     full_url = f"/?view=full&auth={curr_auth}" if curr_auth else "/?view=full"
     st.link_button("🌐 View Full 14-Day Schedule (Full Page)", url=full_url)
+
+    render_slot_watch_section(
+        selected_date,
+        coach_ctx["coach_email"] if is_coach else verified_user_email,
+        None if is_coach else sub_community,
+        None if is_coach else villa,
+    )
 
     with st.expander("🔍 Court & Booking Lookup"):
         st.caption(f"Check who holds a slot on {selected_date} and its history, or look up a villa's bookings.")
