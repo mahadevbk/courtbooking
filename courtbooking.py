@@ -4535,10 +4535,11 @@ Coach accounts exist for tennis coaches who train residents across **several vil
                             break
                         offset += chunk_size
                     return data
-
+                
                 def get_zip_data():
                     import sqlite3, tempfile, os as _os
                     tmp_db_path = None
+                    sconn = None
                     try:
                         today_str = get_today()
                         buf = io.BytesIO()
@@ -4562,9 +4563,20 @@ Coach accounts exist for tennis coaches who train residents across **several vil
                                     df.to_json(orient="records", indent=2) if not df.empty else "[]",
                                 )
                                 if not df.empty:
+                                    # SQLite cannot bind Python dict/list objects; serialize any
+                                    # nested JSON-like columns so to_sql never raises InterfaceError.
+                                    for col in df.columns:
+                                        if df[col].map(lambda v: isinstance(v, (dict, list))).any():
+                                            df[col] = df[col].map(
+                                                lambda v: json.dumps(v) if isinstance(v, (dict, list)) else v
+                                            )
                                     df.to_sql(table_name, sconn, if_exists="replace", index=False)
                                 manifest_lines.append(f"{table_name}: {len(df)} row(s)")
+
+                            # Close the connection *before* reading the file so the OS releases
+                            # any exclusive lock (critical on Windows; harmless elsewhere).
                             sconn.close()
+                            sconn = None
 
                             with open(tmp_db_path, "rb") as f:
                                 vz.writestr(f"full_backup_{today_str}.sqlite", f.read())
@@ -4576,14 +4588,45 @@ Coach accounts exist for tennis coaches who train residents across **several vil
                         st.error(f"Backup Error: {str(e)}")
                         return None
                     finally:
+                        if sconn is not None:
+                            try:
+                                sconn.close()
+                            except Exception:
+                                pass
                         if tmp_db_path and _os.path.exists(tmp_db_path):
-                            _os.remove(tmp_db_path)
+                            try:
+                                _os.remove(tmp_db_path)
+                            except Exception:
+                                pass
 
-                if st.button("Generate Backup Link"):
+                # Persist generated ZIP in session_state so the download button survives the
+                # rerun that Streamlit triggers when the user actually clicks Download.
+                if st.button("Generate Backup Link", key="admin_generate_backup_btn"):
                     with st.spinner("Fetching every table from Supabase — this may take a moment..."):
                         data = get_zip_data()
-                    if data: st.download_button(label="Click here to Download ZIP", data=data, file_name=f"court_booking_full_backup_{get_today()}.zip", mime="application/zip")
-                    else: st.error("Failed to fetch data for backup.")
+                    if data:
+                        st.session_state["admin_backup_zip"] = data
+                        st.session_state["admin_backup_filename"] = f"court_booking_full_backup_{get_today()}.zip"
+                    else:
+                        st.session_state.pop("admin_backup_zip", None)
+                        st.session_state.pop("admin_backup_filename", None)
+                        st.error("Failed to fetch data for backup.")
+
+                if st.session_state.get("admin_backup_zip"):
+                    st.download_button(
+                        label="Click here to Download ZIP",
+                        data=st.session_state["admin_backup_zip"],
+                        file_name=st.session_state.get(
+                            "admin_backup_filename",
+                            f"court_booking_full_backup_{get_today()}.zip",
+                        ),
+                        mime="application/zip",
+                        key="admin_download_backup_btn",
+                    )
+                    if st.button("Clear backup from memory", key="admin_clear_backup_btn"):
+                        st.session_state.pop("admin_backup_zip", None)
+                        st.session_state.pop("admin_backup_filename", None)
+                        st.rerun()
 
         with admin_tabs[6]:
             st.markdown("### 📧 Broadcast Email to Residents")
