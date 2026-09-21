@@ -3558,16 +3558,15 @@ def render_court_maintenance_tab(reporter_label, current_device):
     """Shared Court Maintenance tab body, used by both the resident and coach dashboards."""
     import base64
     st.subheader("🛠️ Court Maintenance")
-    st.markdown(f"""
-    <div style="background-color:#0d5384; padding:25px; border-radius:15px; border-left: 8px solid #ccff00;">
-        <h2 style="color:#ccff00; margin-top:0;">Power in Numbers</h2>
-        <p style="font-size:1.1em; line-height:1.6;">
-            This hub centralizes every court issue to facilitate <b>mass maintenance requests</b>. By reporting collectively, we ensure 
+    st.markdown("""
+    <div style="background-color:#0d5384; padding:10px 14px; border-radius:10px; border-left: 5px solid #ccff00; margin-bottom:8px;">
+        <div style="font-family:'Audiowide', cursive; color:#ccff00; font-size:1rem; margin:0 0 4px 0;">Power in Numbers</div>
+        <p style="font-size:0.82em; line-height:1.35; margin:0 0 4px 0;">
+            This hub centralizes every court issue to facilitate <b>mass maintenance requests</b>. By reporting collectively, we ensure
             our concerns are impossible to ignore and prioritized for repair.
         </p>
-        <hr style="border:0.5px solid #052134; margin:15px 0;">
-        <p style="font-style:italic; font-size:0.95em;">
-            <b>Community Verified:</b> Once a repair is completed, any resident can mark the issue 
+        <p style="font-style:italic; font-size:0.78em; line-height:1.3; margin:0; border-top:0.5px solid #052134; padding-top:4px;">
+            <b>Community Verified:</b> Once a repair is completed, any resident can mark the issue
             as <span style="color:#ccff00; font-weight:bold;">FIXED</span> to maintain real-time accuracy for the neighborhood.
         </p>
     </div>
@@ -3613,24 +3612,17 @@ def render_court_maintenance_tab(reporter_label, current_device):
                 except Exception as e:
                     st.error(f"Failed to submit report: {str(e)}")
 
-    st.divider()
-    st.markdown("### 📞 Contact Resources")
-    c_col1, c_col2, c_col3 = st.columns(3)
-    with c_col1:
-        st.markdown(f'<div style="background: rgba(255,255,255,0.05); padding: 15px; border-radius: 10px; text-align: center; border: 1px solid rgba(255,255,255,0.1);">'
-                    f'<div style="font-size: 20px;">📧 Email</div>'
-                    f'<div style="font-size: 14px; margin-top: 5px;"><a href="mailto:support@dubaiholdingcm.ae" style="color: #4CAF50; text-decoration: none;">support@dubaiholdingcm.ae</a></div>'
-                    f'</div>', unsafe_allow_html=True)
-    with c_col2:
-        st.markdown(f'<div style="background: rgba(255,255,255,0.05); padding: 15px; border-radius: 10px; text-align: center; border: 1px solid rgba(255,255,255,0.1);">'
-                    f'<div style="font-size: 20px;">💬 WhatsApp</div>'
-                    f'<div style="font-size: 14px; margin-top: 5px;"><a href="https://wa.me/971562069871" target="_blank" style="color: #4CAF50; text-decoration: none;">+971 56 206 9871</a></div>'
-                    f'</div>', unsafe_allow_html=True)
-    with c_col3:
-        st.markdown(f'<div style="background: rgba(255,255,255,0.05); padding: 15px; border-radius: 10px; text-align: center; border: 1px solid rgba(255,255,255,0.1);">'
-                    f'<div style="font-size: 20px;">🌐 Web</div>'
-                    f'<div style="font-size: 14px; margin-top: 5px;"><a href="https://dubaiholdingcommunities.ae" target="_blank" style="color: #4CAF50; text-decoration: none;">dubaiholdingcommunities.ae</a></div>'
-                    f'</div>', unsafe_allow_html=True)
+    _pill = ("display:inline-block; background: rgba(255,255,255,0.05); padding: 5px 10px; border-radius: 8px; "
+             "border: 1px solid rgba(255,255,255,0.1); font-size: 12px; margin: 2px 4px 2px 0;")
+    st.markdown(
+        '<div style="margin: 6px 0 2px 0;">'
+        '<span style="font-family: \'Audiowide\', cursive; font-size: 12px; margin-right: 8px;">📞 Contact Resources</span>'
+        f'<span style="{_pill}">📧 <a href="mailto:support@dubaiholdingcm.ae" style="color: #4CAF50; text-decoration: none;">support@dubaiholdingcm.ae</a></span>'
+        f'<span style="{_pill}">💬 <a href="https://wa.me/971562069871" target="_blank" style="color: #4CAF50; text-decoration: none;">+971 56 206 9871</a></span>'
+        f'<span style="{_pill}">🌐 <a href="https://dubaiholdingcommunities.ae" target="_blank" style="color: #4CAF50; text-decoration: none;">dubaiholdingcommunities.ae</a></span>'
+        '</div>',
+        unsafe_allow_html=True,
+    )
 
     st.divider()
     st.markdown("### 📋 Court Issues")
@@ -3653,7 +3645,7 @@ def render_court_maintenance_tab(reporter_label, current_device):
                 </a>
             ''', unsafe_allow_html=True)
 
-        for item in maint_data.data:
+        def _render_issue(item):
             with st.container(border=True):
                 l_col1, l_col2, l_col3 = st.columns([1, 2, 1])
                 with l_col1:
@@ -3680,6 +3672,22 @@ def render_court_maintenance_tab(reporter_label, current_device):
                             }).eq("id", item['id']))
                             refresh_after_maintenance_change()
                             st.rerun()
+
+        fixed_issues = [item for item in maint_data.data if item.get('is_fixed')]
+
+        st.markdown(f"#### ⚠️ Pending ({len(open_issues)})")
+        if open_issues:
+            for item in open_issues:
+                _render_issue(item)
+        else:
+            st.caption("No pending issues.")
+
+        st.markdown(f"#### ✅ Fixed ({len(fixed_issues)})")
+        if fixed_issues:
+            for item in fixed_issues:
+                _render_issue(item)
+        else:
+            st.caption("No fixed issues yet.")
     else:
         st.info("No maintenance issues reported yet.")
 
