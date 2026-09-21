@@ -1909,7 +1909,7 @@ def create_slot_watch(email, sub_community, villa, date_str, start_hour, hours):
         return "error", "Couldn't save your alert. Please try again."
     get_my_slot_watches.clear()
     when = _slot_when_text(date_str)
-    return "ok", (f"You're on the list! We'll email {email} once if a court opens {when} "
+    return "ok", (f"You're on the list! We'll email {email} , if, a court opens {when} "
                   f"from {start_hour:02d}:00 to {start_hour + hours:02d}:00.")
 
 def remove_slot_watch(watch_id, email):
