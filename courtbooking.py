@@ -1993,7 +1993,7 @@ def render_slot_watch_section(selected_date, watch_email, sub_community, villa):
         slot_key = f"watch_slot_{ss.get('watch_nonce', 0)}"
         flash = ss.pop("watch_flash", None)
 
-        st.caption(f"Pick a fully booked slot and we'll email **{email}** once if a court frees up.")
+        st.caption(f"Pick a fully booked slot and we'll email **{email}** , if, a court frees up.")
         w_dur = st.radio("For", ["1 hour", "2 hours"], horizontal=True, key="watch_hours", label_visibility="collapsed")
         w_n = 2 if w_dur == "2 hours" else 1
 
