@@ -3873,6 +3873,22 @@ def render_coach_admin_panel(key_prefix="cam"):
                                         st.error(f"Failed to update email — no changes were left partially applied beyond what's shown here. Details: {e}")
 
 @st.fragment
+def _villa_line_parts(line):
+    """'Mira 4 - Villa 84' / 'Mira 4 Villa 84' / 'Mira 4 - 84' -> ('Mira 4', '84'); None if it isn't that shape."""
+    m = re.match(r"^\s*(.+?)\s*[-–—]?\s*(?:villa\s*)?(\d+)\s*$", line or "", flags=re.I)
+    return (m.group(1).strip(), m.group(2)) if m else None
+
+def build_sniping_warning_details(warn_villas):
+    """Log text for a warning sent by hand, written EXACTLY like the automatic warning
+    ('Cross-villa warning triggered for <villa>. Prior activity on: <villas>') so nothing in the
+    activity log tells residents which kind it was."""
+    parts = [_villa_line_parts(v) for v in warn_villas]
+    if not warn_villas:
+        return "Cross-villa warning triggered for multiple properties. Prior activity on: multiple properties"
+    triggered = f"{parts[0][0]} Villa {parts[0][1]}" if parts[0] else warn_villas[0]
+    prior = ", ".join((f"{p[0]} - {p[1]}" if p else v) for v, p in zip(warn_villas[1:], parts[1:]))
+    return f"Cross-villa warning triggered for {triggered}. Prior activity on: {prior or 'multiple properties'}"
+
 def _render_activity_log_table(is_admin):
     ref_col1, ref_col2 = st.columns([5, 2])
     with ref_col1:
@@ -3913,6 +3929,8 @@ def _render_activity_log_table(is_admin):
             # Who filed a "Booked but not used" report is admin-only — residents still see which
             # villa was reported and the running 30-day count, just not who reported them.
             display_df['details'] = display_df['details'].str.replace(r'\s*Reported by [^.]+\.', '', regex=True)
+            # Who a warning was emailed to is kept for the admin only.
+            display_df['details'] = display_df['details'].str.replace(r'\s*⟦WARNED:.*?⟧', '', regex=True)
             display_df['details'] = display_df['details'].apply(mask_emails_in_text)
 
         cols = ['timestamp', 'event_type', 'details']
@@ -4189,7 +4207,7 @@ Coach accounts exist for tennis coaches who train residents across **several vil
                             villa_pairs = [(c['sub_community'], c['villa']) for c in associated_claims]
                             ban_tag = build_ban_tag(lockout_email_input, villa_pairs)
                             log_msg = f"4-day penalty active for email {lockout_email_input} across properties: {villas_str} {ban_tag}"
-                            add_log("Sniping Penalty", log_msg, fingerprint="admin_manual_lockout")
+                            add_log("Sniping Penalty", log_msg)
                             st.success(f"✅ Sniping lockout successfully applied and logged for `{lockout_email_input}` and associated properties ({villas_str}).")
                             time.sleep(1.5)
                             st.rerun()
@@ -4238,11 +4256,11 @@ Coach accounts exist for tennis coaches who train residents across **several vil
                             </body></html>
                             """
                             send_gmail_smtp(w_email, subject, html_content)
+                        # Written exactly like the automatic warning so residents can't tell them apart. The
+                        # addresses are kept in a hidden tag (shown to admins only) as your record of who was warned.
                         add_log(
                             "Sniping Warning",
-                            f"Manual warning sent to {', '.join(warn_emails)} regarding suspected multi-email/"
-                            f"multi-villa activity across: {villas_str}",
-                            fingerprint="admin_manual_warning"
+                            f"{build_sniping_warning_details(warn_villas)} ⟦WARNED:{','.join(warn_emails)}⟧",
                         )
                         st.success(f"✅ Warning email sent to {len(warn_emails)} address(es) and logged.")
                         time.sleep(1.5)
