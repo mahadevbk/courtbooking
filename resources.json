@@ -1,0 +1,31 @@
+{
+  "whatsapp_groups": [
+    {
+      "name": "Mira Tennis Group",
+      "image_url": "https://raw.githubusercontent.com/mahadevbk/courtbooking/main/resources/miratennisgroup.jpeg",
+      "description": "The OG Mira Tennis group. Open to all Mira residents. Join here: https://chat.whatsapp.com/E6AVTUsMJdrJWvWv8dkgtP?mode=gi_t&fbclid=IwY2xjawUHWfVwZG9mBWV4dG4DYWVtAjEwAGJyaWQRMUM5cnFmQU5GV0MyUFdFVTNzcnRjBmFwcF9pZBAyMjIwMzkxNzg4MjAwODkyAAEeBxL0Rn373NmWGDf6gCXEDJJgPB4bps5UzHISsstCvOHUJFcJDPMBkak2FIo_aem_dEubjzwWvi4jijKppzMqzQ"
+    },
+    {
+      "name": "Mira Open",
+      "image_url": "https://raw.githubusercontent.com/mahadevbk/courtbooking/main/resources/miraopen.jpeg",
+      "description": "Singles & Doubles games organised here. Contact group admins Ameen or Stacey to join."
+    },
+    {
+      "name": "MMD Mira Mixed Doubles",
+      "image_url": "https://raw.githubusercontent.com/mahadevbk/courtbooking/main/resources/mmd.jpeg",
+      "description": "Mixed Doubles games of Intermediate level are the group's focus. This Group is like Motel California - Hard to get in, Easy to get out of (for inactive players). Contact Group admins Mustafa or Dev."
+    }
+  ],
+  "stringers": [
+    {
+      "name": "Thomas",
+      "phone": "+971528915568",
+      "description": "Picks up & drops off rackets. Has his own strings / will also take your strings to restring."
+    },
+    {
+      "name": "Olav de Jong",
+      "phone": "+971501155674",
+      "description": "Picks up & drops off rackets. Has his own strings / will also take your strings to restring."
+    }
+  ]
+}
