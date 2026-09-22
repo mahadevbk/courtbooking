@@ -100,7 +100,8 @@ DONOR_NAMES = load_donor_names()
 # }
 # "image_url" and "description" are optional per entry; everything else is required for that
 # entry to render. A group's WhatsApp link, if it has one, just goes inside its description text
-# (as a plain URL, which Streamlit renders as a clickable link) — there's no separate link field.
+# (as a plain URL, e.g. "Join here: https://chat.whatsapp.com/xxxx") — the app pulls it out of the
+# text automatically and shows a short "🔗 Join Group" button instead of the raw link.
 # ---------------------------------------------------------------------------
 RESOURCES_JSON_URL = "https://raw.githubusercontent.com/mahadevbk/courtbooking/main/resources.json"
 
@@ -115,6 +116,31 @@ def load_resources_data():
     groups = [g for g in raw.get("whatsapp_groups", []) if isinstance(g, dict) and g.get("name")]
     stringers = [s for s in raw.get("stringers", []) if isinstance(s, dict) and s.get("name") and s.get("phone")]
     return {"whatsapp_groups": groups, "stringers": stringers}
+
+_URL_RE = re.compile(r'https?://\S+')
+_TRAILING_LINK_LABEL_RE = re.compile(r'(?i)\b(join(\s+group)?(\s+here)?|link)\s*:?\s*$')
+
+def _split_description_link(text):
+    """A group description can have its join link typed right into the text (e.g. "Join here:
+    https://chat.whatsapp.com/..."). Those links, especially WhatsApp's, are long and full of
+    tracking parameters, so showing the raw URL wastes space. This pulls the first http(s) link
+    out and returns (description_without_the_link, link_or_None); the caller shows a short
+    "🔗 Join Group" button for the link instead of the URL text. A leading label like "Join:",
+    "Join here:" or "Link:" right before the link is dropped too, since the button says that now.
+    Text with no link in it, or no description at all, passes through unchanged."""
+    if not text:
+        return "", None
+    m = _URL_RE.search(text)
+    if not m:
+        return text.strip(), None
+    raw_url = m.group(0)
+    link = raw_url.rstrip('.,)]}>"\'')                 # trailing sentence punctuation isn't part of the URL
+    trailing_punct = raw_url[len(link):]
+    before = _TRAILING_LINK_LABEL_RE.sub('', text[:m.start()].rstrip()).rstrip()
+    after = (trailing_punct + text[m.end():]).strip()
+    remaining = f"{before} {after}".strip() if (before and after) else (before or after)
+    remaining = re.sub(r'\s+([.,;:!?])', r'\1', remaining).strip()  # e.g. "residents ." -> "residents."
+    return remaining, link
 
 def render_resources_tab():
     hdr_col1, hdr_col2 = st.columns([5, 2])
@@ -149,10 +175,13 @@ def render_resources_tab():
                             )
                     with gc2:
                         st.markdown(f"**{g['name']}**")
-                        if g.get("description"):
-                            st.markdown(g["description"])   # a plain https:// link in here renders clickable automatically
-                        else:
+                        desc_text, join_link = _split_description_link(g.get("description", ""))
+                        if desc_text:
+                            st.markdown(desc_text)
+                        elif not join_link:
                             st.caption("Contact the admin to join.")
+                        if join_link:
+                            st.link_button("🔗 Join Group", join_link, width='stretch')
     else:
         st.caption("No WhatsApp groups listed yet.")
 
