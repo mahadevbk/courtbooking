@@ -17,6 +17,7 @@ from postgrest.exceptions import APIError
 from PIL import Image, ImageDraw, ImageFont # For dynamic JPG card rendering
 from streamlit_javascript import st_javascript
 import urllib.parse
+import urllib.request
 import os
 import csv
 import threading
@@ -81,6 +82,97 @@ DONOR_NAMES = load_donor_names()
 # Each tuple is (sub_community, villa) — sub_community lowercased and whitespace-collapsed, villa
 # as a plain string — matching the normalization is_donor_villa() applies when checking a booking.
 # This is the final, closed list of villas that receive the 8-active-booking "Legends of Mira"
+# ---------------------------------------------------------------------------
+# RESOURCES TAB — WhatsApp groups & racket-stringing contacts.
+# Static, admin-maintained data kept OUTSIDE this file so it can be updated without a redeploy:
+# a JSON file in the same GitHub folder as this script. JSON (not YAML/CSV) because `json` is
+# already imported here — no extra package to install — and it still edits cleanly in any text
+# editor or GitHub's own web editor.
+#
+# Expected shape of resources.json:
+# {
+#   "whatsapp_groups": [
+#     {"name": "Mira Tennis Players", "image_url": "https://.../pic.jpg", "description": "Open to all residents. Link: https://chat.whatsapp.com/xxxxxxxx"}
+#   ],
+#   "stringers": [
+#     {"name": "Ahmed's Stringing", "phone": "+971501234567", "description": "Same-day stringing, drops off at your villa."}
+#   ]
+# }
+# "image_url" and "description" are optional per entry; everything else is required for that
+# entry to render. A group's WhatsApp link, if it has one, just goes inside its description text
+# (as a plain URL, which Streamlit renders as a clickable link) — there's no separate link field.
+# ---------------------------------------------------------------------------
+RESOURCES_JSON_URL = "https://raw.githubusercontent.com/mahadevbk/courtbooking/main/resources.json"
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def load_resources_data():
+    """Fetches resources.json from GitHub. Cached for an hour, so a normal visit never waits on
+    GitHub and an edit to the file shows up within the hour (or immediately after the "🔄 Refresh"
+    button on the tab, which clears this cache). Returns {} — an empty result, not an error — if
+    the file is missing, malformed, or GitHub can't be reached, so the tab always renders."""
+    with urllib.request.urlopen(RESOURCES_JSON_URL, timeout=6) as resp:
+        raw = json.loads(resp.read().decode("utf-8"))
+    groups = [g for g in raw.get("whatsapp_groups", []) if isinstance(g, dict) and g.get("name")]
+    stringers = [s for s in raw.get("stringers", []) if isinstance(s, dict) and s.get("name") and s.get("phone")]
+    return {"whatsapp_groups": groups, "stringers": stringers}
+
+def render_resources_tab():
+    hdr_col1, hdr_col2 = st.columns([5, 2])
+    with hdr_col1:
+        st.markdown("### 📚 Community Resources")
+    with hdr_col2:
+        st.write("")
+        if st.button("🔄 Refresh", key="refresh_resources_btn", width='stretch'):
+            load_resources_data.clear()
+            st.rerun()
+
+    try:
+        data = load_resources_data()
+    except Exception:
+        data = {}
+    groups, stringers = data.get("whatsapp_groups", []), data.get("stringers", [])
+
+    st.markdown("#### 💬 WhatsApp Groups")
+    if groups:
+        cols = st.columns(2)
+        for i, g in enumerate(groups):
+            with cols[i % 2]:
+                with st.container(border=True):
+                    gc1, gc2 = st.columns([1, 3])
+                    with gc1:
+                        if g.get("image_url"):
+                            st.image(g["image_url"], width='stretch')
+                        else:
+                            st.markdown(
+                                '<div style="font-size: 2.2rem; text-align: center;">💬</div>',
+                                unsafe_allow_html=True,
+                            )
+                    with gc2:
+                        st.markdown(f"**{g['name']}**")
+                        if g.get("description"):
+                            st.markdown(g["description"])   # a plain https:// link in here renders clickable automatically
+                        else:
+                            st.caption("Contact the admin to join.")
+    else:
+        st.caption("No WhatsApp groups listed yet.")
+
+    st.divider()
+    st.markdown("#### 🎾 Racket Stringing Services")
+    if stringers:
+        for s in stringers:
+            with st.container(border=True):
+                sc1, sc2 = st.columns([3, 2])
+                with sc1:
+                    st.markdown(f"**{s['name']}**")
+                    if s.get("description"):
+                        st.caption(s["description"])
+                with sc2:
+                    st.write("")
+                    wa_number = re.sub(r"[^\d]", "", s["phone"])
+                    st.link_button(f"📞 {s['phone']}", f"https://wa.me/{wa_number}", width='stretch')
+    else:
+        st.caption("No stringing services listed yet.")
+
 # allowance (instead of the standard 6). It will not grow with future donors.
 DONOR_VILLAS = {
     ("mira oasis 1", "148"),
@@ -5456,7 +5548,7 @@ if COACH_FEATURE_ENABLED and st.session_state.get('is_coach'):
         "total_allowed": total_allowed, "total_active": total_active, "n_villas": len(assigned_villas),
     }
 
-    c_tab_avail, c_tab_mine, c_tab_maint, c_tab_log, c_tab_news = st.tabs(["📅 Plan & Book", "📋 My Bookings", "🛠️ Maint.", "📜 Log", announcements_tab_label()])
+    c_tab_avail, c_tab_mine, c_tab_resources, c_tab_maint, c_tab_log, c_tab_news = st.tabs(["📅 Plan & Book", "📋 My Bookings", "🔗 Resources", "🛠️ Maint.", "📜 Log", announcements_tab_label()])
 
     with c_tab_avail:
         render_whatsapp_banner()
@@ -5535,6 +5627,10 @@ if COACH_FEATURE_ENABLED and st.session_state.get('is_coach'):
                         time.sleep(1)
                         st.rerun()
 
+    with c_tab_resources:
+        render_whatsapp_banner()
+        render_resources_tab()
+
     with c_tab_maint:
         render_whatsapp_banner()
         render_court_maintenance_tab(f"Coach {coach_name}", current_device)
@@ -5588,7 +5684,7 @@ else:
         )
         show_sniping_warning_dialog(hopping_villas)
 
-    tab_avail, tab_mine, tab_maint, tab_log, tab_news = st.tabs(["📅 Plan & Book", "📋 My Bookings", "🛠️ Maint.", "📜 Log", announcements_tab_label()])
+    tab_avail, tab_mine, tab_resources, tab_maint, tab_log, tab_news = st.tabs(["📅 Plan & Book", "📋 My Bookings", "🔗 Resources", "🛠️ Maint.", "📜 Log", announcements_tab_label()])
 
     with tab_avail:
         render_whatsapp_banner()
@@ -5773,6 +5869,10 @@ else:
             st.divider()
             if st.button("🚪 Logout / Change Villa", width='stretch'):
                 logout_action()
+
+    with tab_resources:
+        render_whatsapp_banner()
+        render_resources_tab()
 
     with tab_maint:
         render_whatsapp_banner()
