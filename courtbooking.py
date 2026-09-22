@@ -144,14 +144,7 @@ def _split_description_link(text):
     return remaining, link
 
 def render_resources_tab():
-    hdr_col1, hdr_col2 = st.columns([5, 2])
-    with hdr_col1:
-        st.markdown("### 📚 Community Resources")
-    with hdr_col2:
-        st.write("")
-        if st.button("🔄 Refresh", key="refresh_resources_btn", width='stretch'):
-            load_resources_data.clear()
-            st.rerun()
+    st.markdown("### 📚 Community Resources")
 
     try:
         data = load_resources_data()
