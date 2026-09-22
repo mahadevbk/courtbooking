@@ -20,6 +20,7 @@ import urllib.parse
 import urllib.request
 import os
 import csv
+import html
 import threading
 from concurrent.futures import ThreadPoolExecutor
 
@@ -164,24 +165,32 @@ def render_resources_tab():
         for i, g in enumerate(groups):
             with cols[i % 2]:
                 with st.container(border=True):
-                    gc1, gc2 = st.columns([1, 3])
-                    with gc1:
-                        if g.get("image_url"):
-                            st.image(g["image_url"], width='stretch')
-                        else:
-                            st.markdown(
-                                '<div style="font-size: 2.2rem; text-align: center;">💬</div>',
-                                unsafe_allow_html=True,
-                            )
-                    with gc2:
-                        st.markdown(f"**{g['name']}**")
-                        desc_text, join_link = _split_description_link(g.get("description", ""))
-                        if desc_text:
-                            st.markdown(desc_text)
-                        elif not join_link:
-                            st.caption("Contact the admin to join.")
-                        if join_link:
-                            st.link_button("🔗 Join Group", join_link, width='stretch')
+                    # Built as one HTML block, not st.columns: on a narrow phone Streamlit stacks
+                    # columns vertically, which made the "icon" column render as a full-width image.
+                    # A fixed-size (44px) round icon sits inline with the group name here instead, so
+                    # it stays small at any screen width; the description spans the full card below it.
+                    icon_html = (
+                        f'<img src="{html.escape(g["image_url"], quote=True)}" '
+                        'style="width:44px;height:44px;border-radius:50%;object-fit:cover;flex-shrink:0;">'
+                        if g.get("image_url") else
+                        '<div style="width:44px;height:44px;border-radius:50%;background:rgba(255,255,255,0.08);'
+                        'display:flex;align-items:center;justify-content:center;font-size:1.3rem;flex-shrink:0;">💬</div>'
+                    )
+                    desc_text, join_link = _split_description_link(g.get("description", ""))
+                    desc_html = (
+                        f'<div style="margin-top:8px; font-size:0.92rem; line-height:1.4;">{html.escape(desc_text)}</div>'
+                        if desc_text else
+                        '<div style="margin-top:8px; font-size:0.92rem; color:rgba(255,255,255,0.6);">Contact the admin to join.</div>'
+                        if not join_link else ''
+                    )
+                    st.markdown(
+                        '<div style="display:flex; align-items:center; gap:10px;">'
+                        f'{icon_html}<span style="font-weight:bold; font-size:1.05rem;">{html.escape(g["name"])}</span>'
+                        f'</div>{desc_html}',
+                        unsafe_allow_html=True,
+                    )
+                    if join_link:
+                        st.link_button("🔗 Join Group", join_link, width='stretch')
     else:
         st.caption("No WhatsApp groups listed yet.")
 
