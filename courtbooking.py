@@ -1243,9 +1243,25 @@ def init_supabase():
 
 supabase: Client = init_supabase()
 
-@st.cache_data(ttl=3600)
+@st.cache_resource(ttl=3600, show_spinner=False)
 def get_maintenance_data():
-    return run_query(supabase.table("court_maintenance").select("*").order("created_at", desc=True))
+    """All OPEN issues (never many at once — they get marked Fixed and drop out of this set)
+    plus only the most recent FIXED issues, capped, rather than every fixed issue ever filed.
+    Each issue can carry an embedded photo, and the unbounded version of this query — every
+    report since launch, photos included — was what pushed the app over Streamlit Cloud's
+    memory limit as the history grew. Shared via st.cache_resource (like the booking snapshot),
+    so it's fetched and held ONCE for every visitor instead of being re-copied into each
+    session's own memory. Returns a plain list of rows; raises on failure (not cached) so
+    render_court_maintenance_tab's "No maintenance issues" fallback still shows correctly."""
+    FIXED_ISSUES_LIMIT = 40
+    open_res = run_query(supabase.table("court_maintenance").select("*").eq("is_fixed", False).order("created_at", desc=True))
+    fixed_res = run_query(
+        supabase.table("court_maintenance").select("*").eq("is_fixed", True)
+        .order("created_at", desc=True).limit(FIXED_ISSUES_LIMIT)
+    )
+    if open_res is None or fixed_res is None:
+        raise RuntimeError("maintenance data fetch failed")
+    return (open_res.data or []) + (fixed_res.data or [])
 
 sub_community_list = [
     "Mira 1", "Mira 2", "Mira 3", "Mira 4", "Mira 5",
@@ -1735,6 +1751,25 @@ def refresh_after_maintenance_change():
             globals()[name].clear()
         except Exception:
             pass
+
+def _recompress_b64_image(b64_str, max_res, quality):
+    """Shrinks a base64-encoded photo to at most max_res pixels on its longer side and re-saves
+    it as a JPEG at the given quality, returning the new base64 string. If the photo is already
+    at or under max_res on both sides, it's returned unchanged (never re-compressed just to
+    shrink it further, and never upsized). If it can't be decoded at all — corrupt data, or not
+    actually an image — the original string is returned unchanged rather than losing the photo."""
+    try:
+        img = Image.open(io.BytesIO(base64.b64decode(b64_str)))
+        if img.width <= max_res and img.height <= max_res:
+            return b64_str
+        if img.mode in ("RGBA", "P"):
+            img = img.convert("RGB")
+        img.thumbnail((max_res, max_res))
+        buf = io.BytesIO()
+        img.save(buf, format="JPEG", quality=quality)
+        return base64.b64encode(buf.getvalue()).decode()
+    except Exception:
+        return b64_str
 
 def _fetch_bookings_for_day(date_str):
     response = run_query(
@@ -3757,9 +3792,12 @@ def render_court_maintenance_tab(reporter_label, current_device):
 
     st.divider()
     st.markdown("### 📋 Court Issues")
-    maint_data = get_maintenance_data()
-    if maint_data and maint_data.data:
-        open_issues = [item for item in maint_data.data if not item.get('is_fixed')]
+    try:
+        maint_rows = get_maintenance_data()
+    except Exception:
+        maint_rows = None
+    if maint_rows:
+        open_issues = [item for item in maint_rows if not item.get('is_fixed')]
         if open_issues:
             phone_number = "+971562069871"
             issue_list = "\n".join([f"- **{item['court_name']}**: {item['description']}" for item in open_issues])
@@ -3797,14 +3835,20 @@ def render_court_maintenance_tab(reporter_label, current_device):
                         st.warning("⚠️ Open")
                         if st.button("Fixed", key=f"fix_{item['id']}", width='stretch'):
                             now_ts = get_utc_plus_4().isoformat()
-                            run_query(supabase.table("court_maintenance").update({
-                                "is_fixed": True,
-                                "fixed_at": now_ts
-                            }).eq("id", item['id']))
+                            update_payload = {"is_fixed": True, "fixed_at": now_ts}
+                            if item.get("image_url"):
+                                # A fixed issue's photo just needs to look right in a small thumbnail from
+                                # here on — no one is using it to diagnose a repair anymore — so it's
+                                # shrunk to 320px the moment it's closed, keeping the growing pile of
+                                # fixed-issue photos small without touching open issues' full-size ones.
+                                smaller = _recompress_b64_image(item["image_url"], max_res=320, quality=35)
+                                if smaller != item["image_url"]:
+                                    update_payload["image_url"] = smaller
+                            run_query(supabase.table("court_maintenance").update(update_payload).eq("id", item['id']))
                             refresh_after_maintenance_change()
                             st.rerun()
 
-        fixed_issues = [item for item in maint_data.data if item.get('is_fixed')]
+        fixed_issues = [item for item in maint_rows if item.get('is_fixed')]
 
         st.markdown(f"#### ⚠️ Pending ({len(open_issues)})")
         if open_issues:
@@ -3813,7 +3857,7 @@ def render_court_maintenance_tab(reporter_label, current_device):
         else:
             st.caption("No pending issues.")
 
-        st.markdown(f"#### ✅ Fixed ({len(fixed_issues)})")
+        st.markdown(f"#### ✅ Fixed (last {len(fixed_issues)})")
         if fixed_issues:
             for item in fixed_issues:
                 _render_issue(item)
@@ -3882,6 +3926,56 @@ def render_court_maintenance_tab(reporter_label, current_device):
                         st.success(f"Granted access! Switched active session to {bypass_sub} Villa {bypass_villa} ({bypass_email}).")
                         time.sleep(1.0)
                         st.rerun()
+
+            with st.expander("🗜️ Shrink Photos on Already-Fixed Issues", expanded=False):
+                st.caption(
+                    "One-time cleanup for issues that were marked Fixed before this photo-shrinking was added. "
+                    "Shrinks every FIXED issue's stored photo to at most 320px, re-saved at low quality. Skips "
+                    "issues with no photo or one that's already small. Open (pending) issues are left untouched "
+                    "at full quality, since those photos are still being used to assess the repair."
+                )
+                if st.button("Shrink All Fixed-Issue Photos Now", key="shrink_fixed_photos_btn"):
+                    with st.spinner("Fetching fixed issues..."):
+                        all_fixed_rows, start, page, fetch_failed = [], 0, 500, False
+                        while True:
+                            res = run_query(
+                                supabase.table("court_maintenance").select("id, image_url")
+                                .eq("is_fixed", True).order("id").range(start, start + page - 1)
+                            )
+                            if res is None:
+                                fetch_failed = True
+                                break
+                            chunk = res.data or []
+                            all_fixed_rows.extend(chunk)
+                            if len(chunk) < page:
+                                break
+                            start += page
+                    if fetch_failed:
+                        st.error("Failed to fetch fixed issues. Nothing was changed — try again.")
+                    elif not all_fixed_rows:
+                        st.info("No fixed issues found.")
+                    else:
+                        shrunk, skipped, failed = 0, 0, 0
+                        progress = st.progress(0.0)
+                        total = len(all_fixed_rows)
+                        for i, row in enumerate(all_fixed_rows):
+                            b64 = row.get("image_url")
+                            if not b64:
+                                skipped += 1
+                            else:
+                                new_b64 = _recompress_b64_image(b64, max_res=320, quality=35)
+                                if new_b64 == b64:
+                                    skipped += 1
+                                elif run_query(supabase.table("court_maintenance").update({"image_url": new_b64}).eq("id", row["id"])) is None:
+                                    failed += 1
+                                else:
+                                    shrunk += 1
+                            progress.progress((i + 1) / total)
+                        refresh_after_maintenance_change()
+                        msg = f"Done. Shrunk {shrunk} photo(s), skipped {skipped} (no photo or already small)."
+                        if failed:
+                            msg += f" {failed} failed to save — safe to run again, only those will be retried."
+                        st.success(msg)
         else:
             st.error("Incorrect Password")
 
