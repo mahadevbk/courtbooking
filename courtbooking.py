@@ -6150,7 +6150,13 @@ else:
                 vb = get_user_bookings(v_num, "Mira 1")
                 for b in vb: b['orig_v'] = v_num; b['orig_sc'] = "Mira 1"
                 my_b.extend(vb)
-            limit_val = get_active_booking_limit(sub_community, villa)
+            # my_b above is a GROUP-WIDE total (all 3 shared villas combined), so the limit shown
+            # alongside it has to be the group's combined limit too — the sum of each villa's own
+            # limit (229 may be donor-elevated to 8 while 231/249 sit at 6; this adds up whatever
+            # each one currently is, e.g. 8+6+6=20 during the donor window, 6+6+6=18 outside it) —
+            # never just the single logged-in villa's own limit, which would compare a 3-villa
+            # total against a 1-villa cap.
+            limit_val = sum(get_active_booking_limit("Mira 1", v) for v in ["229", "231", "249"])
         else:
             my_b = get_user_bookings(villa, sub_community)
             for b in my_b: b['orig_v'] = villa; b['orig_sc'] = sub_community
