@@ -161,7 +161,7 @@ def run_db_cleanup(supabase, courts, donor_villas=None):
         enforce_active_limits(supabase, donor_villas=donor_villas)
         
         add_log(supabase, "System Maintenance", "Database sync triggered.")
-        special_villas = [("229", "Mira 1"), ("231", "Mira 1"), ("233", "Mira 1")]
+        special_villas = [("229", "Mira 1"), ("231", "Mira 1"), ("249", "Mira 1")]
         preferred_courts = ["Mira Oasis 3A", "Mira 5B"]
         today = get_today()
         today_str = today.strftime('%Y-%m-%d')
