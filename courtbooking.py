@@ -267,10 +267,10 @@ def is_donor_villa(sub_community, villa):
 DONOR_PERK_START_DATE = datetime(2026, 9, 1).date()
 
 # Villas exempt from the villa-sniping warning/lockout system entirely — currently the same
-# three Mira 1 villas (229, 231, 233) used for the concealed Legends of Mira auto-booking
+# three Mira 1 villas (229, 231, 249) used for the concealed Legends of Mira auto-booking
 # feature in database_cleanup.py. These are shared/community-purpose villas, not a single
 # resident's own property, so cross-villa "hopping" enforcement doesn't apply to them.
-SNIPING_EXEMPT_VILLAS = {("mira 1", "229"), ("mira 1", "231"), ("mira 1", "233")}
+SNIPING_EXEMPT_VILLAS = {("mira 1", "229"), ("mira 1", "231"), ("mira 1", "249")}
 
 def is_sniping_exempt_villa(sub_community, villa):
     norm_sub = " ".join(str(sub_community).lower().split())
@@ -1783,7 +1783,7 @@ def get_daily_bookings_count_display(villa, sub_community, date_str):
     if snap is None or date_str < snap.since:
         return get_daily_bookings_count(villa, sub_community, date_str)
     day = snap.by_date.get(date_str, [])
-    mira1_group = ["229", "231", "233"]
+    mira1_group = ["229", "231", "249"]
     if sub_community == "Mira 1" and villa in mira1_group:
         others = [v for v in mira1_group if v != villa]
         if any(r['sub_community'] == "Mira 1" and str(r['villa']) in others for r in day):
@@ -1823,7 +1823,7 @@ def get_active_bookings_count(villa, sub_community):
     return count_future + count_today
 
 def get_daily_bookings_count(villa, sub_community, date_str):
-    mira1_group = ["229", "231", "233"]
+    mira1_group = ["229", "231", "249"]
     is_mira1_group = (sub_community == "Mira 1" and villa in mira1_group)
     if is_mira1_group:
         other_villas = [v for v in mira1_group if v != villa]
@@ -1935,7 +1935,7 @@ def validate_booking_attempt(sub_community, villa, court, date_str, hours_to_boo
     snapshot helper. Checks, in order: each hour is a valid hour for the date, not already booked,
     and not in the past; then the active-booking limit (get_active_booking_limit — donor-window
     aware, gated on the requested slot's own date); then the daily limit of 2/day (via
-    get_daily_bookings_count, which already applies the Mira 1 229/231/233 shared-quota rule).
+    get_daily_bookings_count, which already applies the Mira 1 229/231/249 shared-quota rule).
     Returns (ok, error_message) — error_message is None when ok is True. Only logs an "Access
     Denied" line for a limit breach (never for an unavailable-slot rejection), matching the
     original inline Plan & Book behavior; pass log_denials=False for callers (e.g. one villa in a
@@ -2818,7 +2818,7 @@ def _process_background_tasks():
 # moment that date enters the normal 14-day booking window (this never books a date before
 # residents themselves could). Every slot is created through the exact same
 # validate_booking_attempt() + book_slot() path a resident's own Book button uses, so it obeys the
-# same active/daily limits (Mira 1 229/231/233 rule included), writes the same "Booking Created"
+# same active/daily limits (Mira 1 229/231/249 rule included), writes the same "Booking Created"
 # log line, and sends the same confirmation email to the villa's registered address — nothing
 # about the result is distinguishable from a resident booking it themselves, and the admin/
 # tournament origin is never written into the shared `logs` table residents can see. The only
@@ -4930,7 +4930,7 @@ Coach accounts exist for tennis coaches who train residents across **several vil
 
             with st.expander("🔁 Re-open a Date for Legends of Mira Auto-Booking", expanded=False):
                 st.caption(
-                    "The concealed Legends of Mira auto-booking feature (Mira 1 Villas 229/231/233) "
+                    "The concealed Legends of Mira auto-booking feature (Mira 1 Villas 229/231/249) "
                     "marks a date as 'handled' the moment it creates a slot for it — and remembers "
                     "that even after the slot is cancelled, so it never recreates a slot someone "
                     "deliberately removed. If you ever want the feature to reconsider a specific "
@@ -4958,7 +4958,7 @@ Coach accounts exist for tennis coaches who train residents across **several vil
                         time.sleep(1.2)
                         st.rerun()
 
-            with st.expander("🎾 Legends of Mira — Manual Booking (229 / 231 / 233)", expanded=False):
+            with st.expander("🎾 Legends of Mira — Manual Booking (229 / 231 / 249)", expanded=False):
                 st.caption(
                     "Admin-only manual booking for the 3 special Mira 1 villas used by the "
                     "concealed auto-booking feature. If a villa is full, delete a booking for it "
@@ -4966,7 +4966,7 @@ Coach accounts exist for tennis coaches who train residents across **several vil
                     "regular users — the resulting booking just looks like an ordinary booking "
                     "made by that villa, same as the auto-booked ones."
                 )
-                _special_villas = [("229", "Mira 1"), ("231", "Mira 1"), ("233", "Mira 1")]
+                _special_villas = [("229", "Mira 1"), ("231", "Mira 1"), ("249", "Mira 1")]
                 _villa_capacity = {}
                 _cap_cols = st.columns(3)
                 for _i, (_v, _sc) in enumerate(_special_villas):
@@ -6144,9 +6144,9 @@ else:
             "Mira Oasis 3B": "https://maps.google.com/?q=25.012520,55.298313",
             "Mira Oasis 3C": "https://maps.google.com/?q=25.015327,55.301998"
         }
-        if sub_community == "Mira 1" and villa in ["229", "231", "233"]:
+        if sub_community == "Mira 1" and villa in ["229", "231", "249"]:
             my_b = []
-            for v_num in ["229", "231", "233"]:
+            for v_num in ["229", "231", "249"]:
                 vb = get_user_bookings(v_num, "Mira 1")
                 for b in vb: b['orig_v'] = v_num; b['orig_sc'] = "Mira 1"
                 my_b.extend(vb)
