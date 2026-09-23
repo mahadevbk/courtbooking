@@ -1243,25 +1243,9 @@ def init_supabase():
 
 supabase: Client = init_supabase()
 
-@st.cache_resource(ttl=3600, show_spinner=False)
+@st.cache_data(ttl=3600)
 def get_maintenance_data():
-    """All OPEN issues (never many at once — they get marked Fixed and drop out of this set)
-    plus only the most recent FIXED issues, capped, rather than every fixed issue ever filed.
-    Each issue can carry an embedded photo, and the unbounded version of this query — every
-    report since launch, photos included — was what pushed the app over Streamlit Cloud's
-    memory limit as the history grew. Shared via st.cache_resource (like the booking snapshot),
-    so it's fetched and held ONCE for every visitor instead of being re-copied into each
-    session's own memory. Returns a plain list of rows; raises on failure (not cached) so
-    render_court_maintenance_tab's "No maintenance issues" fallback still shows correctly."""
-    FIXED_ISSUES_LIMIT = 40
-    open_res = run_query(supabase.table("court_maintenance").select("*").eq("is_fixed", False).order("created_at", desc=True))
-    fixed_res = run_query(
-        supabase.table("court_maintenance").select("*").eq("is_fixed", True)
-        .order("created_at", desc=True).limit(FIXED_ISSUES_LIMIT)
-    )
-    if open_res is None or fixed_res is None:
-        raise RuntimeError("maintenance data fetch failed")
-    return (open_res.data or []) + (fixed_res.data or [])
+    return run_query(supabase.table("court_maintenance").select("*").order("created_at", desc=True))
 
 sub_community_list = [
     "Mira 1", "Mira 2", "Mira 3", "Mira 4", "Mira 5",
@@ -1752,25 +1736,6 @@ def refresh_after_maintenance_change():
         except Exception:
             pass
 
-def _recompress_b64_image(b64_str, max_res, quality):
-    """Shrinks a base64-encoded photo to at most max_res pixels on its longer side and re-saves
-    it as a JPEG at the given quality, returning the new base64 string. If the photo is already
-    at or under max_res on both sides, it's returned unchanged (never re-compressed just to
-    shrink it further, and never upsized). If it can't be decoded at all — corrupt data, or not
-    actually an image — the original string is returned unchanged rather than losing the photo."""
-    try:
-        img = Image.open(io.BytesIO(base64.b64decode(b64_str)))
-        if img.width <= max_res and img.height <= max_res:
-            return b64_str
-        if img.mode in ("RGBA", "P"):
-            img = img.convert("RGB")
-        img.thumbnail((max_res, max_res))
-        buf = io.BytesIO()
-        img.save(buf, format="JPEG", quality=quality)
-        return base64.b64encode(buf.getvalue()).decode()
-    except Exception:
-        return b64_str
-
 def _fetch_bookings_for_day(date_str):
     response = run_query(
         supabase.table("bookings")
@@ -1942,9 +1907,102 @@ def delete_booking(booking_id, villa, sub_community, fingerprint=None, coach_ema
         except Exception as e:
             print(f"slot alert could not be started: {e}")
 
+# ------------------------------------------------------------------------------
+# DISPLAY vs WRITE PATH — which booking helpers are safe to use where
+# ------------------------------------------------------------------------------
+# DISPLAY ONLY (answered from the short-TTL `get_booking_window_snapshot()` cache — fine for
+#   painting the grid/pickers fast, NEVER for deciding whether a write is allowed):
+#     is_slot_booked_display, get_active_bookings_count_display, get_daily_bookings_count_display,
+#     get_available_hours, _day_map, _snapshot / _snapshot_rows, get_user_bookings
+# WRITE PATH ONLY (always hits the live DB; this is what may gate an insert/delete):
+#     is_slot_booked, get_active_bookings_count, get_daily_bookings_count, get_active_booking_limit
+# `validate_booking_attempt()` below is the one place that combines the write-path checks for a
+# resident (or a single villa in a coach's pool) — the DB's unique constraint on
+# (court, date, start_hour) still has the final word if two requests race.
+# ------------------------------------------------------------------------------
+
+def validate_booking_attempt(sub_community, villa, court, date_str, hours_to_book, fingerprint=None, log_denials=True):
+    """LIVE-DB gate for a booking attempt covering `hours_to_book` (a list of 1 or 2 consecutive
+    start hours) on `court`/`date_str` for `sub_community`/`villa`. Never uses a `*_display` /
+    snapshot helper. Checks, in order: each hour is a valid hour for the date, not already booked,
+    and not in the past; then the active-booking limit (get_active_booking_limit — donor-window
+    aware, gated on the requested slot's own date); then the daily limit of 2/day (via
+    get_daily_bookings_count, which already applies the Mira 1 229/231/233 shared-quota rule).
+    Returns (ok, error_message) — error_message is None when ok is True. Only logs an "Access
+    Denied" line for a limit breach (never for an unavailable-slot rejection), matching the
+    original inline Plan & Book behavior; pass log_denials=False for callers (e.g. one villa in a
+    coach's pool) that only want a yes/no answer without writing a log line."""
+    valid_hours = get_start_hours_for_date(date_str)
+    q_slots = len(hours_to_book)
+    checked_hours = [h for h in hours_to_book if h in valid_hours]
+
+    # Independent live reads -> one round-trip instead of several back to back.
+    _pre = run_parallel(
+        lambda: get_active_bookings_count(villa, sub_community),
+        lambda: get_daily_bookings_count(villa, sub_community, date_str),
+        *[(lambda _h=h: is_slot_booked(court, date_str, _h)) for h in checked_hours],
+    )
+    active_count, daily_count = _pre[0], _pre[1]
+    already_booked = dict(zip(checked_hours, _pre[2:]))
+
+    unavailable = [
+        f"{h:02d}:00" for h in hours_to_book
+        if h not in valid_hours or already_booked.get(h) or is_slot_in_past(date_str, h)
+    ]
+    if unavailable:
+        return False, f"Slot(s) {', '.join(unavailable)} are unavailable."
+
+    active_limit = get_active_booking_limit(sub_community, villa, for_date=date_str)
+    if active_count + q_slots > active_limit:
+        if log_denials:
+            add_log("Access Denied", f"{sub_community} Villa {villa} reached active booking limit ({active_limit})", fingerprint=fingerprint)
+        return False, f"Limit Reached (Max {active_limit} active). You can book {max(0, active_limit - active_count)} more."
+
+    if daily_count + q_slots > 2:
+        if log_denials:
+            add_log("Access Denied", f"{sub_community} Villa {villa} reached daily limit (2) for {date_str}", fingerprint=fingerprint)
+        return False, f"Daily Limit Reached (Max 2 per day). You can book {max(0, 2 - daily_count)} more today."
+
+    return True, None
+
+def merge_consecutive_bookings(rows):
+    """Collapse booking rows into consecutive-hour blocks — the one implementation shared by the
+    resident 'My Bookings' list, the coach 'My Bookings' list, and the cross-villa email summary.
+    Each row needs at least: court, date, start_hour, id, v (villa), sc (sub_community). Rows are
+    sorted here (by date, court, sc, v, start_hour) so the caller can pass them in any order.
+    Returns a list of dicts: {court, date, start_hours: [...], ids: [...], v, sc}."""
+    if not rows:
+        return []
+    # These lists are always small (one villa's or one coach's upcoming bookings), so a plain
+    # sort + loop avoids the fixed overhead of building a DataFrame for a handful of rows —
+    # same ordering, same grouping rule, same output shape as before.
+    ordered = sorted(rows, key=lambda r: (r["date"], r["court"], r["sc"], r["v"], r["start_hour"]))
+    merged = []
+    current = None
+    for row in ordered:
+        if current is not None and (
+            row["date"] == current["date"] and row["court"] == current["court"]
+            and row["v"] == current["v"] and row["sc"] == current["sc"]
+            and row["start_hour"] == max(current["start_hours"]) + 1
+        ):
+            current["start_hours"].append(row["start_hour"])
+            current["ids"].append(row["id"])
+        else:
+            if current is not None:
+                merged.append(current)
+            current = {
+                "court": row["court"], "date": row["date"],
+                "start_hours": [row["start_hour"]], "ids": [row["id"]],
+                "v": row["v"], "sc": row["sc"],
+            }
+    if current is not None:
+        merged.append(current)
+    return merged
+
 # ==============================================================================
 # --- SLOT ALERTS: "Notify me when this slot is available" ---
 # ==============================================================================
+
 # A resident picks a date, a start time and 1 or 2 hours (no court: any court will do). If a booking is
 # cancelled and that leaves a court free for exactly that time, everyone watching it gets ONE email
 # ("Mira 5B is free today from 18:00 to 20:00 for 2 hours"). Needs the `slot_watches` table (see
@@ -2282,17 +2340,41 @@ def get_coach_dashboard_stats(coach_email):
     """Calculates cumulative quota available across a coach's assigned villa pool."""
     villas_res = run_query(supabase.table("coach_villas").select("sub_community, villa").eq("coach_email", coach_email))
     assigned_villas = villas_res.data if villas_res and villas_res.data else []
-    
+
+    if not assigned_villas:
+        return assigned_villas, 0, 0
+
+    # Same two live queries per villa as get_active_bookings_count() (future date, or today at/after
+    # the current hour) — just run for every villa in ONE batch of parallel round-trips instead of
+    # looping villa-by-villa (each villa's own pair was already parallel, but not parallel *with*
+    # the other villas' pairs). Same data source, same values, fewer round-trips.
+    today_str = get_today().strftime('%Y-%m-%d')
+    now_hour = get_utc_plus_4().hour
+
+    def _future(v):
+        q = supabase.table("bookings").select("id", count="exact").eq("villa", v['villa']).eq("sub_community", v['sub_community'])
+        return run_query(q.gt("date", today_str))
+
+    def _today(v):
+        q = supabase.table("bookings").select("id", count="exact").eq("villa", v['villa']).eq("sub_community", v['sub_community'])
+        return run_query(q.eq("date", today_str).gte("start_hour", now_hour))
+
+    results = run_parallel(
+        *[(lambda v=v: _future(v)) for v in assigned_villas],
+        *[(lambda v=v: _today(v)) for v in assigned_villas],
+    )
+    n = len(assigned_villas)
+    future_results, today_results = results[:n], results[n:]
+
     total_allowed = 0
     total_active = 0
-    
-    for v in assigned_villas:
-        limit = get_active_booking_limit(v['sub_community'], v['villa']) 
-        active = get_active_bookings_count(v['villa'], v['sub_community']) 
-        
+    for v, res_f, res_t in zip(assigned_villas, future_results, today_results):
+        limit = get_active_booking_limit(v['sub_community'], v['villa'])
+        count_f = res_f.count if res_f and res_f.count is not None else 0
+        count_t = res_t.count if res_t and res_t.count is not None else 0
         total_allowed += limit
-        total_active += active
-        
+        total_active += count_f + count_t
+
     return assigned_villas, total_allowed, total_active
 
 def process_coach_booking(coach_email, coach_name, court, date_str, start_hours, fingerprint=None):
@@ -2308,12 +2390,14 @@ def process_coach_booking(coach_email, coach_name, court, date_str, start_hours,
             sub = v['sub_community']
             villa_num = v['villa']
             
-            active_count = get_active_bookings_count(villa_num, sub)
-            active_limit = get_active_booking_limit(sub, villa_num, for_date=date_str)
-            daily_count = get_daily_bookings_count(villa_num, sub, date_str)
-            
+            # One live-DB check (active limit + daily limit) for this villa taking this single
+            # hour — same helper the resident Book button uses, just for one hour at a time and
+            # without writing an "Access Denied" log line (this is only choosing among a pool of
+            # villas, not rejecting the coach's booking outright).
+            can_take, _ = validate_booking_attempt(sub, villa_num, court, date_str, [hour], log_denials=False)
+
             # Check if this specific villa can take the slot
-            if active_count < active_limit and daily_count < 2:
+            if can_take:
                 # Attempt to book
                 if book_slot(villa_num, sub, court, date_str, hour, fingerprint, coach_email=coach_email):
                     booked_slots.append({
@@ -2482,46 +2566,7 @@ def get_merged_active_bookings_for_email(email):
                 "sc": sub,
             })
 
-    if not raw_rows:
-        return []
-
-    df = pd.DataFrame(raw_rows).sort_values(["date", "court", "sc", "v", "start_hour"])
-    merged = []
-    current = None
-    for _, row in df.iterrows():
-        if current is None:
-            current = {
-                "court": row["court"],
-                "date": row["date"],
-                "start_hours": [row["start_hour"]],
-                "ids": [row["id"]],
-                "v": row["v"],
-                "sc": row["sc"],
-            }
-        else:
-            same_block = (
-                row["date"] == current["date"]
-                and row["court"] == current["court"]
-                and row["v"] == current["v"]
-                and row["sc"] == current["sc"]
-                and row["start_hour"] == max(current["start_hours"]) + 1
-            )
-            if same_block:
-                current["start_hours"].append(row["start_hour"])
-                current["ids"].append(row["id"])
-            else:
-                merged.append(current)
-                current = {
-                    "court": row["court"],
-                    "date": row["date"],
-                    "start_hours": [row["start_hour"]],
-                    "ids": [row["id"]],
-                    "v": row["v"],
-                    "sc": row["sc"],
-                }
-    if current is not None:
-        merged.append(current)
-    return merged
+    return merge_consecutive_bookings(raw_rows)
 
 def get_all_villas_with_any_bookings():
     response = run_query(supabase.table("bookings").select("villa, sub_community"))
@@ -3792,12 +3837,9 @@ def render_court_maintenance_tab(reporter_label, current_device):
 
     st.divider()
     st.markdown("### 📋 Court Issues")
-    try:
-        maint_rows = get_maintenance_data()
-    except Exception:
-        maint_rows = None
-    if maint_rows:
-        open_issues = [item for item in maint_rows if not item.get('is_fixed')]
+    maint_data = get_maintenance_data()
+    if maint_data and maint_data.data:
+        open_issues = [item for item in maint_data.data if not item.get('is_fixed')]
         if open_issues:
             phone_number = "+971562069871"
             issue_list = "\n".join([f"- **{item['court_name']}**: {item['description']}" for item in open_issues])
@@ -3835,20 +3877,14 @@ def render_court_maintenance_tab(reporter_label, current_device):
                         st.warning("⚠️ Open")
                         if st.button("Fixed", key=f"fix_{item['id']}", width='stretch'):
                             now_ts = get_utc_plus_4().isoformat()
-                            update_payload = {"is_fixed": True, "fixed_at": now_ts}
-                            if item.get("image_url"):
-                                # A fixed issue's photo just needs to look right in a small thumbnail from
-                                # here on — no one is using it to diagnose a repair anymore — so it's
-                                # shrunk to 320px the moment it's closed, keeping the growing pile of
-                                # fixed-issue photos small without touching open issues' full-size ones.
-                                smaller = _recompress_b64_image(item["image_url"], max_res=320, quality=35)
-                                if smaller != item["image_url"]:
-                                    update_payload["image_url"] = smaller
-                            run_query(supabase.table("court_maintenance").update(update_payload).eq("id", item['id']))
+                            run_query(supabase.table("court_maintenance").update({
+                                "is_fixed": True,
+                                "fixed_at": now_ts
+                            }).eq("id", item['id']))
                             refresh_after_maintenance_change()
                             st.rerun()
 
-        fixed_issues = [item for item in maint_rows if item.get('is_fixed')]
+        fixed_issues = [item for item in maint_data.data if item.get('is_fixed')]
 
         st.markdown(f"#### ⚠️ Pending ({len(open_issues)})")
         if open_issues:
@@ -3857,7 +3893,7 @@ def render_court_maintenance_tab(reporter_label, current_device):
         else:
             st.caption("No pending issues.")
 
-        st.markdown(f"#### ✅ Fixed (last {len(fixed_issues)})")
+        st.markdown(f"#### ✅ Fixed ({len(fixed_issues)})")
         if fixed_issues:
             for item in fixed_issues:
                 _render_issue(item)
@@ -3926,56 +3962,6 @@ def render_court_maintenance_tab(reporter_label, current_device):
                         st.success(f"Granted access! Switched active session to {bypass_sub} Villa {bypass_villa} ({bypass_email}).")
                         time.sleep(1.0)
                         st.rerun()
-
-            with st.expander("🗜️ Shrink Photos on Already-Fixed Issues", expanded=False):
-                st.caption(
-                    "One-time cleanup for issues that were marked Fixed before this photo-shrinking was added. "
-                    "Shrinks every FIXED issue's stored photo to at most 320px, re-saved at low quality. Skips "
-                    "issues with no photo or one that's already small. Open (pending) issues are left untouched "
-                    "at full quality, since those photos are still being used to assess the repair."
-                )
-                if st.button("Shrink All Fixed-Issue Photos Now", key="shrink_fixed_photos_btn"):
-                    with st.spinner("Fetching fixed issues..."):
-                        all_fixed_rows, start, page, fetch_failed = [], 0, 500, False
-                        while True:
-                            res = run_query(
-                                supabase.table("court_maintenance").select("id, image_url")
-                                .eq("is_fixed", True).order("id").range(start, start + page - 1)
-                            )
-                            if res is None:
-                                fetch_failed = True
-                                break
-                            chunk = res.data or []
-                            all_fixed_rows.extend(chunk)
-                            if len(chunk) < page:
-                                break
-                            start += page
-                    if fetch_failed:
-                        st.error("Failed to fetch fixed issues. Nothing was changed — try again.")
-                    elif not all_fixed_rows:
-                        st.info("No fixed issues found.")
-                    else:
-                        shrunk, skipped, failed = 0, 0, 0
-                        progress = st.progress(0.0)
-                        total = len(all_fixed_rows)
-                        for i, row in enumerate(all_fixed_rows):
-                            b64 = row.get("image_url")
-                            if not b64:
-                                skipped += 1
-                            else:
-                                new_b64 = _recompress_b64_image(b64, max_res=320, quality=35)
-                                if new_b64 == b64:
-                                    skipped += 1
-                                elif run_query(supabase.table("court_maintenance").update({"image_url": new_b64}).eq("id", row["id"])) is None:
-                                    failed += 1
-                                else:
-                                    shrunk += 1
-                            progress.progress((i + 1) / total)
-                        refresh_after_maintenance_change()
-                        msg = f"Done. Shrunk {shrunk} photo(s), skipped {skipped} (no photo or already small)."
-                        if failed:
-                            msg += f" {failed} failed to save — safe to run again, only those will be retried."
-                        st.success(msg)
         else:
             st.error("Incorrect Password")
 
@@ -5489,32 +5475,11 @@ def render_availability_tab(is_coach, current_device, resident_ctx=None, coach_c
                 else:
                     st.error(result)
             else:
-                valid_hours = get_start_hours_for_date(selected_date)
-                # These database reads don't depend on each other (active-booking count, daily count, and one
-                # "is this hour still free?" lookup per hour that is bookable at all), so they run together:
-                # one round-trip of waiting instead of three to five back to back. Every check still hits the
-                # database directly — nothing here is served from the display cache.
-                _hours_to_check = [h for h in hours_to_book if h in valid_hours]
-                _pre = run_parallel(
-                    lambda: get_active_bookings_count(villa, sub_community),
-                    lambda: get_daily_bookings_count(villa, sub_community, selected_date),
-                    *[(lambda _h=h: is_slot_booked(q_court, selected_date, _h)) for h in _hours_to_check],
+                ok, err = validate_booking_attempt(
+                    sub_community, villa, q_court, selected_date, hours_to_book, fingerprint=current_device,
                 )
-                active_count, daily_count = _pre[0], _pre[1]
-                _already_booked = dict(zip(_hours_to_check, _pre[2:]))
-                active_limit = get_active_booking_limit(sub_community, villa, for_date=selected_date)
-                unavailable = []
-                for h in hours_to_book:
-                    if h not in valid_hours or _already_booked[h] or is_slot_in_past(selected_date, h):
-                        unavailable.append(f"{h:02d}:00")
-                if unavailable:
-                    st.error(f"Slot(s) {', '.join(unavailable)} are unavailable.")
-                elif active_count + q_slots > active_limit:
-                    st.error(f"Limit Reached (Max {active_limit} active). You can book {max(0, active_limit-active_count)} more.")
-                    add_log("Access Denied", f"{sub_community} Villa {villa} reached active booking limit ({active_limit})", fingerprint=current_device)
-                elif daily_count + q_slots > 2:
-                    st.error(f"Daily Limit Reached (Max 2 per day). You can book {max(0, 2-daily_count)} more today.")
-                    add_log("Access Denied", f"{sub_community} Villa {villa} reached daily limit (2) for {selected_date}", fingerprint=current_device)
+                if not ok:
+                    st.error(err)
                 else:
                     success = True
                     booked_slots = []
@@ -5697,20 +5662,11 @@ if COACH_FEATURE_ENABLED and st.session_state.get('is_coach'):
         st.subheader("📋 My Coach Bookings")
         my_coach_b = get_coach_bookings(coach_email)
 
-        merged_coach_bookings = []
-        if my_coach_b:
-            df_c = pd.DataFrame(my_coach_b).sort_values(['date', 'court', 'sub_community', 'villa', 'start_hour'])
-            current_b = None
-            for _, row in df_c.iterrows():
-                if current_b is None:
-                    current_b = {'court': row['court'], 'date': row['date'], 'start_hours': [row['start_hour']], 'ids': [row['id']], 'v': row['villa'], 'sc': row['sub_community']}
-                else:
-                    if (row['date'] == current_b['date'] and row['court'] == current_b['court'] and row['villa'] == current_b['v'] and row['sub_community'] == current_b['sc'] and row['start_hour'] == max(current_b['start_hours']) + 1):
-                        current_b['start_hours'].append(row['start_hour']); current_b['ids'].append(row['id'])
-                    else:
-                        merged_coach_bookings.append(current_b)
-                        current_b = {'court': row['court'], 'date': row['date'], 'start_hours': [row['start_hour']], 'ids': [row['id']], 'v': row['villa'], 'sc': row['sub_community']}
-            merged_coach_bookings.append(current_b)
+        merged_coach_bookings = merge_consecutive_bookings([
+            {"court": b["court"], "date": b["date"], "start_hour": b["start_hour"], "id": b["id"],
+             "v": b["villa"], "sc": b["sub_community"]}
+            for b in my_coach_b
+        ])
 
         col_c1, col_c2 = st.columns(2)
         with col_c1:
@@ -5866,21 +5822,11 @@ else:
             st.metric("Today's Bookings", f"{today_bookings} / 2")
         st.divider()
 
-        merged_bookings = []
-        if my_b:
-            df_my_b = pd.DataFrame(my_b).sort_values(['date', 'court', 'start_hour'])
-            if not df_my_b.empty:
-                current_booking = None
-                for _, row in df_my_b.iterrows():
-                    if current_booking is None:
-                        current_booking = {'court': row['court'], 'date': row['date'], 'start_hours': [row['start_hour']], 'ids': [row['id']], 'v': row['orig_v'], 'sc': row['orig_sc']}
-                    else:
-                        if (row['date'] == current_booking['date'] and row['court'] == current_booking['court'] and row['orig_v'] == current_booking['v'] and row['orig_sc'] == current_booking['sc'] and row['start_hour'] == max(current_booking['start_hours']) + 1):
-                            current_booking['start_hours'].append(row['start_hour']); current_booking['ids'].append(row['id'])
-                        else:
-                            merged_bookings.append(current_booking)
-                            current_booking = {'court': row['court'], 'date': row['date'], 'start_hours': [row['start_hour']], 'ids': [row['id']], 'v': row['orig_v'], 'sc': row['orig_sc']}
-                merged_bookings.append(current_booking)
+        merged_bookings = merge_consecutive_bookings([
+            {"court": b["court"], "date": b["date"], "start_hour": b["start_hour"], "id": b["id"],
+             "v": b["orig_v"], "sc": b["orig_sc"]}
+            for b in my_b
+        ])
 
         if merged_bookings:
             if st.button("📧 Email Me All My Bookings", type="primary", use_container_width=True, key="email_all_bookings_btn"):
