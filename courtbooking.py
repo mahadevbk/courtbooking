@@ -1374,6 +1374,7 @@ def _run_scheduled_log_retention():
 
 def purge_out_of_range_records():
     try:
+        any_booking_deleted = False
         claims_res = run_query(supabase.table("villa_claims").select("id, sub_community, villa"))
         if claims_res and claims_res.data:
             for claim in claims_res.data:
@@ -1396,9 +1397,16 @@ def purge_out_of_range_records():
                     v_num = int(v_str)
                     if not (1 <= v_num <= max_v):
                         run_query(supabase.table("bookings").delete().eq("id", booking["id"]))
+                        any_booking_deleted = True
                         log_detail = f"{sub} Villa {v_num} cancelled {booking['court']} for {booking['date']} at {booking['start_hour']:02d}:00"
                         add_log("Booking Deleted", log_detail)
                         add_log("Purge Out-of-Range", f"Deleted invalid booking for {sub} Villa {v_num}")
+        # This deletes straight from the bookings table (it needs to sweep the WHOLE table by
+        # villa-number range, not one villa at a time like delete_booking()), so it has to clear
+        # the shared display cache itself — otherwise a freed slot from here keeps showing as
+        # booked until the cache's own TTL happens to expire.
+        if any_booking_deleted:
+            invalidate_booking_caches()
     except Exception:
         pass
 
@@ -2781,6 +2789,12 @@ def _run_scheduled_db_cleanup():
     try:
         from database_cleanup import run_db_cleanup
         run_db_cleanup(supabase, courts, donor_villas=DONOR_VILLAS)
+        # run_db_cleanup lives in its own module (database_cleanup.py) and writes/deletes booking
+        # rows straight to Supabase with no knowledge of this file's caches at all — so unlike
+        # book_slot()/delete_booking(), nothing there ever clears the shared display snapshot.
+        # Clearing it here, right after every run, is what makes a just-auto-booked or
+        # just-purged slot show correctly instead of waiting for the cache's own TTL to expire.
+        invalidate_booking_caches()
     except Exception as e:
         print(f"scheduled db cleanup error: {e}")
     return True
@@ -2792,8 +2806,240 @@ def _process_background_tasks():
         _run_scheduled_double_booking_check()
         _run_scheduled_db_cleanup()
         _run_scheduled_watch_cleanup()
+        _run_scheduled_tournament_processing()
     except Exception:
         pass
+
+# ==============================================================================
+# --- TOURNAMENT BULK BOOKING (admin-only) ---
+# ==============================================================================
+# Lets an admin plan a tournament day up to a few weeks out — pick the courts, an hour range, and
+# a pool of villas with room to spare — and have the app book those slots automatically the
+# moment that date enters the normal 14-day booking window (this never books a date before
+# residents themselves could). Every slot is created through the exact same
+# validate_booking_attempt() + book_slot() path a resident's own Book button uses, so it obeys the
+# same active/daily limits (Mira 1 229/231/233 rule included), writes the same "Booking Created"
+# log line, and sends the same confirmation email to the villa's registered address — nothing
+# about the result is distinguishable from a resident booking it themselves, and the admin/
+# tournament origin is never written into the shared `logs` table residents can see. The only
+# admin-visible trace lives in the dedicated table below.
+# SAFEGUARD: a villa in the pool is only ever touched at the moment it's actually needed to fill a
+# slot. If it's already at its active-booking limit right then, its own 2 farthest-out (latest
+# date/hour) active bookings are cancelled first — through the normal delete_booking() path — to
+# guarantee the tournament doesn't run out of room on the villa it was counting on. The affected
+# resident gets the exact SAME cancellation email a self-service cancel sends — nothing mentions a
+# tournament — because some residents will never be told a tournament exists at all (that's the
+# whole point of this feature), including villas only ever used as anonymous quota donors. This
+# never touches a pool villa that ends up not being needed.
+# Needs a `tournament_requests` table (columns: id bigint generated always as identity primary
+# key, created_at timestamptz default now(), target_date text, courts text, villa_pool text,
+# start_hour int, end_hour int, status text default 'pending', result_summary text, processed_at
+# timestamptz). Until it exists, the admin panel just says so and nothing else is affected — same
+# convention as slot_watches above.
+TOURNAMENT_TABLE = "tournament_requests"
+
+def get_tournament_requests():
+    """All tournament bulk-booking requests, newest first — or None if the table doesn't exist
+    yet (same 'feature not switched on' convention used for slot watches)."""
+    try:
+        res = supabase.table(TOURNAMENT_TABLE).select("*").order("created_at", desc=True).execute()
+        return res.data or []
+    except Exception:
+        return None
+
+def get_villas_with_free_quota(target_date_str):
+    """'Sub Community - Villa' labels (from the same master claimed-villa list the rest of the
+    admin panel uses) that right now have at least one free active-booking slot AND haven't hit
+    the 2/day limit for `target_date_str`. Only for populating the tournament pool picker — since
+    the target date can be weeks away, a villa's own bookings between now and then can still
+    change its real room; the actual gate is validate_booking_attempt() at processing time, same
+    as any other write path. Batches every villa's live counts into one round of parallel
+    queries rather than looping villa-by-villa."""
+    candidates = get_all_claimed_villas()
+    if not candidates:
+        return []
+    parsed = []
+    for label in candidates:
+        if " - " not in label:
+            continue
+        sub, villa = label.split(" - ", 1)
+        parsed.append((label, sub, villa))
+    if not parsed:
+        return []
+
+    results = run_parallel(
+        *[(lambda sub=sub, villa=villa: get_active_bookings_count(villa, sub)) for _, sub, villa in parsed],
+        *[(lambda sub=sub, villa=villa: get_daily_bookings_count(villa, sub, target_date_str)) for _, sub, villa in parsed],
+    )
+    n = len(parsed)
+    active_counts, daily_counts = results[:n], results[n:]
+
+    free = []
+    for (label, sub, villa), active_count, daily_count in zip(parsed, active_counts, daily_counts):
+        active_limit = get_active_booking_limit(sub, villa, for_date=target_date_str)
+        if active_count < active_limit and daily_count < 2:
+            free.append(label)
+    return free
+
+def create_tournament_request(target_date_str, courts_list, villa_pool_labels, start_hour, end_hour):
+    try:
+        supabase.table(TOURNAMENT_TABLE).insert({
+            "target_date": target_date_str,
+            "courts": json.dumps(courts_list),
+            "villa_pool": json.dumps(villa_pool_labels),
+            "start_hour": start_hour,
+            "end_hour": end_hour,
+            "status": "pending",
+        }).execute()
+        return True
+    except Exception:
+        return False
+
+def delete_tournament_request(request_id):
+    try:
+        supabase.table(TOURNAMENT_TABLE).delete().eq("id", request_id).execute()
+        return True
+    except Exception:
+        return False
+
+def _evict_farthest_active_bookings(sub_community, villa, count=2):
+    """Cancels this villa's own `count` farthest-out (latest date/hour) ACTIVE bookings — through
+    the normal delete_booking() path, so logging/cache invalidation/slot alerts all behave exactly
+    like any other cancellation — to free room for a tournament commitment. Used only when a villa
+    in a tournament's pool is found completely full at processing time (see
+    process_tournament_request()'s active-limit safeguard). The resident is sent the ORDINARY
+    cancellation email (send_booking_notification_once, same as a self-service cancel) — never
+    anything mentioning a tournament — so this is indistinguishable from the villa cancelling its
+    own booking. Returns the (court, date, start_hour) tuples that were freed."""
+    today_str = get_today().strftime('%Y-%m-%d')
+    now_hour = get_utc_plus_4().hour
+    res = run_query(
+        supabase.table("bookings").select("id, court, date, start_hour")
+        .eq("sub_community", sub_community).eq("villa", villa)
+        .gte("date", today_str)
+    )
+    rows = res.data if res and res.data else []
+    active_rows = [r for r in rows if r['date'] > today_str or int(r['start_hour']) >= now_hour]
+    if not active_rows:
+        return []
+    active_rows.sort(key=lambda r: (r['date'], int(r['start_hour'])))  # soonest first, farthest last
+    to_evict = active_rows[-count:] if count < len(active_rows) else active_rows
+
+    freed = []
+    for r in to_evict:
+        delete_booking(r['id'], villa, sub_community)
+        for claim in get_claims_for_villa(sub_community, villa):
+            if claim.get("status") == "approved" and claim.get("email"):
+                send_booking_notification_once("deleted", villa, sub_community, r['court'], r['date'], [r['start_hour']], claim["email"])
+        freed.append((r['court'], r['date'], r['start_hour']))
+    return freed
+
+def process_tournament_request(req):
+    """Books every (court, hour) slot in a tournament request across its villa pool, live, right
+    now — called once the request's target_date has entered the normal booking window. Each slot
+    goes through validate_booking_attempt() + book_slot(), so limits, logging and behavior exactly
+    match a resident booking it themselves. The villa pool is shuffled and round-robined so one
+    villa in a big pool doesn't grab every slot it happens to still be eligible for. Marks the
+    request 'done' with a short summary either way (so it's never retried), and invalidates the
+    shared display cache ONCE for the whole batch rather than per slot."""
+    target_date = req["target_date"]
+    try:
+        courts_list = json.loads(req["courts"]) or []
+    except Exception:
+        courts_list = []
+    try:
+        villa_pool_labels = json.loads(req["villa_pool"]) or []
+    except Exception:
+        villa_pool_labels = []
+    start_hour, end_hour = req["start_hour"], req["end_hour"]
+
+    valid_hours = get_start_hours_for_date(target_date)
+    requested_hours = sorted(h for h in valid_hours if start_hour <= h < end_hour)
+
+    pool = []
+    for label in villa_pool_labels:
+        if " - " in label:
+            sub, villa = label.split(" - ", 1)
+            pool.append((sub, villa))
+    random.shuffle(pool)  # same fairness spirit as the Legends of Mira auto-book job
+
+    booked = []      # [{"villa", "sub_community", "court", "hour"}]
+    unbooked = []     # ["Court @ HH:00", ...]
+    evicted = []      # ["Court @ HH:00 (Sub - Villa)", ...] — bookings force-freed to honor the pool
+    cleared_villas = set()  # (sub, villa) already given its one eviction pass this run
+
+    for court in courts_list:
+        for hour in requested_hours:
+            placed = False
+            for sub, villa in pool:
+                ok, err = validate_booking_attempt(sub, villa, court, target_date, [hour], log_denials=False)
+                # "Limit Reached" (the active-limit message) is the one case this safeguard covers —
+                # a villa in the tournament's own pool that has used up all its active slots. It is
+                # deliberately NOT triggered by "Daily Limit Reached" or an unavailable-slot message;
+                # those aren't what "already used up its active slots" means, and evicting for them
+                # wouldn't free anything relevant anyway.
+                if not ok and err and err.startswith("Limit Reached") and (sub, villa) not in cleared_villas:
+                    freed_here = _evict_farthest_active_bookings(sub, villa, count=2)
+                    cleared_villas.add((sub, villa))
+                    evicted.extend(f"{c} @ {h:02d}:00 ({sub} - {villa})" for c, d, h in freed_here)
+                    ok, err = validate_booking_attempt(sub, villa, court, target_date, [hour], log_denials=False)
+                if ok and book_slot(villa, sub, court, target_date, hour):
+                    booked.append({"villa": villa, "sub_community": sub, "court": court, "hour": hour})
+                    pool.remove((sub, villa))
+                    pool.append((sub, villa))  # send it to the back of the queue for the next slot
+                    placed = True
+                    break
+            if not placed:
+                unbooked.append(f"{court} @ {hour:02d}:00")
+
+    # One confirmation email per villa+court+consecutive-hour block — exactly like a normal 2-hour
+    # resident booking — sent to every approved resident email on file for that villa.
+    email_blocks = merge_consecutive_bookings([
+        {"court": b["court"], "date": target_date, "start_hour": b["hour"], "id": i,
+         "v": b["villa"], "sc": b["sub_community"]}
+        for i, b in enumerate(booked)
+    ])
+    for block in email_blocks:
+        for claim in get_claims_for_villa(block["sc"], block["v"]):
+            if claim.get("status") == "approved" and claim.get("email"):
+                send_booking_notification_once(
+                    "created", block["v"], block["sc"], block["court"], target_date,
+                    block["start_hours"], claim["email"],
+                )
+
+    summary = f"Booked {len(booked)} slot(s)."
+    if evicted:
+        summary += f" Freed up room by cancelling: {', '.join(evicted)}."
+    if unbooked:
+        summary += f" Could not book: {', '.join(unbooked)}."
+
+    try:
+        supabase.table(TOURNAMENT_TABLE).update({
+            "status": "done", "result_summary": summary, "processed_at": get_utc_plus_4().isoformat(),
+        }).eq("id", req["id"]).execute()
+    except Exception:
+        pass
+
+    if booked:
+        invalidate_booking_caches()
+    return summary
+
+@st.cache_data(ttl=300, show_spinner=False)
+def _run_scheduled_tournament_processing():
+    """Processes any pending tournament bulk-booking requests whose target_date has just entered
+    the normal 14-day booking window, at most once every 5 minutes per app instance — same cadence
+    as the other background jobs. Silently does nothing if the feature's table doesn't exist yet."""
+    try:
+        pending = get_tournament_requests()
+        if not pending:
+            return True
+        window = {d.strftime('%Y-%m-%d') for d in get_next_14_days()}
+        for req in pending:
+            if req.get("status") == "pending" and req.get("target_date") in window:
+                process_tournament_request(req)
+    except Exception as e:
+        print(f"scheduled tournament processing error: {e}")
+    return True
 
 def get_active_bookings_for_villa_display(villa_identifier):
     try:
@@ -4785,6 +5031,106 @@ Coach accounts exist for tennis coaches who train residents across **several vil
                             else:
                                 st.error("One of those slots was just taken by someone else — please pick another time.")
 
+            with st.expander("🏆 Tournament Bulk Booking (auto-books once the day opens)", expanded=False):
+                st.caption(
+                    "Plan a tournament day up to a few weeks out. Pick the courts, the hour range, and a "
+                    "pool of villas with room to spare — the app books each slot automatically, cycling "
+                    "through the pool, the moment that date enters the normal 14-day booking window (it "
+                    "never books a date before residents themselves could). Every slot is created exactly "
+                    "like a normal resident booking — same limits, same confirmation email — and nothing "
+                    "admin- or tournament-related is ever written to the activity log residents can see. "
+                    "**Safeguard:** if a pool villa has used up all of its active slots by the time it's "
+                    "needed for the tournament, its 2 farthest-out existing bookings are cancelled "
+                    "automatically to make room — using the exact same cancellation email a resident "
+                    "gets from cancelling it themselves, with no mention of a tournament anywhere."
+                )
+                _trn_requests = get_tournament_requests()
+                if _trn_requests is None:
+                    st.warning(
+                        "This feature needs a `tournament_requests` table that doesn't exist yet. Create it "
+                        "in Supabase and this panel switches on automatically:"
+                    )
+                    st.code(
+                        "create table tournament_requests (\n"
+                        "  id bigint generated always as identity primary key,\n"
+                        "  created_at timestamptz default now(),\n"
+                        "  target_date text not null,\n"
+                        "  courts text not null,\n"
+                        "  villa_pool text not null,\n"
+                        "  start_hour int not null,\n"
+                        "  end_hour int not null,\n"
+                        "  status text default 'pending',\n"
+                        "  result_summary text,\n"
+                        "  processed_at timestamptz\n"
+                        ");",
+                        language="sql",
+                    )
+                else:
+                    if _trn_requests:
+                        st.markdown("**Existing requests**")
+                        for _treq in _trn_requests:
+                            _t_icon = "✅" if _treq.get("status") == "done" else "⏳"
+                            try:
+                                _t_courts = ", ".join(json.loads(_treq["courts"]))
+                                _t_pool = ", ".join(json.loads(_treq["villa_pool"]))
+                            except Exception:
+                                _t_courts, _t_pool = _treq.get("courts", ""), _treq.get("villa_pool", "")
+                            _t_col1, _t_col2 = st.columns([6, 1])
+                            with _t_col1:
+                                _t_status_line = _treq.get("result_summary") or "Waiting for this date to enter the 14-day booking window."
+                                st.caption(
+                                    f"{_t_icon} **{_treq['target_date']}** · {_t_courts} · "
+                                    f"{_treq['start_hour']:02d}:00–{_treq['end_hour']:02d}:00 · pool: {_t_pool}  \n"
+                                    f"_{_t_status_line}_"
+                                )
+                            with _t_col2:
+                                if _treq.get("status") == "pending" and st.button("🗑️", key=f"trn_del_{_treq['id']}", help="Cancel this request"):
+                                    delete_tournament_request(_treq["id"])
+                                    st.rerun()
+                        st.divider()
+
+                    st.markdown("**New tournament request**")
+                    _trn_date = st.date_input(
+                        "Tournament date",
+                        value=get_window_today() + timedelta(days=1),
+                        min_value=get_window_today(),
+                        max_value=get_window_today() + timedelta(days=18),
+                        key="trn_date",
+                    )
+                    _trn_date_str = _trn_date.strftime("%Y-%m-%d")
+                    _trn_courts = st.multiselect("Courts", options=courts, key="trn_courts")
+
+                    _trn_hc1, _trn_hc2 = st.columns(2)
+                    _trn_hour_opts = list(range(6, 24))
+                    with _trn_hc1:
+                        _trn_start = st.selectbox("Start time", options=_trn_hour_opts[:-1], format_func=lambda h: f"{h:02d}:00", key="trn_start")
+                    with _trn_hc2:
+                        _trn_end = st.selectbox("End time", options=_trn_hour_opts[1:], format_func=lambda h: f"{h:02d}:00", index=len(_trn_hour_opts) - 2, key="trn_end")
+
+                    _trn_pool_options = get_villas_with_free_quota(_trn_date_str)
+                    if not _trn_pool_options:
+                        st.info("No villas currently show free quota for that date — free some up or pick a different date.")
+                    _trn_pool = st.multiselect(
+                        "Villa pool (only villas with free quota right now are listed)",
+                        options=_trn_pool_options, key="trn_pool",
+                    )
+
+                    _trn_ready = bool(_trn_courts) and bool(_trn_pool) and _trn_end > _trn_start
+                    if st.button("📌 Create Tournament Request", type="primary", use_container_width=True, key="trn_create_btn", disabled=not _trn_ready):
+                        if create_tournament_request(_trn_date_str, _trn_courts, _trn_pool, _trn_start, _trn_end):
+                            st.success(f"Tournament request saved for {_trn_date_str}.")
+                            if _trn_date_str in {d.strftime('%Y-%m-%d') for d in get_next_14_days()}:
+                                _trn_fresh = get_tournament_requests() or []
+                                _trn_new = next((r for r in _trn_fresh if r["target_date"] == _trn_date_str and r["status"] == "pending"), None)
+                                if _trn_new:
+                                    with st.spinner("This date is already within the booking window — booking now…"):
+                                        _trn_summary = process_tournament_request(_trn_new)
+                                    st.info(_trn_summary)
+                            time.sleep(1.5)
+                            st.rerun()
+                        else:
+                            st.error("Could not save the tournament request — please try again.")
+
         with admin_tabs[4]:
             if COACH_FEATURE_ENABLED:
                 render_coach_admin_panel(key_prefix="activitylog")
@@ -4805,6 +5151,7 @@ Coach accounts exist for tennis coaches who train residents across **several vil
                         st.warning(f"{pending_count} booking(s) are still tagged to a coach.")
                         if st.button(f"↩️ Transfer {pending_count} coach booking(s) to villa ownership", type="primary", use_container_width=True):
                             run_query(supabase.table("bookings").update({"coach_email": None}).not_.is_("coach_email", "null"))
+                            invalidate_booking_caches()
                             add_log("Admin Reset", f"Admin migrated {pending_count} coach booking(s) to plain villa ownership (coach facility disabled)")
                             st.success(f"Done — {pending_count} booking(s) now belong to their villa like any other booking.")
                             time.sleep(1.2)
