@@ -2807,6 +2807,7 @@ def _process_background_tasks():
         _run_scheduled_db_cleanup()
         _run_scheduled_watch_cleanup()
         _run_scheduled_tournament_processing()
+        _run_scheduled_resource_check()
     except Exception:
         pass
 
@@ -3039,6 +3040,115 @@ def _run_scheduled_tournament_processing():
                 process_tournament_request(req)
     except Exception as e:
         print(f"scheduled tournament processing error: {e}")
+    return True
+
+# ==============================================================================
+# --- RESOURCE MONITOR (admin-only) ---
+# ==============================================================================
+# Streamlit Community Cloud doesn't expose a usage API to the app itself, so this is the closest
+# an app can get to checking its own footprint: `psutil` reads THIS PROCESS's own CPU/memory
+# directly, which is measured the same way no matter how the container virtualizes /proc (unlike
+# system-wide readings, which can silently report the underlying host instead of the container's
+# actual quota). Every number here is compared against Streamlit Community Cloud's DOCUMENTED
+# per-app ceilings below — Streamlit can change these without notice, so treat this as an
+# early-warning signal, not an exact measurement.
+STREAMLIT_CLOUD_CPU_CORES_MAX = 2.0
+STREAMLIT_CLOUD_MEMORY_MB_MAX = 2700.0
+STREAMLIT_CLOUD_DISK_GB_MAX = 50.0
+RESOURCE_ALERT_THRESHOLD_PCT = 75
+RESOURCE_ALERT_RECIPIENT = "devkrea@gmail.com"
+
+@st.cache_resource
+def _get_resource_monitor_process_handle():
+    """One psutil.Process handle kept alive for the app's whole lifetime (via st.cache_resource,
+    which — unlike st.cache_data — persists a live object rather than a serialized value). CPU%
+    is only meaningful as a delta between two points in time; priming it here means every later
+    call to get_resource_usage() reports usage since the PREVIOUS call, non-blocking, instead of
+    pausing the request to take a fresh instantaneous sample. Returns None if psutil isn't
+    installed, so the caller can fail soft instead of crashing the whole app."""
+    try:
+        import psutil
+        p = psutil.Process(os.getpid())
+        p.cpu_percent(interval=None)  # discard the meaningless first reading; see docstring above
+        return p
+    except Exception:
+        return None
+
+def get_resource_usage():
+    """This app's own CPU/memory/disk footprint, and each one's percentage of Streamlit Community
+    Cloud's documented per-app limit. Returns None if psutil isn't installed (add `psutil` to
+    requirements.txt to enable this) or if reading usage fails for any reason — callers should
+    treat None as "the monitor isn't available right now", not as zero usage."""
+    try:
+        import psutil
+    except ImportError:
+        return None
+    proc = _get_resource_monitor_process_handle()
+    if proc is None:
+        return None
+    try:
+        cores_used = proc.cpu_percent(interval=None) / 100.0
+        mem_mb = proc.memory_info().rss / (1024 * 1024)
+        disk = psutil.disk_usage('/')
+        disk_used_gb = disk.used / (1024 ** 3)
+        return {
+            "cores_used": round(cores_used, 3),
+            "cpu_pct_of_limit": round(min(100.0, cores_used / STREAMLIT_CLOUD_CPU_CORES_MAX * 100), 1),
+            "mem_mb": round(mem_mb, 1),
+            "mem_pct_of_limit": round(min(100.0, mem_mb / STREAMLIT_CLOUD_MEMORY_MB_MAX * 100), 1),
+            "disk_gb": round(disk_used_gb, 2),
+            "disk_pct_of_limit": round(min(100.0, disk_used_gb / STREAMLIT_CLOUD_DISK_GB_MAX * 100), 1),
+        }
+    except Exception:
+        return None
+
+def _send_resource_alert_email(usage, triggered_by):
+    """Sends the resource-usage warning to the developer inbox. `triggered_by` is a list (e.g.
+    ["CPU", "Memory"]) naming which metric(s) actually crossed the threshold, so the email is
+    specific about what's high rather than a generic 'something's wrong'."""
+    try:
+        subject = f"⚠️ Court Booking App — Resource Usage Warning ({', '.join(triggered_by)})"
+        html_content = (
+            f"<h3>Streamlit Cloud Resource Warning</h3>"
+            f"<p>This app has reached {RESOURCE_ALERT_THRESHOLD_PCT}% or more of Streamlit Community "
+            f"Cloud's documented per-app limit on: <b>{', '.join(triggered_by)}</b>.</p>"
+            f"<table style='border-collapse:collapse; font-family: -apple-system, sans-serif;'>"
+            f"<tr><td style='padding:4px 12px;'>CPU</td><td style='padding:4px 12px;'>"
+            f"<b>{usage['cores_used']:.2f} / {STREAMLIT_CLOUD_CPU_CORES_MAX:.0f} cores</b> ({usage['cpu_pct_of_limit']}%)</td></tr>"
+            f"<tr><td style='padding:4px 12px;'>Memory</td><td style='padding:4px 12px;'>"
+            f"<b>{usage['mem_mb']:.0f} MB / {STREAMLIT_CLOUD_MEMORY_MB_MAX:.0f} MB</b> ({usage['mem_pct_of_limit']}%)</td></tr>"
+            f"<tr><td style='padding:4px 12px;'>Disk</td><td style='padding:4px 12px;'>"
+            f"<b>{usage['disk_gb']:.2f} / {STREAMLIT_CLOUD_DISK_GB_MAX:.0f} GB</b> ({usage['disk_pct_of_limit']}%)</td></tr>"
+            f"</table>"
+            f"<p style='color:#718096; font-size:13px;'>Checked at {get_utc_plus_4().strftime('%Y-%m-%d %H:%M')} (UTC+4). "
+            f"Streamlit Cloud's limits are documented, approximate, and can change without notice — "
+            f"treat this as an early-warning signal, not an exact measurement.</p>"
+        )
+        send_gmail_smtp(RESOURCE_ALERT_RECIPIENT, subject, html_content)
+    except Exception as e:
+        print(f"Error sending resource alert email: {e}")
+
+@st.cache_data(ttl=1800, show_spinner=False)
+def _run_scheduled_resource_check():
+    """Checks this app's own resource usage at most once every 30 minutes per app instance, and
+    emails RESOURCE_ALERT_RECIPIENT the moment any metric reaches RESOURCE_ALERT_THRESHOLD_PCT.
+    The ttl here IS the alert throttle — while usage stays above the threshold this simply re-fires
+    at most once per 30-minute window rather than emailing on every rerun."""
+    try:
+        usage = get_resource_usage()
+        if not usage:
+            return True
+        triggered = [
+            name for name, pct in (
+                ("CPU", usage["cpu_pct_of_limit"]),
+                ("Memory", usage["mem_pct_of_limit"]),
+                ("Disk", usage["disk_pct_of_limit"]),
+            ) if pct >= RESOURCE_ALERT_THRESHOLD_PCT
+        ]
+        if triggered:
+            _send_resource_alert_email(usage, triggered)
+    except Exception as e:
+        print(f"scheduled resource check error: {e}")
     return True
 
 def get_active_bookings_for_villa_display(villa_identifier):
@@ -5177,6 +5287,44 @@ Coach accounts exist for tennis coaches who train residents across **several vil
                     st.success("Old log entries purged.")
                     time.sleep(1)
                     st.rerun()
+
+            with st.expander("📊 Resource Monitor (Streamlit Cloud)", expanded=False):
+                st.caption(
+                    "Reads this app's own CPU/memory/disk footprint with `psutil` and compares it against "
+                    "Streamlit Community Cloud's documented per-app ceilings (2 CPU cores, 2.7GB memory, "
+                    "50GB storage) — Streamlit doesn't publish a usage API, so this is the closest an app "
+                    "can check on itself, and Streamlit can change these limits without notice. CPU is "
+                    "measured since the app's *last* check rather than an instant snapshot, so it reads 0% "
+                    f"right after a restart until some time has passed. If any figure reaches "
+                    f"{RESOURCE_ALERT_THRESHOLD_PCT}% of its limit, a warning email is sent automatically "
+                    f"to {RESOURCE_ALERT_RECIPIENT} (checked at most once every 30 minutes)."
+                )
+                _res_usage = get_resource_usage()
+                if _res_usage is None:
+                    st.warning("`psutil` isn't installed in this environment — add `psutil` to `requirements.txt` and redeploy to enable this monitor.")
+                else:
+                    _r1, _r2, _r3 = st.columns(3)
+                    with _r1:
+                        st.metric("CPU", f"{_res_usage['cores_used']:.2f} / {STREAMLIT_CLOUD_CPU_CORES_MAX:.0f} cores",
+                                  f"{_res_usage['cpu_pct_of_limit']}% of limit", delta_color="off")
+                    with _r2:
+                        st.metric("Memory", f"{_res_usage['mem_mb']:.0f} / {STREAMLIT_CLOUD_MEMORY_MB_MAX:.0f} MB",
+                                  f"{_res_usage['mem_pct_of_limit']}% of limit", delta_color="off")
+                    with _r3:
+                        st.metric("Disk", f"{_res_usage['disk_gb']:.2f} / {STREAMLIT_CLOUD_DISK_GB_MAX:.0f} GB",
+                                  f"{_res_usage['disk_pct_of_limit']}% of limit", delta_color="off")
+
+                    _worst_pct = max(_res_usage['cpu_pct_of_limit'], _res_usage['mem_pct_of_limit'], _res_usage['disk_pct_of_limit'])
+                    if _worst_pct >= RESOURCE_ALERT_THRESHOLD_PCT:
+                        st.error(f"⚠️ At least one resource is at or above the {RESOURCE_ALERT_THRESHOLD_PCT}% alert threshold — a warning email goes out automatically (at most once every 30 minutes).")
+                    elif _worst_pct >= RESOURCE_ALERT_THRESHOLD_PCT - 15:
+                        st.warning("Getting close to the alert threshold — worth keeping an eye on.")
+                    else:
+                        st.success("All resources comfortably within Streamlit Cloud's documented limits.")
+
+                    if st.button("📧 Send a test resource-usage email now", key="res_test_email_btn"):
+                        _send_resource_alert_email(_res_usage, ["Manual test"])
+                        st.success(f"Test email sent to {RESOURCE_ALERT_RECIPIENT}.")
 
             with st.expander("💾 Full Database Backup", expanded=True):
                 st.markdown("### Database Backup (ZIP)")
