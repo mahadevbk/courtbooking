@@ -5486,7 +5486,7 @@ Coach accounts exist for tennis coaches who train residents across **several vil
                     "is the gold standard; this in-app export is the fast, no-setup option for everyday safety."
                 )
 
-                BACKUP_TABLES = ["bookings", "logs", "villa_claims", "coach_accounts", "coach_villas", "court_maintenance", "slot_watches","tournament_requests"]
+                BACKUP_TABLES = ["bookings", "logs", "villa_claims", "coach_accounts", "coach_villas", "court_maintenance", "slot_watches","tournament_requests", "greylisted_emails"]
 
                 def _fetch_all_rows(table_name):
                     data = []
