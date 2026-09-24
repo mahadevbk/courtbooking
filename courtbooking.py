@@ -1452,6 +1452,68 @@ def get_email_claimed_villas_count(email):
     unique_villas = set([f"{r['sub_community']}::{r['villa']}" for r in res.data])
     return len(unique_villas)
 
+# ==============================================================================
+# --- GREYLIST (admin-only): known abusers capped at ONE villa per email ---
+# ==============================================================================
+# Needs a `greylisted_emails` table (columns: id bigint generated always as identity primary key,
+# email text not null unique, reason text, added_at timestamptz default now()). Until it exists,
+# every function below fails open — is_email_greylisted() is simply always False and
+# get_max_villas_for_email() always returns the normal 3-villa cap — so a missing table can never
+# block ordinary registration; it just means this specific extra restriction isn't active yet.
+GREYLIST_TABLE = "greylisted_emails"
+DEFAULT_MAX_VILLAS_PER_EMAIL = 3
+GREYLIST_MAX_VILLAS_PER_EMAIL = 1
+
+@st.cache_data(ttl=60, show_spinner=False)
+def get_greylisted_emails():
+    """Lowercased set of every greylisted email, cached for 60s — short enough that an admin
+    change takes effect almost immediately, long enough not to query on every keystroke."""
+    try:
+        res = supabase.table(GREYLIST_TABLE).select("email").execute()
+        return {(r["email"] or "").strip().lower() for r in (res.data or []) if r.get("email")}
+    except Exception:
+        return set()
+
+def is_email_greylisted(email):
+    return (email or "").strip().lower() in get_greylisted_emails()
+
+def get_max_villas_for_email(email):
+    """The one place that decides how many villas an email may hold. Every spot that creates a
+    NEW villa claim (self-service registration, the admin's manual-authorize tool) checks this
+    instead of a hardcoded number, so a greylisted email is capped at 1 villa everywhere a claim
+    is created through those paths — with no override except removing the email from the greylist
+    first. Returns the normal 3-villa cap, unchanged, for every email that isn't greylisted."""
+    return GREYLIST_MAX_VILLAS_PER_EMAIL if is_email_greylisted(email) else DEFAULT_MAX_VILLAS_PER_EMAIL
+
+def get_greylist_entries():
+    """Full greylist rows for the admin UI, newest first — or None if the table doesn't exist yet
+    (same 'feature not switched on' convention as slot_watches/tournament_requests), so the panel
+    can tell 'not set up' apart from 'set up but empty'."""
+    try:
+        res = supabase.table(GREYLIST_TABLE).select("*").order("added_at", desc=True).execute()
+        return res.data or []
+    except Exception:
+        return None
+
+def add_to_greylist(email, reason=""):
+    email_clean = (email or "").strip().lower()
+    if not email_clean or "@" not in email_clean:
+        return False
+    try:
+        supabase.table(GREYLIST_TABLE).insert({"email": email_clean, "reason": (reason or "").strip() or None}).execute()
+        get_greylisted_emails.clear()
+        return True
+    except Exception:
+        return False
+
+def remove_from_greylist(email):
+    try:
+        supabase.table(GREYLIST_TABLE).delete().eq("email", (email or "").strip().lower()).execute()
+        get_greylisted_emails.clear()
+        return True
+    except Exception:
+        return False
+
 def get_all_villas_for_email(email):
     res = run_query(supabase.table("villa_claims").select("*")
                     .eq("email", email.strip().lower())
@@ -3494,6 +3556,7 @@ def _attempt_resident_login(otp_sub, otp_villa, otp_email_input):
         f"{c['sub_community']}::{c['villa']}"
         for c in (email_claims or []) if c.get("status") == "approved"
     })
+    max_villas_allowed = get_max_villas_for_email(otp_email_input)
     is_on_cooldown, hours_left = _cooldown_from_claims(villa_claims, otp_email_input)
     target_pair = f"{otp_sub}::{otp_villa}"
 
@@ -3509,12 +3572,16 @@ def _attempt_resident_login(otp_sub, otp_villa, otp_email_input):
             f"🚫 This villa ({otp_sub} - Villa {otp_villa}) already has 2 verified resident emails attached. "
             "If you recently moved in or need to update your registered email, please reach out via the contact channels in Court Maintenance."
         )
-    elif not existing_claim and email_villas_count >= 3:
+    elif not existing_claim and email_villas_count >= max_villas_allowed:
+        # Same generic message and log format regardless of WHY the cap was hit (the normal
+        # 3-villa cap, or the 1-villa greylist cap for a known abuser) — a greylisted email gets
+        # no signal that it's being treated any differently from an ordinary resident hitting the
+        # normal cap.
         st.error(
             "Unable to register this villa to your email address. "
             "Please contact Dev via the contact details in Court Maintenance for assistance."
         )
-        add_log("Access Denied", f"Email {otp_email_input} exceeded 3-villa cap attempting {otp_sub} Villa {otp_villa}", fingerprint=current_uuid)
+        add_log("Access Denied", f"Email {otp_email_input} exceeded villa cap ({max_villas_allowed}) attempting {otp_sub} Villa {otp_villa}", fingerprint=current_uuid)
     elif not existing_claim and target_pair not in uuid_villas and len(uuid_villas) >= 3:
         st.error(
             "This device has reached the maximum allowed registered villas. "
@@ -4736,10 +4803,12 @@ Coach accounts exist for tennis coaches who train residents across **several vil
                         else:
                             curr_c = get_villa_claims_count(man_sub, man_villa)
                             email_v_count = get_email_claimed_villas_count(man_email)
+                            max_v_allowed = get_max_villas_for_email(man_email)
                             if curr_c >= 2:
                                 st.error(f"Cannot add: {man_sub} Villa {man_villa} already has 2 verified claims.")
-                            elif email_v_count >= 3:
-                                st.error(f"Cannot add: {man_email} already holds claims for 3 villas (maximum cap reached).")
+                            elif email_v_count >= max_v_allowed:
+                                greylist_note = " — this email is greylisted" if is_email_greylisted(man_email) else ""
+                                st.error(f"Cannot add: {man_email} already holds claims for {max_v_allowed} villa(s) (maximum cap reached{greylist_note}).")
                             else:
                                 now_ts = get_utc_plus_4().isoformat()
                                 run_query(supabase.table("villa_claims").insert({
@@ -4839,6 +4908,20 @@ Coach accounts exist for tennis coaches who train residents across **several vil
                         st.error("Please specify a valid Sub-Community, Villa, and Email Address.")
                     elif not bypass_villa.isdigit() or not (1 <= int(bypass_villa) <= max_allowed_bypass):
                         st.error(f"Invalid villa number for {bypass_sub}. Must be between 1 and {max_allowed_bypass}.")
+                    elif (
+                        not get_existing_claim(bypass_sub, bypass_villa, bypass_email)
+                        and is_email_greylisted(bypass_email)
+                        and get_email_claimed_villas_count(bypass_email) >= GREYLIST_MAX_VILLAS_PER_EMAIL
+                    ):
+                        # This tool otherwise bypasses every other cap by design (that's its whole
+                        # purpose) — the greylist is the one restriction that still applies here,
+                        # since letting a known abuser get a 2nd villa through the admin's own
+                        # convenience tool would defeat the point of greylisting them at all.
+                        st.error(
+                            f"Cannot grant a new villa to {bypass_email} — this email is greylisted and "
+                            f"already holds its maximum of {GREYLIST_MAX_VILLAS_PER_EMAIL} villa. "
+                            "Remove it from the greylist first (Security & Lockouts tab) if this is a genuine exception."
+                        )
                     else:
                         now_ts = get_utc_plus_4().isoformat()
                         existing = get_existing_claim(bypass_sub, bypass_villa, bypass_email)
@@ -5006,6 +5089,58 @@ Coach accounts exist for tennis coaches who train residents across **several vil
                                     st.success(f"🔄 Villa ownership claims deleted for {target['email']}.")
                                     time.sleep(1.5)
                                     st.rerun()
+
+            with st.expander("🚫 Greylist (Known Abusers — Max 1 Villa)", expanded=False):
+                st.caption(
+                    "Emails on this list are capped at **1 villa** instead of the normal 3 — once one of "
+                    "these emails holds a villa, it cannot register another, anywhere a villa claim gets "
+                    "created (self-service registration, the manual-authorize tool, and the admin resident-"
+                    "bypass tool). Their existing claim keeps working as normal — this only blocks adding "
+                    "a second one. The person sees the same generic 'contact Dev' message anyone hitting "
+                    "the normal cap would see, so nothing reveals they're specifically flagged."
+                )
+                _grey_entries = get_greylist_entries()
+                if _grey_entries is None:
+                    st.warning(
+                        "This feature needs a `greylisted_emails` table that doesn't exist yet. Create it "
+                        "in Supabase and this panel switches on automatically:"
+                    )
+                    st.code(
+                        "create table greylisted_emails (\n"
+                        "  id bigint generated always as identity primary key,\n"
+                        "  email text not null unique,\n"
+                        "  reason text,\n"
+                        "  added_at timestamptz default now()\n"
+                        ");",
+                        language="sql",
+                    )
+                else:
+                    if _grey_entries:
+                        st.markdown(f"**Currently greylisted ({len(_grey_entries)})**")
+                        for _ge in _grey_entries:
+                            _ge_villas = get_email_claimed_villas_count(_ge["email"])
+                            _gcol1, _gcol2 = st.columns([6, 1])
+                            with _gcol1:
+                                _reason_txt = f" — *{_ge['reason']}*" if _ge.get("reason") else ""
+                                st.caption(f"🚫 **{_ge['email']}** ({_ge_villas}/{GREYLIST_MAX_VILLAS_PER_EMAIL} villa){_reason_txt}")
+                            with _gcol2:
+                                if st.button("🔓", key=f"grey_remove_{_ge['id']}", help="Remove from greylist"):
+                                    remove_from_greylist(_ge["email"])
+                                    add_log("Admin Reset", f"Admin removed {_ge['email']} from the greylist")
+                                    st.rerun()
+                        st.divider()
+
+                    st.markdown("**Add an email to the greylist**")
+                    _grey_new_email = st.text_input("Email address", placeholder="resident@example.com", key="grey_new_email").strip().lower()
+                    _grey_new_reason = st.text_input("Reason (admin-only note, optional)", key="grey_new_reason")
+                    if st.button("🚫 Add to Greylist", type="primary", key="grey_add_btn", disabled=not ("@" in _grey_new_email and "." in _grey_new_email)):
+                        if add_to_greylist(_grey_new_email, _grey_new_reason):
+                            add_log("Admin Reset", f"Admin greylisted {_grey_new_email}" + (f" ({_grey_new_reason})" if _grey_new_reason else ""))
+                            st.success(f"{_grey_new_email} is now greylisted (capped at {GREYLIST_MAX_VILLAS_PER_EMAIL} villa).")
+                            time.sleep(1.0)
+                            st.rerun()
+                        else:
+                            st.error("Could not add to the greylist — please try again.")
 
         with admin_tabs[3]:
             with st.expander("📋 Manage Bookings for a Villa", expanded=True):
