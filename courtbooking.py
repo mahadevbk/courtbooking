@@ -3049,12 +3049,15 @@ def _run_scheduled_tournament_processing():
 # an app can get to checking its own footprint: `psutil` reads THIS PROCESS's own CPU/memory
 # directly, which is measured the same way no matter how the container virtualizes /proc (unlike
 # system-wide readings, which can silently report the underlying host instead of the container's
-# actual quota). Every number here is compared against Streamlit Community Cloud's DOCUMENTED
-# per-app ceilings below — Streamlit can change these without notice, so treat this as an
-# early-warning signal, not an exact measurement.
+# actual quota). CPU and memory below are compared against Streamlit Community Cloud's DOCUMENTED
+# per-app ceilings — Streamlit can change these without notice, so treat this as an early-warning
+# signal, not an exact measurement. Disk has no equivalent process-scoped reading (psutil.disk_usage
+# only sees the shared host filesystem here, confirmed in practice to report over 100GB used against
+# this 50GB figure), so it's kept only as a documented reference and is never turned into a
+# percentage or used to trigger an alert — see get_resource_usage()'s docstring.
 STREAMLIT_CLOUD_CPU_CORES_MAX = 2.0
 STREAMLIT_CLOUD_MEMORY_MB_MAX = 2700.0
-STREAMLIT_CLOUD_DISK_GB_MAX = 50.0
+STREAMLIT_CLOUD_DISK_GB_MAX = 50.0  # reference only — not used in any calculation, see comment above
 RESOURCE_ALERT_THRESHOLD_PCT = 75
 RESOURCE_ALERT_RECIPIENT = "devkrea@gmail.com"
 
@@ -3075,10 +3078,20 @@ def _get_resource_monitor_process_handle():
         return None
 
 def get_resource_usage():
-    """This app's own CPU/memory/disk footprint, and each one's percentage of Streamlit Community
-    Cloud's documented per-app limit. Returns None if psutil isn't installed (add `psutil` to
-    requirements.txt to enable this) or if reading usage fails for any reason — callers should
-    treat None as "the monitor isn't available right now", not as zero usage."""
+    """This app's own CPU/memory footprint, and each one's percentage of Streamlit Community
+    Cloud's documented per-app limit — plus a disk figure that is informational only (see below).
+    Returns None if psutil isn't installed (add `psutil` to requirements.txt to enable this) or if
+    reading usage fails for any reason — callers should treat None as "the monitor isn't available
+    right now", not as zero usage.
+
+    Disk is NOT compared against Streamlit's 50GB limit the way CPU/memory are compared against
+    theirs. CPU and memory are read from THIS PROCESS specifically (psutil.Process()), which is
+    reliable regardless of how the container virtualizes things. Disk has no per-process
+    equivalent — psutil.disk_usage('/') can only report the filesystem's own total/used, and on
+    Streamlit Community Cloud that reflects the shared underlying node (confirmed in practice: it
+    reported >100GB used against a 50GB app limit), not this app's own slice of it. Rather than
+    show a percentage that's been observed to be wrong, disk is reported as a plain, unscored
+    figure and left out of the 75% alert entirely."""
     try:
         import psutil
     except ImportError:
@@ -3090,14 +3103,13 @@ def get_resource_usage():
         cores_used = proc.cpu_percent(interval=None) / 100.0
         mem_mb = proc.memory_info().rss / (1024 * 1024)
         disk = psutil.disk_usage('/')
-        disk_used_gb = disk.used / (1024 ** 3)
         return {
             "cores_used": round(cores_used, 3),
             "cpu_pct_of_limit": round(min(100.0, cores_used / STREAMLIT_CLOUD_CPU_CORES_MAX * 100), 1),
             "mem_mb": round(mem_mb, 1),
             "mem_pct_of_limit": round(min(100.0, mem_mb / STREAMLIT_CLOUD_MEMORY_MB_MAX * 100), 1),
-            "disk_gb": round(disk_used_gb, 2),
-            "disk_pct_of_limit": round(min(100.0, disk_used_gb / STREAMLIT_CLOUD_DISK_GB_MAX * 100), 1),
+            "disk_used_gb": round(disk.used / (1024 ** 3), 2),
+            "disk_total_gb": round(disk.total / (1024 ** 3), 2),
         }
     except Exception:
         return None
@@ -3117,8 +3129,8 @@ def _send_resource_alert_email(usage, triggered_by):
             f"<b>{usage['cores_used']:.2f} / {STREAMLIT_CLOUD_CPU_CORES_MAX:.0f} cores</b> ({usage['cpu_pct_of_limit']}%)</td></tr>"
             f"<tr><td style='padding:4px 12px;'>Memory</td><td style='padding:4px 12px;'>"
             f"<b>{usage['mem_mb']:.0f} MB / {STREAMLIT_CLOUD_MEMORY_MB_MAX:.0f} MB</b> ({usage['mem_pct_of_limit']}%)</td></tr>"
-            f"<tr><td style='padding:4px 12px;'>Disk</td><td style='padding:4px 12px;'>"
-            f"<b>{usage['disk_gb']:.2f} / {STREAMLIT_CLOUD_DISK_GB_MAX:.0f} GB</b> ({usage['disk_pct_of_limit']}%)</td></tr>"
+            f"<tr><td style='padding:4px 12px;'>Disk (host, informational)</td><td style='padding:4px 12px;'>"
+            f"<b>{usage['disk_used_gb']:.2f} / {usage['disk_total_gb']:.2f} GB</b></td></tr>"
             f"</table>"
             f"<p style='color:#718096; font-size:13px;'>Checked at {get_utc_plus_4().strftime('%Y-%m-%d %H:%M')} (UTC+4). "
             f"Streamlit Cloud's limits are documented, approximate, and can change without notice — "
@@ -3142,7 +3154,8 @@ def _run_scheduled_resource_check():
             name for name, pct in (
                 ("CPU", usage["cpu_pct_of_limit"]),
                 ("Memory", usage["mem_pct_of_limit"]),
-                ("Disk", usage["disk_pct_of_limit"]),
+                # Disk deliberately excluded — see get_resource_usage()'s docstring for why it
+                # can't be reliably compared against Streamlit's 50GB per-app limit here.
             ) if pct >= RESOURCE_ALERT_THRESHOLD_PCT
         ]
         if triggered:
@@ -4258,69 +4271,6 @@ def render_court_maintenance_tab(reporter_label, current_device):
     else:
         st.info("No maintenance issues reported yet.")
 
-    st.divider()
-    st.markdown("### 🛠️ Admin Maintenance Controls")
-    admin_maint_pwd = st.text_input("Enter Admin Password to Unlock Controls", type="password", key="tab4_admin_pass")
-
-    if admin_maint_pwd:
-        if admin_maint_pwd == st.secrets.get("ADMIN_PASSWORD", "admin123"):
-            st.success("Admin Access Granted")
-
-            with st.expander("🔑 Admin Resident Bypass (Authorize & Switch Active Resident)", expanded=False):
-                st.caption("Directly authorize a resident email without OTP and immediately switch this session to them.")
-                b_col1, b_col2 = st.columns(2)
-                with b_col1:
-                    bypass_sub = st.selectbox("Sub-Community", options=sub_community_list, key="tab4_bypass_sub")
-                with b_col2:
-                    bypass_villa_raw = st.text_input("Villa Number", key="tab4_bypass_villa").strip()
-                    bypass_villa = "".join(filter(str.isdigit, bypass_villa_raw))
-                bypass_email = st.text_input("Resident Email Address", placeholder="resident@example.com", key="tab4_bypass_email").strip().lower()
-
-                if st.button("Authorize & Switch Session to Resident", type="primary", width='stretch', key="tab4_bypass_btn"):
-                    max_allowed_bypass = SUB_COMMUNITY_VILLA_LIMITS.get(bypass_sub, 9999)
-                    if not bypass_sub or not bypass_villa or not bypass_email or "@" not in bypass_email:
-                        st.error("Please specify a valid Sub-Community, Villa, and Email Address.")
-                    elif not bypass_villa.isdigit() or not (1 <= int(bypass_villa) <= max_allowed_bypass):
-                        st.error(f"Invalid villa number for {bypass_sub}. Must be between 1 and {max_allowed_bypass}.")
-                    else:
-                        now_ts = get_utc_plus_4().isoformat()
-                        existing = get_existing_claim(bypass_sub, bypass_villa, bypass_email)
-                        if not existing:
-                            run_query(supabase.table("villa_claims").insert({
-                                "sub_community": bypass_sub,
-                                "villa": bypass_villa,
-                                "email": bypass_email,
-                                "fingerprint": "admin_bypass_grant",
-                                "status": "approved",
-                                "verified_at": now_ts
-                            }))
-                            add_log("Villa Claim", f"Admin directly authorized {bypass_sub} Villa {bypass_villa} for {bypass_email}")
-                        else:
-                            run_query(supabase.table("villa_claims").update({
-                                "verified_at": now_ts,
-                                "status": "approved"
-                            }).eq("id", existing["id"]))
-
-                        fallback_choice = f"{bypass_sub}-{bypass_villa}"
-                        claim_bundle = f"{bypass_sub}::{bypass_villa}"
-                        st_javascript(f"""
-                            localStorage.setItem('court_villa_lock', '{fallback_choice}');
-                            localStorage.setItem('court_verified_email', '{bypass_email}');
-                            localStorage.setItem('verified_claim_info', '{claim_bundle}');
-                        """, key=f"js_set_storage_bypass_{bypass_sub}_{bypass_villa}_{bypass_email}")
-
-                        st.session_state.sub_community = bypass_sub
-                        st.session_state.villa = bypass_villa
-                        st.session_state.verified_email = bypass_email
-                        st.session_state.authenticated = True
-                        st.session_state.is_coach = False
-                        st.query_params["auth"] = encode_auth_token(bypass_sub, bypass_villa, bypass_email)
-                        st.success(f"Granted access! Switched active session to {bypass_sub} Villa {bypass_villa} ({bypass_email}).")
-                        time.sleep(1.0)
-                        st.rerun()
-        else:
-            st.error("Incorrect Password")
-
 
 def render_coach_admin_panel(key_prefix="cam"):
     """Comprehensive coach account admin panel: create/deactivate/delete coaches, reset PINs,
@@ -4761,10 +4711,11 @@ Coach accounts exist for tennis coaches who train residents across **several vil
 
             st.divider()
             st.caption(
-                "**Not finding a tool here?** A couple of admin actions live elsewhere because they need a live "
-                "session to act on:\n"
-                "- **Switch your own session to a resident without OTP** — Maint. tab → Admin Maintenance Controls → Admin Resident Bypass.\n"
-                "- **Unlock a resident from the login screen itself** (before anyone's signed in) — the 🛠️ Admin Emergency Console at the bottom of the login page."
+                "**Not finding a tool here?** One admin action lives on the login screen itself because "
+                "it has to work BEFORE anyone's signed in: unlocking a resident who's locked out — the "
+                "🛠️ Admin Emergency Console at the bottom of the login page. Every other admin tool, "
+                "including switching your own session to a resident (👥 Residents & Access → Admin "
+                "Resident Bypass), lives right here under this one admin panel."
             )
 
         with admin_tabs[1]:
@@ -4867,6 +4818,63 @@ Coach accounts exist for tennis coaches who train residents across **several vil
                                 st.rerun()
                     else:
                         st.warning(f"No active property claims found for `{reset_email_input}`.")
+
+            with st.expander("🔑 Admin Resident Bypass (Authorize & Switch Active Resident)", expanded=False):
+                st.caption(
+                    "Directly authorize a resident email without OTP and immediately switch THIS admin "
+                    "session to them — moved here from the Maint. tab so it sits under the same single "
+                    "admin password as every other admin tool, instead of its own separate prompt."
+                )
+                b_col1, b_col2 = st.columns(2)
+                with b_col1:
+                    bypass_sub = st.selectbox("Sub-Community", options=sub_community_list, key="admres_bypass_sub")
+                with b_col2:
+                    bypass_villa_raw = st.text_input("Villa Number", key="admres_bypass_villa").strip()
+                    bypass_villa = "".join(filter(str.isdigit, bypass_villa_raw))
+                bypass_email = st.text_input("Resident Email Address", placeholder="resident@example.com", key="admres_bypass_email").strip().lower()
+
+                if st.button("Authorize & Switch Session to Resident", type="primary", width='stretch', key="admres_bypass_btn"):
+                    max_allowed_bypass = SUB_COMMUNITY_VILLA_LIMITS.get(bypass_sub, 9999)
+                    if not bypass_sub or not bypass_villa or not bypass_email or "@" not in bypass_email:
+                        st.error("Please specify a valid Sub-Community, Villa, and Email Address.")
+                    elif not bypass_villa.isdigit() or not (1 <= int(bypass_villa) <= max_allowed_bypass):
+                        st.error(f"Invalid villa number for {bypass_sub}. Must be between 1 and {max_allowed_bypass}.")
+                    else:
+                        now_ts = get_utc_plus_4().isoformat()
+                        existing = get_existing_claim(bypass_sub, bypass_villa, bypass_email)
+                        if not existing:
+                            run_query(supabase.table("villa_claims").insert({
+                                "sub_community": bypass_sub,
+                                "villa": bypass_villa,
+                                "email": bypass_email,
+                                "fingerprint": "admin_bypass_grant",
+                                "status": "approved",
+                                "verified_at": now_ts
+                            }))
+                            add_log("Villa Claim", f"Admin directly authorized {bypass_sub} Villa {bypass_villa} for {bypass_email}")
+                        else:
+                            run_query(supabase.table("villa_claims").update({
+                                "verified_at": now_ts,
+                                "status": "approved"
+                            }).eq("id", existing["id"]))
+
+                        fallback_choice = f"{bypass_sub}-{bypass_villa}"
+                        claim_bundle = f"{bypass_sub}::{bypass_villa}"
+                        st_javascript(f"""
+                            localStorage.setItem('court_villa_lock', '{fallback_choice}');
+                            localStorage.setItem('court_verified_email', '{bypass_email}');
+                            localStorage.setItem('verified_claim_info', '{claim_bundle}');
+                        """, key=f"js_set_storage_bypass_{bypass_sub}_{bypass_villa}_{bypass_email}")
+
+                        st.session_state.sub_community = bypass_sub
+                        st.session_state.villa = bypass_villa
+                        st.session_state.verified_email = bypass_email
+                        st.session_state.authenticated = True
+                        st.session_state.is_coach = False
+                        st.query_params["auth"] = encode_auth_token(bypass_sub, bypass_villa, bypass_email)
+                        st.success(f"Granted access! Switched active session to {bypass_sub} Villa {bypass_villa} ({bypass_email}).")
+                        time.sleep(1.0)
+                        st.rerun()
 
         with admin_tabs[2]:
             with st.expander("🚨 Manually Apply Sniping Lockout by Email", expanded=True):
@@ -5290,14 +5298,17 @@ Coach accounts exist for tennis coaches who train residents across **several vil
 
             with st.expander("📊 Resource Monitor (Streamlit Cloud)", expanded=False):
                 st.caption(
-                    "Reads this app's own CPU/memory/disk footprint with `psutil` and compares it against "
-                    "Streamlit Community Cloud's documented per-app ceilings (2 CPU cores, 2.7GB memory, "
-                    "50GB storage) — Streamlit doesn't publish a usage API, so this is the closest an app "
-                    "can check on itself, and Streamlit can change these limits without notice. CPU is "
-                    "measured since the app's *last* check rather than an instant snapshot, so it reads 0% "
-                    f"right after a restart until some time has passed. If any figure reaches "
+                    "Reads this app's own CPU/memory footprint with `psutil` and compares it against "
+                    "Streamlit Community Cloud's documented per-app ceilings (2 CPU cores, 2.7GB memory) — "
+                    "Streamlit doesn't publish a usage API, so this is the closest an app can check on "
+                    "itself, and Streamlit can change these limits without notice. CPU is measured since "
+                    "the app's *last* check rather than an instant snapshot, so it reads 0% right after a "
+                    f"restart until some time has passed. If CPU or memory reaches "
                     f"{RESOURCE_ALERT_THRESHOLD_PCT}% of its limit, a warning email is sent automatically "
-                    f"to {RESOURCE_ALERT_RECIPIENT} (checked at most once every 30 minutes)."
+                    f"to {RESOURCE_ALERT_RECIPIENT} (checked at most once every 30 minutes). Disk is shown "
+                    "for information only, without a percentage — psutil can only see the shared host "
+                    "filesystem here, not this app's own 50GB slice of it, so a 'percent of limit' figure "
+                    "for disk would be meaningless (in practice it read 100%+ even on a near-empty app)."
                 )
                 _res_usage = get_resource_usage()
                 if _res_usage is None:
@@ -5311,16 +5322,15 @@ Coach accounts exist for tennis coaches who train residents across **several vil
                         st.metric("Memory", f"{_res_usage['mem_mb']:.0f} / {STREAMLIT_CLOUD_MEMORY_MB_MAX:.0f} MB",
                                   f"{_res_usage['mem_pct_of_limit']}% of limit", delta_color="off")
                     with _r3:
-                        st.metric("Disk", f"{_res_usage['disk_gb']:.2f} / {STREAMLIT_CLOUD_DISK_GB_MAX:.0f} GB",
-                                  f"{_res_usage['disk_pct_of_limit']}% of limit", delta_color="off")
+                        st.metric("Disk (host, informational)", f"{_res_usage['disk_used_gb']:.1f} / {_res_usage['disk_total_gb']:.1f} GB")
 
-                    _worst_pct = max(_res_usage['cpu_pct_of_limit'], _res_usage['mem_pct_of_limit'], _res_usage['disk_pct_of_limit'])
+                    _worst_pct = max(_res_usage['cpu_pct_of_limit'], _res_usage['mem_pct_of_limit'])
                     if _worst_pct >= RESOURCE_ALERT_THRESHOLD_PCT:
-                        st.error(f"⚠️ At least one resource is at or above the {RESOURCE_ALERT_THRESHOLD_PCT}% alert threshold — a warning email goes out automatically (at most once every 30 minutes).")
+                        st.error(f"⚠️ CPU or memory is at or above the {RESOURCE_ALERT_THRESHOLD_PCT}% alert threshold — a warning email goes out automatically (at most once every 30 minutes).")
                     elif _worst_pct >= RESOURCE_ALERT_THRESHOLD_PCT - 15:
                         st.warning("Getting close to the alert threshold — worth keeping an eye on.")
                     else:
-                        st.success("All resources comfortably within Streamlit Cloud's documented limits.")
+                        st.success("CPU and memory are comfortably within Streamlit Cloud's documented limits.")
 
                     if st.button("📧 Send a test resource-usage email now", key="res_test_email_btn"):
                         _send_resource_alert_email(_res_usage, ["Manual test"])
