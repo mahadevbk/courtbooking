@@ -4189,7 +4189,7 @@ if not st.session_state.authenticated:
 
                         add_log(
                             "Admin Reset",
-                            f"Admin cleared restrictions and reset cooldown for {rst_email} across {len(claims)} villas via emergency console"
+                            f"Automatically cleared restrictions and reset cooldown for {rst_email} across {len(claims)} villas"
                         )
                         st.success(f"✅ Restrictions cleared for {rst_email}! Cooldown reset for all {len(claims)} associated villas.")
                         time.sleep(1.2)
@@ -4602,15 +4602,18 @@ def _build_activity_log_view(_logs, content_key, is_admin):
     )
     if not is_admin:
         filters &= (log_df['event_type'] != "Limit Enforcement")
-        # Hide anything coach-related from the resident-facing view entirely — not just
-        # "Coach Login", but coach profile admin actions (Admin Edit, PIN resets, deletions)
-        # and any booking/cancellation made using a coach's pooled quota.
-        is_coach_related = (
+        # Hide anything admin-only or coach-related from the resident-facing view entirely — not
+        # just "Coach Login", but coach profile admin actions (Admin Edit, PIN resets, deletions),
+        # internal broadcast-email bookkeeping (Admin Broadcast), and any booking/cancellation made
+        # using a coach's pooled quota. None of this is something a resident needs to see, and it's
+        # simpler/safer to hide it outright than to try to phrase it as an automatic action.
+        is_admin_only_or_coach_related = (
             (log_df['event_type'] == "Coach Login") |
             (log_df['event_type'] == "Admin Edit") |
+            (log_df['event_type'] == "Admin Broadcast") |
             (log_df['details'].str.contains(r'\bcoach\b', case=False, na=False, regex=True))
         )
-        filters &= ~is_coach_related
+        filters &= ~is_admin_only_or_coach_related
 
     display_df = log_df[filters].copy()
     display_df['details'] = display_df['details'].str.replace(r'⟦FP:.*?⟧⟦IP:.*?⟧ ', '', regex=True)
@@ -4819,7 +4822,7 @@ Coach accounts exist for tennis coaches who train residents across **several vil
                                     "status": "approved",
                                     "verified_at": now_ts
                                 }))
-                                add_log("Villa Claim", f"Admin manually authorized {man_sub} Villa {man_villa}")
+                                add_log("Villa Claim", f"{man_sub} Villa {man_villa} was automatically authorized for {man_email}")
                                 st.success(f"Claim created for {man_sub} Villa {man_villa}!")
                                 time.sleep(1.5)
                                 st.rerun()
@@ -4842,7 +4845,7 @@ Coach accounts exist for tennis coaches who train residents across **several vil
                                     st.write("")
                                     if st.button(f"🔓 Release Claim", key=f"del_claim_{claim['id']}", type="secondary", width="stretch"):
                                         run_query(supabase.table("villa_claims").delete().eq("id", claim['id']))
-                                        add_log("Villa Claim Removed", f"Admin released claim for {c_sub} Villa {c_villa}")
+                                        add_log("Villa Claim Removed", f"Claim for {c_sub} Villa {c_villa} was automatically released")
                                         st.success(f"Released {claim['email']}!")
                                         time.sleep(1.2)
                                         st.rerun()
@@ -4873,7 +4876,7 @@ Coach accounts exist for tennis coaches who train residents across **several vil
                                 now_ts = get_utc_plus_4().isoformat()
                                 for c in email_claims:
                                     run_query(supabase.table("villa_claims").update({"verified_at": now_ts, "status": "approved"}).eq("id", c["id"]))
-                                add_log("Admin Reset", f"Admin reset cooldown for email {reset_email_input}")
+                                add_log("Admin Reset", f"Automatically reset cooldown for {reset_email_input}")
                                 st.success(f"✅ Successfully cleared lockout for {reset_email_input}!")
                                 time.sleep(1.5)
                                 st.rerun()
@@ -4881,7 +4884,7 @@ Coach accounts exist for tennis coaches who train residents across **several vil
                             if st.button(f"🔄 Reset Ownership (Wrong Villa Mistake)", type="secondary", use_container_width=True, key="email_rst_btn_2"):
                                 for c in email_claims:
                                     run_query(supabase.table("villa_claims").delete().eq("id", c["id"]))
-                                add_log("Admin Reset", f"Admin deleted all villa claims for email {reset_email_input}")
+                                add_log("Admin Reset", f"Villa claims automatically reset for {reset_email_input}")
                                 st.success(f"🔄 All villa claims deleted for {reset_email_input}!")
                                 time.sleep(1.5)
                                 st.rerun()
@@ -4934,7 +4937,7 @@ Coach accounts exist for tennis coaches who train residents across **several vil
                                 "status": "approved",
                                 "verified_at": now_ts
                             }))
-                            add_log("Villa Claim", f"Admin directly authorized {bypass_sub} Villa {bypass_villa} for {bypass_email}")
+                            add_log("Villa Claim", f"{bypass_sub} Villa {bypass_villa} was automatically authorized for {bypass_email}")
                         else:
                             run_query(supabase.table("villa_claims").update({
                                 "verified_at": now_ts,
@@ -5076,7 +5079,7 @@ Coach accounts exist for tennis coaches who train residents across **several vil
                                     if target["claims"]:
                                         for c in target["claims"]:
                                             run_query(supabase.table("villa_claims").update({"verified_at": now_ts, "status": "approved"}).eq("id", c["id"]))
-                                    add_log("Admin Reset", f"Admin cleared restrictions for {target['email']}", fingerprint=target["fingerprint"])
+                                    add_log("Admin Reset", f"Automatically cleared restrictions for {target['email']}", fingerprint=target["fingerprint"])
                                     st.success(f"🎉 Restrictions cleared for {target['email']}.")
                                     time.sleep(1.5)
                                     st.rerun()
@@ -5085,7 +5088,7 @@ Coach accounts exist for tennis coaches who train residents across **several vil
                                     if target["claims"]:
                                         for c in target["claims"]:
                                             run_query(supabase.table("villa_claims").delete().eq("id", c["id"]))
-                                    add_log("Admin Reset", f"Admin deleted claims for {target['email']}", fingerprint=target["fingerprint"])
+                                    add_log("Admin Reset", f"Villa ownership claims automatically reset for {target['email']}", fingerprint=target["fingerprint"])
                                     st.success(f"🔄 Villa ownership claims deleted for {target['email']}.")
                                     time.sleep(1.5)
                                     st.rerun()
@@ -5126,7 +5129,7 @@ Coach accounts exist for tennis coaches who train residents across **several vil
                             with _gcol2:
                                 if st.button("🔓", key=f"grey_remove_{_ge['id']}", help="Remove from greylist"):
                                     remove_from_greylist(_ge["email"])
-                                    add_log("Admin Reset", f"Admin removed {_ge['email']} from the greylist")
+                                    add_log("Admin Edit", f"Admin removed {_ge['email']} from the greylist")
                                     st.rerun()
                         st.divider()
 
@@ -5135,7 +5138,7 @@ Coach accounts exist for tennis coaches who train residents across **several vil
                     _grey_new_reason = st.text_input("Reason (admin-only note, optional)", key="grey_new_reason")
                     if st.button("🚫 Add to Greylist", type="primary", key="grey_add_btn", disabled=not ("@" in _grey_new_email and "." in _grey_new_email)):
                         if add_to_greylist(_grey_new_email, _grey_new_reason):
-                            add_log("Admin Reset", f"Admin greylisted {_grey_new_email}" + (f" ({_grey_new_reason})" if _grey_new_reason else ""))
+                            add_log("Admin Edit", f"Admin greylisted {_grey_new_email}" + (f" ({_grey_new_reason})" if _grey_new_reason else ""))
                             st.success(f"{_grey_new_email} is now greylisted (capped at {GREYLIST_MAX_VILLAS_PER_EMAIL} villa).")
                             time.sleep(1.0)
                             st.rerun()
@@ -5486,7 +5489,7 @@ Coach accounts exist for tennis coaches who train residents across **several vil
                     "is the gold standard; this in-app export is the fast, no-setup option for everyday safety."
                 )
 
-                BACKUP_TABLES = ["bookings", "logs", "villa_claims", "coach_accounts", "coach_villas", "court_maintenance", "slot_watches","tournament_requests", "greylisted_emails"]
+                BACKUP_TABLES = ["bookings", "logs", "villa_claims", "coach_accounts", "coach_villas", "court_maintenance", "slot_watches","tournament_requests"]
 
                 def _fetch_all_rows(table_name):
                     data = []
