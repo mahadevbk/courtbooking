@@ -1285,12 +1285,53 @@ def get_utc_plus_4():
 def get_today():
     return get_utc_plus_4().date()
 
+# Shared admin key-value settings table (also used by Supporter-Only Access Mode below). Defined
+# here, early, since get_window_today() — used everywhere dates are picked — needs it too.
+APP_SETTINGS_TABLE = "app_settings"
+BOOKING_WINDOW_RELEASE_HOUR_KEY = "booking_window_release_hour"
+DEFAULT_BOOKING_WINDOW_RELEASE_HOUR = 21  # 9 PM — the original hardcoded behavior, kept as the fallback
+
+@st.cache_data(ttl=60, show_spinner=False)
+def get_booking_window_release_hour():
+    """The hour (0-23, in the app's UTC+4 clock) at which the newest day at the far edge of the
+    rolling 15-day booking window becomes bookable, admin-configurable in Bookings & Villas.
+    0 (midnight) means no early release at all — the window advances exactly at the natural
+    calendar rollover. Cached for 60s; falls back to the original 9 PM default if `app_settings`
+    doesn't exist yet, has no row for this key, or the read fails for any reason — a missing
+    setting can never break the booking window."""
+    try:
+        res = supabase.table(APP_SETTINGS_TABLE).select("value").eq("key", BOOKING_WINDOW_RELEASE_HOUR_KEY).limit(1).execute()
+        if res and res.data:
+            hour = int(res.data[0].get("value"))
+            if 0 <= hour <= 23:
+                return hour
+    except Exception:
+        pass
+    return DEFAULT_BOOKING_WINDOW_RELEASE_HOUR
+
+def set_booking_window_release_hour(hour):
+    try:
+        hour = int(hour)
+        if not (0 <= hour <= 23):
+            return False
+        supabase.table(APP_SETTINGS_TABLE).delete().eq("key", BOOKING_WINDOW_RELEASE_HOUR_KEY).execute()
+        supabase.table(APP_SETTINGS_TABLE).insert({"key": BOOKING_WINDOW_RELEASE_HOUR_KEY, "value": str(hour)}).execute()
+        get_booking_window_release_hour.clear()
+        return True
+    except Exception:
+        return False
+
 def get_window_today():
-    """Like get_today(), but the booking window rolls over to the next day at 21:00
-    (9 PM) instead of at midnight, so a new day's slots become bookable earlier in
-    the evening rather than right at 12 AM."""
+    """Like get_today(), but the booking window rolls over to the next day at the admin-configured
+    release hour (default 21:00 / 9 PM) instead of at midnight, so a new day's slots become
+    bookable at a specific clock time each day rather than right at 12 AM. A release hour of 0
+    means no early release — the window then advances exactly at the natural midnight boundary,
+    which is why the `if release_hour and ...` check below skips the shift entirely for hour 0
+    (0 is falsy in Python) rather than incorrectly treating "hour 0" as "always past the
+    threshold"."""
+    release_hour = get_booking_window_release_hour()
     now = get_utc_plus_4()
-    if now.hour >= 21:
+    if release_hour and now.hour >= release_hour:
         return now.date() + timedelta(days=1)
     return now.date()
 
@@ -1530,8 +1571,8 @@ def remove_from_greylist(email):
 #                 note text, added_at timestamptz default now())
 # Both helpers below fail OPEN — mode reads as OFF and the supporter list reads as empty — if
 # either table doesn't exist yet or a read fails, so a missing/broken setup can never accidentally
-# lock everyone out of the app.
-APP_SETTINGS_TABLE = "app_settings"
+# lock everyone out of the app. APP_SETTINGS_TABLE itself is defined earlier, alongside
+# get_window_today(), which is the other feature sharing this same settings table.
 SUPPORTERS_TABLE = "supporters"
 SUPPORTER_MODE_KEY = "supporter_only_mode"
 
@@ -5142,7 +5183,9 @@ Coach accounts exist for tennis coaches who train residents across **several vil
                     _sup_new_email = st.text_input("Email address", placeholder="supporter@example.com", key="sup_new_email").strip().lower()
                     _sup_new_note = st.text_input("Note (admin-only, optional)", key="sup_new_note")
                     if st.button("⭐ Add Supporter", type="secondary", key="sup_add_btn", disabled=not ("@" in _sup_new_email and "." in _sup_new_email)):
-                        if add_supporter(_sup_new_email, _sup_new_note):
+                        if _sup_new_email in get_supporter_emails():
+                            st.info("Supporter is already added to the list.")
+                        elif add_supporter(_sup_new_email, _sup_new_note):
                             add_log("Admin Edit", f"Admin added supporter {_sup_new_email}" + (f" ({_sup_new_note})" if _sup_new_note else ""))
                             st.success(f"{_sup_new_email} added to the supporter list.")
                             time.sleep(1.0)
@@ -5366,6 +5409,39 @@ Coach accounts exist for tennis coaches who train residents across **several vil
                             st.error("Could not add to the greylist — please try again.")
 
         with admin_tabs[3]:
+            with st.expander("🕘 Booking Window Release Time", expanded=False):
+                _cur_release_hour = get_booking_window_release_hour()
+                st.caption(
+                    "Each day, the rolling 15-day booking window advances by one day — the newest, "
+                    "farthest-out date becomes bookable — at this clock time (app time, UTC+4). "
+                    "Pick 00:00 (12 AM) for the new day to release at the natural midnight rollover "
+                    "with no early release at all; any other hour releases it that many hours "
+                    "earlier that same day. This affects Plan & Book, the Tournament tool's date "
+                    "range, and every other date picker in the app — they all read this one setting."
+                )
+                _release_hour_options = list(range(24))
+                def _format_release_hour(h):
+                    if h == 0:
+                        return "12:00 AM (midnight — natural rollover, no early release)"
+                    period = "AM" if h < 12 else "PM"
+                    display_h = h if 1 <= h <= 12 else (h - 12 if h > 12 else 12)
+                    return f"{display_h}:00 {period}"
+                _new_release_hour = st.selectbox(
+                    "Release time",
+                    options=_release_hour_options,
+                    index=_cur_release_hour,
+                    format_func=_format_release_hour,
+                    key="release_hour_select",
+                )
+                if st.button("💾 Save Release Time", type="primary", key="release_hour_save_btn", disabled=(_new_release_hour == _cur_release_hour)):
+                    if set_booking_window_release_hour(_new_release_hour):
+                        add_log("Admin Edit", f"Admin changed booking window release time from {_format_release_hour(_cur_release_hour)} to {_format_release_hour(_new_release_hour)}")
+                        st.success(f"Release time updated to {_format_release_hour(_new_release_hour)}.")
+                        time.sleep(1.0)
+                        st.rerun()
+                    else:
+                        st.error("Could not save — the `app_settings` table may not exist yet. See the Supporter-Only Access Mode panel in Security & Lockouts for the table it also needs; run that same table's SQL first.")
+
             with st.expander("📋 Manage Bookings for a Villa", expanded=True):
                 st.markdown("### Villa Booking Management")
                 all_villas = get_all_villas_with_any_bookings()
