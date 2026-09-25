@@ -1668,7 +1668,7 @@ def render_supporter_gate_screen():
         with st.expander("Admin"):
             _sg_pass = st.text_input("Password", type="password", key="supporter_gate_admin_pass", label_visibility="collapsed", placeholder="Admin password")
             if _sg_pass:
-                if _sg_pass == st.secrets.get("ADMIN_PASSWORD", "admin123"):
+                if _sg_pass == st.secrets.get("ADMIN_PASSWORD"):
                     st.session_state.supporter_gate_bypass = True
                     st.success("Override granted for this session.")
                     time.sleep(0.6)
