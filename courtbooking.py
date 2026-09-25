@@ -1746,13 +1746,43 @@ def check_device_sniping_status(device_uuid, current_email, current_sub, current
     current_tag = f"{current_sub} - {current_villa}"
     req_email_clean = (current_email or "").strip().lower()
     try:
-        res = run_query(
-            supabase.table("logs")
-            .select("timestamp, event_type, details, fingerprint")
-            .gte("timestamp", cutoff_96h)
-            .order("timestamp", desc=True)
-        )
-        all_logs = res.data if res and res.data else []
+        # Same membership rule as before (fingerprint match OR email appears in details), but
+        # push both filters to the DB in parallel so we never download the whole 96h log table.
+        def _logs_by_fp():
+            return run_query(
+                supabase.table("logs")
+                .select("timestamp, event_type, details, fingerprint")
+                .gte("timestamp", cutoff_96h)
+                .eq("fingerprint", device_uuid)
+                .order("timestamp", desc=True)
+            )
+
+        def _logs_by_email():
+            if not req_email_clean:
+                return None
+            return run_query(
+                supabase.table("logs")
+                .select("timestamp, event_type, details, fingerprint")
+                .gte("timestamp", cutoff_96h)
+                .ilike("details", f"%{req_email_clean}%")
+                .order("timestamp", desc=True)
+            )
+
+        res_fp, res_email = run_parallel(_logs_by_fp, _logs_by_email)
+        seen = set()
+        all_logs = []
+        for res in (res_fp, res_email):
+            for entry in (res.data if res and res.data else []):
+                key = (
+                    entry.get("timestamp"),
+                    entry.get("event_type"),
+                    entry.get("details"),
+                    entry.get("fingerprint"),
+                )
+                if key in seen:
+                    continue
+                seen.add(key)
+                all_logs.append(entry)
     except Exception:
         return 0, [], 0
 
@@ -1763,6 +1793,7 @@ def check_device_sniping_status(device_uuid, current_email, current_sub, current
     for entry in all_logs:
         details = entry.get("details") or ""
         fp = entry.get("fingerprint") or ""
+        # Keep the original Python guard so email-ilike false positives are still dropped.
         if fp != device_uuid and req_email_clean not in details.lower():
             continue
         try:
@@ -1948,9 +1979,11 @@ def _upcoming_rows(rows):
 
 def invalidate_booking_caches():
     """Called after any booking write so whoever just acted sees fresh data immediately.
-    Everyone else picks the change up within the short cache TTLs."""
+    Everyone else picks the change up within the short cache TTLs.
+    Sniping status is cleared because new Booking Created log lines feed cross-villa detection.
+    Activity-log cache is left to its own TTL — a full log re-fetch on every book/cancel is unnecessary."""
     for name in ("get_booking_window_snapshot", "_get_home_stats_from_queries", "get_slot_history",
-                 "is_slot_reported_display", "check_device_sniping_status", "get_logs_last_14_days"):
+                 "is_slot_reported_display", "check_device_sniping_status"):
         try:
             globals()[name].clear()
         except Exception:
@@ -2750,8 +2783,10 @@ def get_villas_with_active_bookings():
     today_str = get_today().strftime('%Y-%m-%d')
     now_hour = get_utc_plus_4().hour
     try:
-        res_future = run_query(supabase.table("bookings").select("villa, sub_community").gt("date", today_str))
-        res_today = run_query(supabase.table("bookings").select("villa, sub_community").eq("date", today_str).gte("start_hour", now_hour))
+        res_future, res_today = run_parallel(
+            lambda: run_query(supabase.table("bookings").select("villa, sub_community").gt("date", today_str)),
+            lambda: run_query(supabase.table("bookings").select("villa, sub_community").eq("date", today_str).gte("start_hour", now_hour)),
+        )
         all_rows = (res_future.data if res_future else []) + (res_today.data if res_today else [])
         unique_villas = sorted(list(set([f"{row['sub_community']} - {row['villa']}" for row in all_rows])))
         return unique_villas
@@ -2762,16 +2797,34 @@ def get_emails_with_active_bookings():
     """Unique approved resident emails linked to any villa that currently has at least one
     active (future or remaining-today) booking. Used by the admin Broadcast Email tool."""
     villas = get_villas_with_active_bookings()
-    emails = set()
+    if not villas:
+        return []
+    active_pairs = set()
     for v_str in villas:
         try:
             sub, villa = v_str.split(" - ", 1)
-            claims = get_claims_for_villa(sub, villa)
-            for c in claims:
-                if c.get("status") == "approved" and c.get("email") and "@" in str(c["email"]):
-                    emails.add(c["email"].strip().lower())
+            active_pairs.add((sub, str(villa)))
         except Exception:
             continue
+    if not active_pairs:
+        return []
+    # One approved-claims fetch, then filter to the active-booking villa set — same result as
+    # calling get_claims_for_villa() once per villa, without N sequential round-trips.
+    emails = set()
+    try:
+        claims_res = run_query(
+            supabase.table("villa_claims")
+            .select("sub_community, villa, email")
+            .eq("status", "approved")
+        )
+        for c in (claims_res.data if claims_res and claims_res.data else []):
+            if (c.get("sub_community"), str(c.get("villa"))) not in active_pairs:
+                continue
+            em = (c.get("email") or "").strip().lower()
+            if em and "@" in em:
+                emails.add(em)
+    except Exception:
+        return []
     return sorted(emails)
 
 def get_merged_active_bookings_for_email(email):
@@ -2785,20 +2838,28 @@ def get_merged_active_bookings_for_email(email):
     if not approved:
         return []
 
-    raw_rows = []
+    pairs = []
     for c in approved:
         sub = c.get("sub_community")
         villa = c.get("villa")
         if not sub or villa is None:
             continue
-        bookings = get_user_bookings(str(villa), sub)
-        for b in bookings:
+        pairs.append((str(villa), sub))
+    if not pairs:
+        return []
+
+    # Same get_user_bookings() results, fetched concurrently when the email holds multiple villas.
+    booking_lists = run_parallel(*[lambda v=v, s=s: get_user_bookings(v, s) for v, s in pairs])
+
+    raw_rows = []
+    for (villa, sub), bookings in zip(pairs, booking_lists):
+        for b in (bookings or []):
             raw_rows.append({
                 "id": b["id"],
                 "court": b["court"],
                 "date": b["date"],
                 "start_hour": b["start_hour"],
-                "v": str(villa),
+                "v": villa,
                 "sc": sub,
             })
 
