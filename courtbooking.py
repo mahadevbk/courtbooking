@@ -1321,22 +1321,30 @@ def set_booking_window_release_hour(hour):
     except Exception:
         return False
 
-def get_window_today():
+def get_window_today(is_supporter=False):
     """Like get_today(), but the booking window rolls over to the next day at the admin-configured
     release hour (default 21:00 / 9 PM) instead of at midnight, so a new day's slots become
     bookable at a specific clock time each day rather than right at 12 AM. A release hour of 0
     means no early release — the window then advances exactly at the natural midnight boundary,
     which is why the `if release_hour and ...` check below skips the shift entirely for hour 0
     (0 is falsy in Python) rather than incorrectly treating "hour 0" as "always past the
-    threshold"."""
+    threshold".
+
+    Supporters (is_supporter=True) get that same release time two hours earlier — e.g. 11 PM for
+    everyone becomes 9 PM for supporters. Clamped to a floor of 1 (never 0) so the arithmetic can
+    never accidentally land on 0, which is a different, special meaning ("disabled") rather than
+    "as early as this same-day model can represent"; an admin release hour of 1 or 2 already
+    leaves supporters getting the earliest a same-calendar-day release can express."""
     release_hour = get_booking_window_release_hour()
+    if is_supporter and release_hour:
+        release_hour = max(1, release_hour - 2)
     now = get_utc_plus_4()
     if release_hour and now.hour >= release_hour:
         return now.date() + timedelta(days=1)
     return now.date()
 
-def get_next_14_days():
-    today = get_window_today()
+def get_next_14_days(is_supporter=False):
+    today = get_window_today(is_supporter=is_supporter)
     return [today + timedelta(days=i) for i in range(15)]
 
 def run_query(query_method):
@@ -2061,23 +2069,27 @@ def is_slot_booked(court, date_str, start_hour):
     return len(response.data) > 0 if response and response.data else False
 
 def is_slot_in_past(date_str, start_hour):
+    """A slot is 'in the past' only once its whole hour has fully elapsed — the CURRENTLY running
+    hour still counts as available for its entire duration (e.g. at 6:30 PM, the 6 PM slot is
+    still bookable/usable until 7 PM), not just up to the exact minute someone happens to look."""
     now = get_utc_plus_4()
     if date_str < now.strftime('%Y-%m-%d'): return True
-    if date_str == now.strftime('%Y-%m-%d') and (start_hour < now.hour or (start_hour == now.hour and now.minute > 0)): return True
+    if date_str == now.strftime('%Y-%m-%d') and start_hour < now.hour: return True
     return False
 
 def _past_checker():
-    """Same rule as is_slot_in_past(), but bound to ONE reading of the clock. Loops that test
-    many slots (the schedule grids test ~135 cells per day, the full-page view ~2,000) used to
-    read the clock and format two date strings on every single test. Use is_slot_in_past()
-    for one-off checks and for the checks that guard a booking."""
+    """Same rule as is_slot_in_past() — the running hour stays available for its whole duration —
+    but bound to ONE reading of the clock. Loops that test many slots (the schedule grids test
+    ~135 cells per day, the full-page view ~2,000) used to read the clock and format two date
+    strings on every single test. Use is_slot_in_past() for one-off checks and for the checks
+    that guard a booking."""
     now = get_utc_plus_4()
     today = now.strftime('%Y-%m-%d')
-    hour, minute = now.hour, now.minute
+    hour = now.hour
     def is_past(date_str, start_hour):
         if date_str < today:
             return True
-        return date_str == today and (start_hour < hour or (start_hour == hour and minute > 0))
+        return date_str == today and start_hour < hour
     return is_past
 
 
@@ -2406,7 +2418,7 @@ def create_slot_watch(email, sub_community, villa, date_str, start_hour, hours):
     email = (email or "").strip().lower()
     needed = list(range(start_hour, start_hour + hours))
     valid_hours = get_start_hours_for_date(date_str)
-    window = {d.strftime('%Y-%m-%d') for d in get_next_14_days()}
+    window = {d.strftime('%Y-%m-%d') for d in get_next_14_days(is_supporter=is_supporter_email(email))}
     if date_str not in window or any(h not in valid_hours for h in needed) or is_slot_in_past(date_str, start_hour):
         return "invalid", "That time isn't available to watch. Please pick another."
     try:
@@ -2472,7 +2484,7 @@ def _slot_window_label(date_str, start_hour, hours=1, show_hours=False):
         label += f" · {hours} hr{'s' if hours > 1 else ''}"
     return label
 
-def get_watchable_windows(hours, selected_date=None, exclude=()):
+def get_watchable_windows(hours, selected_date=None, exclude=(), is_supporter=False):
     """The only slots worth setting an alert for: inside the booking window, not in the past, and with
     NO court free for `hours` consecutive hours (if one is free you can simply book it). Answered from
     the shared booking snapshot, so it costs no database query. Slots on `selected_date` (the day being
@@ -2483,7 +2495,7 @@ def get_watchable_windows(hours, selected_date=None, exclude=()):
     taken_by_day = snap.taken_by_day
     is_past = _past_checker()
     windows = []
-    for d in get_next_14_days():
+    for d in get_next_14_days(is_supporter=is_supporter):
         ds = d.strftime('%Y-%m-%d')
         taken = taken_by_day.get(ds, set())
         valid = get_start_hours_for_date(ds)
@@ -2524,7 +2536,7 @@ def render_slot_watch_section(selected_date, watch_email, sub_community, villa):
         w_n = 2 if w_dur == "2 hours" else 1
 
         watching = {(w["date"], int(w["start_hour"]), int(w["hours"])) for w in mine}
-        windows = get_watchable_windows(w_n, selected_date, exclude=watching)
+        windows = get_watchable_windows(w_n, selected_date, exclude=watching, is_supporter=is_supporter_email(email))
         if windows is None:
             st.caption("Couldn't load availability just now — please try again in a moment.")
         elif not windows:
@@ -6139,7 +6151,8 @@ def render_availability_tab(is_coach, current_device, resident_ctx=None, coach_c
     coaches share everything except how the Book button books (single villa vs. pool of villas),
     so only that part is branched via is_coach. This tab is the whole check-and-book flow."""
     st.subheader("Court Availability & Booking")
-    date_options = [f"{d.strftime('%Y-%m-%d')} ({d.strftime('%A')})" for d in get_next_14_days()]
+    _current_identity_email = (coach_ctx or {}).get("coach_email") if is_coach else (resident_ctx or {}).get("verified_user_email")
+    date_options = [f"{d.strftime('%Y-%m-%d')} ({d.strftime('%A')})" for d in get_next_14_days(is_supporter=is_supporter_email(_current_identity_email))]
     selected_date_full = st.selectbox("Select Date:", date_options, key="tab1_date_select")
     selected_date = selected_date_full.split(" (")[0]
     bookings_with_details = _day_map(selected_date)     # read-only use below
