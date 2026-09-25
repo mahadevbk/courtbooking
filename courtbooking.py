@@ -1514,6 +1514,119 @@ def remove_from_greylist(email):
     except Exception:
         return False
 
+# ==============================================================================
+# --- SUPPORTER-ONLY ACCESS MODE (admin-only emergency toggle) ---
+# ==============================================================================
+# A circuit breaker for genuinely high-traffic moments: when ON, only emails on the supporter
+# list can get past login (or stay logged in — this is re-checked on every rerun, not just at
+# login, so flipping it ON also cuts off anyone already using the app on their very next
+# interaction; that immediacy is the point of an emergency control). Everyone else sees a plain
+# "we're experiencing high traffic" message — never anything that reveals a supporter list or an
+# admin toggle exists. See render_supporter_gate_screen() for the block screen and its built-in
+# admin password override (so a forgotten own-email whitelist can never cause a true lockout).
+# Needs two tables:
+#   app_settings (key text primary key, value text, updated_at timestamptz default now())
+#   supporters   (id bigint generated always as identity primary key, email text not null unique,
+#                 note text, added_at timestamptz default now())
+# Both helpers below fail OPEN — mode reads as OFF and the supporter list reads as empty — if
+# either table doesn't exist yet or a read fails, so a missing/broken setup can never accidentally
+# lock everyone out of the app.
+APP_SETTINGS_TABLE = "app_settings"
+SUPPORTERS_TABLE = "supporters"
+SUPPORTER_MODE_KEY = "supporter_only_mode"
+
+@st.cache_data(ttl=20, show_spinner=False)
+def is_supporter_mode_enabled():
+    """Whether Supporter-Only Access Mode is currently ON. Cached for only 20s — short enough
+    that flipping the admin toggle takes effect almost immediately across every active session
+    (the whole point of an emergency control), long enough not to query on every single rerun of
+    every open session."""
+    try:
+        res = supabase.table(APP_SETTINGS_TABLE).select("value").eq("key", SUPPORTER_MODE_KEY).limit(1).execute()
+        if res and res.data:
+            return str(res.data[0].get("value", "")).strip().lower() == "true"
+        return False
+    except Exception:
+        return False
+
+def set_supporter_mode_enabled(enabled):
+    """Delete-then-insert rather than upsert, matching how this file handles every other
+    single-row-by-key write (see villa_claims elsewhere) — no dependency on upsert semantics."""
+    try:
+        supabase.table(APP_SETTINGS_TABLE).delete().eq("key", SUPPORTER_MODE_KEY).execute()
+        supabase.table(APP_SETTINGS_TABLE).insert({"key": SUPPORTER_MODE_KEY, "value": "true" if enabled else "false"}).execute()
+        is_supporter_mode_enabled.clear()
+        return True
+    except Exception:
+        return False
+
+@st.cache_data(ttl=20, show_spinner=False)
+def get_supporter_emails():
+    """Lowercased set of every supporter email, cached for the same reason and duration as
+    is_supporter_mode_enabled()."""
+    try:
+        res = supabase.table(SUPPORTERS_TABLE).select("email").execute()
+        return {(r["email"] or "").strip().lower() for r in (res.data or []) if r.get("email")}
+    except Exception:
+        return set()
+
+def is_supporter_email(email):
+    return bool(email) and (email or "").strip().lower() in get_supporter_emails()
+
+def get_supporter_entries():
+    """Full supporter rows for the admin UI, newest first — or None if the table doesn't exist
+    yet, same 'feature not switched on' convention as slot_watches/tournament_requests/greylist."""
+    try:
+        res = supabase.table(SUPPORTERS_TABLE).select("*").order("added_at", desc=True).execute()
+        return res.data or []
+    except Exception:
+        return None
+
+def add_supporter(email, note=""):
+    email_clean = (email or "").strip().lower()
+    if not email_clean or "@" not in email_clean:
+        return False
+    try:
+        supabase.table(SUPPORTERS_TABLE).insert({"email": email_clean, "note": (note or "").strip() or None}).execute()
+        get_supporter_emails.clear()
+        return True
+    except Exception:
+        return False
+
+def remove_supporter(email):
+    try:
+        supabase.table(SUPPORTERS_TABLE).delete().eq("email", (email or "").strip().lower()).execute()
+        get_supporter_emails.clear()
+        return True
+    except Exception:
+        return False
+
+def render_supporter_gate_screen():
+    """The screen shown INSTEAD OF the app to anyone blocked by Supporter-Only Access Mode. Says
+    nothing about supporters, admins, or any toggle — just a plain high-traffic message — except
+    for a small, unlabelled-by-default password override so this can never become a true lockout
+    (of the admin's own making, or anyone else who legitimately needs in during the emergency)."""
+    st.markdown("<div style='height: 8vh'></div>", unsafe_allow_html=True)
+    _sg_c1, _sg_c2, _sg_c3 = st.columns([1, 3, 1])
+    with _sg_c2:
+        st.error(
+            "🚦 **We're experiencing very high traffic right now.**\n\n"
+            "The sheer number of people trying to use the app at the same time is pushing against "
+            "our hosting limits. To keep the app running for everyone, access is temporarily "
+            "limited during this peak period.\n\n"
+            "**Please try logging in again after some time.** Thank you for your patience!"
+        )
+        with st.expander("Admin"):
+            _sg_pass = st.text_input("Password", type="password", key="supporter_gate_admin_pass", label_visibility="collapsed", placeholder="Admin password")
+            if _sg_pass:
+                if _sg_pass == st.secrets.get("ADMIN_PASSWORD", "admin123"):
+                    st.session_state.supporter_gate_bypass = True
+                    st.success("Override granted for this session.")
+                    time.sleep(0.6)
+                    st.rerun()
+                else:
+                    st.error("Incorrect password.")
+
 def get_all_villas_for_email(email):
     res = run_query(supabase.table("villa_claims").select("*")
                     .eq("email", email.strip().lower())
@@ -4189,7 +4302,7 @@ if not st.session_state.authenticated:
 
                         add_log(
                             "Admin Reset",
-                            f"Automatically cleared restrictions and reset cooldown for {rst_email} across {len(claims)} villas"
+                            f"System cleared restrictions and reset cooldown for {rst_email} across {len(claims)} villas"
                         )
                         st.success(f"✅ Restrictions cleared for {rst_email}! Cooldown reset for all {len(claims)} associated villas.")
                         time.sleep(1.2)
@@ -4708,6 +4821,8 @@ Coach accounts exist for tennis coaches who train residents across **several vil
         ])
 
         with admin_tabs[0]:
+            if is_supporter_mode_enabled():
+                st.error("🚦 **Supporter-Only Access Mode is currently ON** — only supporters can access the app. Turn it off in the Security & Lockouts tab once traffic settles.")
             st.markdown("### At a Glance")
             ov_c1, ov_c2, ov_c3 = st.columns(3)
             with ov_c1:
@@ -4822,7 +4937,7 @@ Coach accounts exist for tennis coaches who train residents across **several vil
                                     "status": "approved",
                                     "verified_at": now_ts
                                 }))
-                                add_log("Villa Claim", f"{man_sub} Villa {man_villa} was automatically authorized for {man_email}")
+                                add_log("Villa Claim", f"System authorized {man_sub} Villa {man_villa} for {man_email}")
                                 st.success(f"Claim created for {man_sub} Villa {man_villa}!")
                                 time.sleep(1.5)
                                 st.rerun()
@@ -4845,7 +4960,7 @@ Coach accounts exist for tennis coaches who train residents across **several vil
                                     st.write("")
                                     if st.button(f"🔓 Release Claim", key=f"del_claim_{claim['id']}", type="secondary", width="stretch"):
                                         run_query(supabase.table("villa_claims").delete().eq("id", claim['id']))
-                                        add_log("Villa Claim Removed", f"Claim for {c_sub} Villa {c_villa} was automatically released")
+                                        add_log("Villa Claim Removed", f"System released claim for {c_sub} Villa {c_villa}")
                                         st.success(f"Released {claim['email']}!")
                                         time.sleep(1.2)
                                         st.rerun()
@@ -4876,7 +4991,7 @@ Coach accounts exist for tennis coaches who train residents across **several vil
                                 now_ts = get_utc_plus_4().isoformat()
                                 for c in email_claims:
                                     run_query(supabase.table("villa_claims").update({"verified_at": now_ts, "status": "approved"}).eq("id", c["id"]))
-                                add_log("Admin Reset", f"Automatically reset cooldown for {reset_email_input}")
+                                add_log("Admin Reset", f"System reset cooldown for {reset_email_input}")
                                 st.success(f"✅ Successfully cleared lockout for {reset_email_input}!")
                                 time.sleep(1.5)
                                 st.rerun()
@@ -4884,7 +4999,7 @@ Coach accounts exist for tennis coaches who train residents across **several vil
                             if st.button(f"🔄 Reset Ownership (Wrong Villa Mistake)", type="secondary", use_container_width=True, key="email_rst_btn_2"):
                                 for c in email_claims:
                                     run_query(supabase.table("villa_claims").delete().eq("id", c["id"]))
-                                add_log("Admin Reset", f"Villa claims automatically reset for {reset_email_input}")
+                                add_log("Admin Reset", f"System reset villa claims for {reset_email_input}")
                                 st.success(f"🔄 All villa claims deleted for {reset_email_input}!")
                                 time.sleep(1.5)
                                 st.rerun()
@@ -4937,7 +5052,7 @@ Coach accounts exist for tennis coaches who train residents across **several vil
                                 "status": "approved",
                                 "verified_at": now_ts
                             }))
-                            add_log("Villa Claim", f"{bypass_sub} Villa {bypass_villa} was automatically authorized for {bypass_email}")
+                            add_log("Villa Claim", f"System authorized {bypass_sub} Villa {bypass_villa} for {bypass_email}")
                         else:
                             run_query(supabase.table("villa_claims").update({
                                 "verified_at": now_ts,
@@ -4963,6 +5078,111 @@ Coach accounts exist for tennis coaches who train residents across **several vil
                         st.rerun()
 
         with admin_tabs[2]:
+            _supporter_on = is_supporter_mode_enabled()
+            with st.expander("🚦 Supporter-Only Access Mode (emergency high-traffic control)", expanded=_supporter_on):
+                if _supporter_on:
+                    st.error("🔴 **ON** — only supporter emails can access the app right now. Everyone else sees a high-traffic message.")
+                else:
+                    st.success("🟢 OFF — the app is open to everyone as normal.")
+                st.caption(
+                    "For genuinely high-traffic moments: when ON, only emails on the supporter list below can "
+                    "log in or keep using the app (checked on every page load, not just at login — anyone already "
+                    "using the app who isn't a supporter is cut off on their next interaction too). Everyone else "
+                    "sees a plain 'we're experiencing high traffic' message — no mention of supporters or this "
+                    "toggle anywhere they can see. A small password-protected override on that screen means this "
+                    "can never turn into a real lockout, even if your own email isn't on the list yet."
+                )
+                _sup_toggle_label = "🔴 Turn OFF Supporter-Only Mode" if _supporter_on else "🟢 Turn ON Supporter-Only Mode"
+                if st.button(_sup_toggle_label, type="primary", key="supporter_mode_toggle_btn"):
+                    if set_supporter_mode_enabled(not _supporter_on):
+                        add_log("Admin Edit", f"Admin turned Supporter-Only Access Mode {'ON' if not _supporter_on else 'OFF'}")
+                        st.rerun()
+                    else:
+                        st.error("Could not update the setting — the `app_settings` table may not exist yet (see below).")
+
+                st.divider()
+                st.markdown("**Supporter list**")
+                _sup_entries = get_supporter_entries()
+                if _sup_entries is None:
+                    st.warning(
+                        "This feature needs `app_settings` and `supporters` tables that don't exist yet. Create "
+                        "them in Supabase and this panel switches on automatically:"
+                    )
+                    st.code(
+                        "create table app_settings (\n"
+                        "  key text primary key,\n"
+                        "  value text,\n"
+                        "  updated_at timestamptz default now()\n"
+                        ");\n\n"
+                        "create table supporters (\n"
+                        "  id bigint generated always as identity primary key,\n"
+                        "  email text not null unique,\n"
+                        "  note text,\n"
+                        "  added_at timestamptz default now()\n"
+                        ");",
+                        language="sql",
+                    )
+                else:
+                    if _sup_entries:
+                        st.caption(f"{len(_sup_entries)} supporter(s)")
+                        for _se in _sup_entries:
+                            _se_note = f" — *{_se['note']}*" if _se.get("note") else ""
+                            _sup_col1, _sup_col2 = st.columns([6, 1])
+                            with _sup_col1:
+                                st.caption(f"⭐ **{_se['email']}**{_se_note}")
+                            with _sup_col2:
+                                if st.button("🗑️", key=f"sup_remove_{_se['id']}", help="Remove supporter"):
+                                    remove_supporter(_se["email"])
+                                    add_log("Admin Edit", f"Admin removed supporter {_se['email']}")
+                                    st.rerun()
+                        st.divider()
+                    else:
+                        st.caption("No supporters added yet — turning the toggle ON right now would lock everyone out.")
+
+                    _sup_new_email = st.text_input("Email address", placeholder="supporter@example.com", key="sup_new_email").strip().lower()
+                    _sup_new_note = st.text_input("Note (admin-only, optional)", key="sup_new_note")
+                    if st.button("⭐ Add Supporter", type="secondary", key="sup_add_btn", disabled=not ("@" in _sup_new_email and "." in _sup_new_email)):
+                        if add_supporter(_sup_new_email, _sup_new_note):
+                            add_log("Admin Edit", f"Admin added supporter {_sup_new_email}" + (f" ({_sup_new_note})" if _sup_new_note else ""))
+                            st.success(f"{_sup_new_email} added to the supporter list.")
+                            time.sleep(1.0)
+                            st.rerun()
+                        else:
+                            st.error("Could not add supporter — please try again.")
+
+                    with st.expander("➕ Bulk add (paste a list)"):
+                        _sup_bulk_text = st.text_area(
+                            "Emails — comma or newline separated",
+                            key="sup_bulk_text", height=120,
+                            placeholder="alice@example.com, bob@example.com\ncarol@example.com",
+                        )
+                        if st.button("⭐ Add All", type="secondary", key="sup_bulk_add_btn", disabled=not _sup_bulk_text.strip()):
+                            _raw_emails = [e.strip().lower() for e in re.split(r"[,\n]", _sup_bulk_text) if e.strip()]
+                            _existing_sup = get_supporter_emails()
+                            _added, _skip_existing, _skip_invalid = [], [], []
+                            _seen_this_batch = set()
+                            for _e in _raw_emails:
+                                _domain = _e.split("@")[-1] if "@" in _e else ""
+                                if "@" not in _e or "." not in _domain:
+                                    _skip_invalid.append(_e)
+                                elif _e in _existing_sup or _e in _seen_this_batch:
+                                    _skip_existing.append(_e)
+                                elif add_supporter(_e):
+                                    _added.append(_e)
+                                    _seen_this_batch.add(_e)
+                                else:
+                                    _skip_invalid.append(_e)
+                            if _added:
+                                add_log("Admin Edit", f"Admin bulk-added {len(_added)} supporter(s)")
+                            _bulk_summary = f"Added {len(_added)}."
+                            if _skip_existing:
+                                _bulk_summary += f" {len(_skip_existing)} already on the list (skipped)."
+                            if _skip_invalid:
+                                _bulk_summary += f" {len(_skip_invalid)} invalid (skipped)."
+                            st.success(_bulk_summary)
+                            time.sleep(1.2)
+                            st.rerun()
+
             with st.expander("🚨 Manually Apply Sniping Lockout by Email", expanded=True):
                 st.markdown("### Search Associated Villas & Enforce Lockout")
                 lockout_email_input = st.text_input("Enter Resident Email Address", placeholder="resident@example.com", key="admin_lockout_email_input").strip().lower()
@@ -5079,7 +5299,7 @@ Coach accounts exist for tennis coaches who train residents across **several vil
                                     if target["claims"]:
                                         for c in target["claims"]:
                                             run_query(supabase.table("villa_claims").update({"verified_at": now_ts, "status": "approved"}).eq("id", c["id"]))
-                                    add_log("Admin Reset", f"Automatically cleared restrictions for {target['email']}", fingerprint=target["fingerprint"])
+                                    add_log("Admin Reset", f"System cleared restrictions for {target['email']}", fingerprint=target["fingerprint"])
                                     st.success(f"🎉 Restrictions cleared for {target['email']}.")
                                     time.sleep(1.5)
                                     st.rerun()
@@ -5088,7 +5308,7 @@ Coach accounts exist for tennis coaches who train residents across **several vil
                                     if target["claims"]:
                                         for c in target["claims"]:
                                             run_query(supabase.table("villa_claims").delete().eq("id", c["id"]))
-                                    add_log("Admin Reset", f"Villa ownership claims automatically reset for {target['email']}", fingerprint=target["fingerprint"])
+                                    add_log("Admin Reset", f"System reset villa ownership claims for {target['email']}", fingerprint=target["fingerprint"])
                                     st.success(f"🔄 Villa ownership claims deleted for {target['email']}.")
                                     time.sleep(1.5)
                                     st.rerun()
@@ -6261,6 +6481,26 @@ def render_availability_tab(is_coach, current_device, resident_ctx=None, coach_c
     )
     if st.button(logout_label, width='stretch', key="tab1_logout"):
         logout_action()
+
+# ==========================================
+# --- SUPPORTER-ONLY ACCESS GATE (admin emergency toggle for high-traffic periods) ---
+# ==========================================
+# Sits right before BOTH the coach and resident views, after every possible login path (cached
+# auto-login, fresh OTP, the admin resident-bypass tool) has already converged on
+# st.session_state.verified_email / coach_email — so this one check covers all of them. Re-run on
+# every script rerun (not just at login), so turning this ON also cuts off anyone already using
+# the app on their very next interaction, which is the point of an emergency traffic control.
+_supporter_gate_identity = (
+    st.session_state.coach_email if (COACH_FEATURE_ENABLED and st.session_state.get('is_coach'))
+    else st.session_state.get("verified_email")
+)
+if (
+    is_supporter_mode_enabled()
+    and not st.session_state.get("supporter_gate_bypass")
+    and not is_supporter_email(_supporter_gate_identity)
+):
+    render_supporter_gate_screen()
+    st.stop()
 
 # ==========================================
 # --- ROUTING: COACH VIEW VS RESIDENT VIEW ---
