@@ -4150,7 +4150,8 @@ if COACH_FEATURE_ENABLED and url_coach_token and not st.session_state.authentica
             st.session_state.coach_email = verified_coach_email
             st.session_state.coach_name = coach_restore.data[0].get("coach_name", "Coach")
 
-st.subheader("🎾 Book that Court ...")    
+st.subheader("🎾 Book that Court ...")
+st.info("The App will stop on 31st Dec 2026.")
 # Logged-in users should see the app itself first (tabs right under the title), especially on a
 # phone. So the tagline, user count, live stats and "logged in as" line are shown in full on the
 # login screen only; once logged in they move to a small footer just above the Logout button
