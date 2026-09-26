@@ -6088,7 +6088,10 @@ Coach accounts exist for tennis coaches who train residents across **several vil
                 st.caption(
                     "Exports every table Supabase holds for this app — not just bookings and logs — as both "
                     "CSV and JSON, plus a single consolidated SQLite file (`full_backup.sqlite`) containing all "
-                    "tables together. CSV/JSON are here because you asked for them and they're easy to open in "
+                    "tables together. The table list below is kept plus auto-detected: it always includes every "
+                    "table this app's own features use, and it also asks Supabase's API directly for any other "
+                    "table exposed on this project, so a table added later is picked up without this code needing "
+                    "an update. CSV/JSON are here because you asked for them and they're easy to open in "
                     "Excel/Sheets; the SQLite file is the one worth keeping if you only grab one thing — it's a "
                     "single portable file you can open with any SQL tool (or Python's built-in `sqlite3`) and "
                     "query or join across tables, which a folder of CSVs can't do. Note: this captures table "
@@ -6098,7 +6101,37 @@ Coach accounts exist for tennis coaches who train residents across **several vil
                     "is the gold standard; this in-app export is the fast, no-setup option for everyday safety."
                 )
 
-                BACKUP_TABLES = ["bookings", "logs", "villa_claims", "coach_accounts", "coach_villas", "court_maintenance", "slot_watches","tournament_requests"]
+                BACKUP_TABLES = [
+                    "bookings", "logs", "villa_claims", "coach_accounts", "coach_villas", "court_maintenance",
+                    SLOT_WATCH_TABLE, TOURNAMENT_TABLE, APP_SETTINGS_TABLE, GREYLIST_TABLE, SUPPORTERS_TABLE,
+                ]
+
+                def _discover_supabase_tables():
+                    """Best-effort discovery of every table this Supabase project exposes via its REST API,
+                    read straight from PostgREST's own OpenAPI root document — the same document the API
+                    itself is generated from. This is what lets the backup pick up a table added directly in
+                    Supabase (a new feature's table, or one created by hand) even if BACKUP_TABLES above is
+                    never updated to mention it by name. Returns an empty list on ANY failure — wrong/missing
+                    secrets, a network policy blocking the request, or a future PostgREST version changing
+                    this document's shape — so the backup always falls back to the known list above rather
+                    than failing outright."""
+                    try:
+                        base_url = st.secrets["SUPABASE_URL"].rstrip("/") + "/rest/v1/"
+                        api_key = st.secrets["SUPABASE_KEY"]
+                        req = urllib.request.Request(
+                            base_url,
+                            headers={"apikey": api_key, "Authorization": f"Bearer {api_key}"},
+                        )
+                        with urllib.request.urlopen(req, timeout=8) as resp:
+                            spec = json.loads(resp.read().decode("utf-8"))
+                        names = set(spec.get("definitions", {}).keys())
+                        for path in spec.get("paths", {}).keys():
+                            name = path.strip("/")
+                            if name and "/" not in name and not name.startswith("rpc"):
+                                names.add(name)
+                        return sorted(names)
+                    except Exception:
+                        return []
 
                 def _fetch_all_rows(table_name):
                     data = []
@@ -6124,14 +6157,27 @@ Coach accounts exist for tennis coaches who train residents across **several vil
                         _os.close(tmp_fd)
                         sconn = sqlite3.connect(tmp_db_path)
 
+                        discovered = _discover_supabase_tables()
+                        extra_tables = [t for t in discovered if t not in BACKUP_TABLES]
+                        all_tables = BACKUP_TABLES + extra_tables
+
                         manifest_lines = [
                             f"Court Booking App — Full Database Backup",
                             f"Generated: {get_utc_plus_4().isoformat()} (UTC+4)",
                             "",
                         ]
+                        if extra_tables:
+                            manifest_lines.append(
+                                f"Auto-detected {len(extra_tables)} table(s) beyond the known list: {', '.join(extra_tables)}"
+                            )
+                        elif not discovered:
+                            manifest_lines.append(
+                                "Auto-detection of extra tables was unavailable this run (falling back to the known table list)."
+                            )
+                        manifest_lines.append("")
 
                         with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as vz:
-                            for table_name in BACKUP_TABLES:
+                            for table_name in all_tables:
                                 rows = _fetch_all_rows(table_name)
                                 df = pd.DataFrame(rows)
                                 vz.writestr(f"{table_name}.csv", df.to_csv(index=False))
@@ -6149,18 +6195,23 @@ Coach accounts exist for tennis coaches who train residents across **several vil
 
                             vz.writestr("MANIFEST.txt", "\n".join(manifest_lines))
 
-                        return buf.getvalue()
+                        return buf.getvalue(), all_tables, extra_tables
                     except Exception as e:
                         st.error(f"Backup Error: {str(e)}")
-                        return None
+                        return None, [], []
                     finally:
                         if tmp_db_path and _os.path.exists(tmp_db_path):
                             _os.remove(tmp_db_path)
 
                 if st.button("Generate Backup Link"):
                     with st.spinner("Fetching every table from Supabase — this may take a moment..."):
-                        data = get_zip_data()
-                    if data: st.download_button(label="Click here to Download ZIP", data=data, file_name=f"court_booking_full_backup_{get_today()}.zip", mime="application/zip")
+                        data, all_tables, extra_tables = get_zip_data()
+                    if data:
+                        st.download_button(label="Click here to Download ZIP", data=data, file_name=f"court_booking_full_backup_{get_today()}.zip", mime="application/zip")
+                        if extra_tables:
+                            st.success(f"✅ Included {len(all_tables)} tables — auto-detected {len(extra_tables)} beyond the known list: {', '.join(extra_tables)}")
+                        else:
+                            st.caption(f"Included {len(all_tables)} tables: {', '.join(all_tables)}")
                     else: st.error("Failed to fetch data for backup.")
 
         with admin_tabs[6]:
