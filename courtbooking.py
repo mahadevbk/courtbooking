@@ -1501,10 +1501,19 @@ def get_villa_claims_count(sub_community, villa):
                     .eq("status", "approved"))
     return res.count if res and res.count is not None else 0
 
+@st.cache_data(ttl=60, show_spinner=False)
 def get_approved_email_claims_for_villa(sub_community, villa):
     """Full villa_claims rows (not just a count) for this villa's currently APPROVED claims —
     used by the 1-email-per-villa migration check, which needs each row's id (to delete the
-    discarded claim) and email, not just a count."""
+    discarded claim) and email, not just a count.
+
+    Cached for 60s (shared across all sessions) because this runs on EVERY resident-dashboard
+    rerun for every logged-in user — an uncached query here would run continuously all day.
+    A minute of staleness is harmless for this check (worst case: the consolidation dialog
+    appears up to ~60s later than the villa actually hit 2 emails, or the "your access changed"
+    warning takes up to ~60s to show after another device resolves it) — see
+    show_email_consolidation_dialog(), which explicitly clears this cache right after it writes,
+    so the resident who just resolved it sees the change on their own next rerun immediately."""
     res = run_query(supabase.table("villa_claims").select("*")
                     .eq("sub_community", sub_community)
                     .eq("villa", villa)
@@ -1764,7 +1773,7 @@ def _cooldown_from_claims(claims, requesting_email):
                 pass
     return False, None
 
-@st.cache_data(ttl=15, show_spinner=False)
+@st.cache_data(ttl=60, show_spinner=False)
 def check_device_sniping_status(device_uuid, current_email, current_sub, current_villa):
     if not device_uuid or device_uuid in ("no_uuid", "device_pending"):
         return 0, [], 0
@@ -1930,7 +1939,7 @@ def get_all_claimed_villas():
 # unique constraint stays the final arbiter of a double booking, so a slightly stale display can
 # never cause a double booking. The acting user's own changes appear instantly because writes
 # call invalidate_booking_caches(); other people's changes appear within BOOKING_SNAPSHOT_TTL.
-BOOKING_SNAPSHOT_TTL = 10
+BOOKING_SNAPSHOT_TTL = 30
 
 class _BookingSnapshot:
     """The fetched booking rows plus indexes built ONCE per fetch. It is stored with
@@ -3663,6 +3672,7 @@ def show_email_consolidation_dialog(sub_community, villa, claims, current_email)
         other_ids = [c["id"] for c in claims if (c.get("email") or "").strip().lower() == other]
         for cid in other_ids:
             run_query(supabase.table("villa_claims").delete().eq("id", cid))
+        get_approved_email_claims_for_villa.clear()
         add_log(
             "Villa Claim Removed",
             f"1-email-per-villa migration: {sub_community} Villa {villa} reduced from {len(emails)} to "
