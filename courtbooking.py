@@ -2619,7 +2619,7 @@ def render_slot_watch_section(selected_date, watch_email, sub_community, villa):
                 format_func=lambda v: _slot_window_label(v.split("|")[0], int(v.split("|")[1]), w_n),
                 key=slot_key, label_visibility="collapsed",
             )
-            if st.button("🔔 Notify me", key="watch_submit", disabled=not w_slot, use_container_width=True):
+            if st.button("🔔 Notify me", key="watch_submit", disabled=not w_slot, width='stretch'):
                 d_str, h_str = w_slot.split("|")
                 status, msg = create_slot_watch(email, sub_community, villa, d_str, int(h_str), w_n)
                 ss["watch_flash"] = ("success" if status == "ok" else "info" if status in ("available", "duplicate", "invalid") else "warning", msg)
@@ -2635,7 +2635,7 @@ def render_slot_watch_section(selected_date, watch_email, sub_community, villa):
             st.caption("Your alerts — tap one to remove it")
             for w in live:
                 if st.button(f"✕  {_slot_window_label(w['date'], int(w['start_hour']), int(w['hours']), show_hours=True)}",
-                             key=f"watch_rm_{w['id']}", use_container_width=True):
+                             key=f"watch_rm_{w['id']}", width='stretch'):
                     remove_slot_watch(w["id"], email)
                     st.rerun()
 
@@ -3531,7 +3531,7 @@ def show_migration_dialog():
     Please enter your resident email below to receive your 6-digit verification code.
     💬 *Please reach out to Dev in case you have any queries.*
     """)
-    if st.button("Got it — Continue 🎾", type="primary", use_container_width=True):
+    if st.button("Got it — Continue 🎾", type="primary", width='stretch'):
         st.session_state.seen_migration_notice = True
         st.rerun(scope="app")
 
@@ -3545,15 +3545,15 @@ def show_community_poster_dialog(poster_version="2026-09-25"):
     published.
     """
     poster_url = "https://raw.githubusercontent.com/mahadevbk/courtbooking/main/resources/Poster.jpeg"
-    st.image(poster_url, use_container_width=True)
+    st.image(poster_url, width='stretch')
 
     col1, col2 = st.columns(2)
     with col1:
-        if st.button("Dismiss", use_container_width=True, key="community_poster_dismiss"):
+        if st.button("Dismiss", width='stretch', key="community_poster_dismiss"):
             st.session_state["community_poster_dismissed"] = True
             st.rerun(scope="app")
     with col2:
-        if st.button("Don't show again", type="primary", use_container_width=True, key="community_poster_never"):
+        if st.button("Don't show again", type="primary", width='stretch', key="community_poster_never"):
             st_javascript(
                 f"localStorage.setItem('mira_community_poster_seen', {json.dumps(poster_version)});",
                 key=f"js_community_poster_seen_{poster_version}"
@@ -3594,7 +3594,7 @@ def show_sniping_warning_dialog(other_villas):
     ---
     *If you believe this is incorrect, please contact Dev in Court Maintenance.*
     """)
-    if st.button("I Understand — Proceed", type="primary", use_container_width=True):
+    if st.button("I Understand — Proceed", type="primary", width='stretch'):
         st.session_state.seen_sniping_warning = True
         st.rerun(scope="app")
 
@@ -3606,7 +3606,7 @@ def show_sniping_lockout_dialog(hours_remaining):
         f"In accordance with community fair-use rules, **all bookings and access for your associated villas are locked for the next {hours_remaining} hours**.\n\n"
         f"💬 *If you believe this is an error or require an exception, please contact Dev directly via Court Maintenance.*"
     )
-    if st.button("Close / Logout", use_container_width=True):
+    if st.button("Close / Logout", width='stretch'):
         logout_action()
 
 @st.dialog("⚠️ Action Required: 1 Email Per Villa")
@@ -3668,7 +3668,7 @@ def show_email_consolidation_dialog(sub_community, villa, claims, current_email)
         key=f"consolidate_confirm_{sub_community}_{villa}"
     )
 
-    if st.button("✅ Confirm & Continue", type="primary", use_container_width=True, disabled=not confirmed):
+    if st.button("✅ Confirm & Continue", type="primary", width='stretch', disabled=not confirmed):
         other_ids = [c["id"] for c in claims if (c.get("email") or "").strip().lower() == other]
         for cid in other_ids:
             run_query(supabase.table("villa_claims").delete().eq("id", cid))
@@ -4150,8 +4150,7 @@ if COACH_FEATURE_ENABLED and url_coach_token and not st.session_state.authentica
             st.session_state.coach_email = verified_coach_email
             st.session_state.coach_name = coach_restore.data[0].get("coach_name", "Coach")
 
-st.subheader("🎾 Book that Court ...")
-st.info("This App will cease to function on 31st Dec 2026.")
+st.subheader("🎾 Book that Court ...")    
 # Logged-in users should see the app itself first (tabs right under the title), especially on a
 # phone. So the tagline, user count, live stats and "logged in as" line are shown in full on the
 # login screen only; once logged in they move to a small footer just above the Logout button
@@ -4513,6 +4512,20 @@ if not st.session_state.authenticated:
                                 refresh_tok = res.session.refresh_token
                                 resolved_uuid = st.session_state.device_uuid
 
+                                try:
+                                    # This app's own villa_claims row + signed URL token (below)
+                                    # is the real, ongoing login mechanism — this Supabase Auth
+                                    # session was only ever needed for the instant of checking the
+                                    # OTP code above. Left open, it sits on the shared `supabase`
+                                    # client (cached 30 min, see init_supabase()) and Supabase's
+                                    # client library keeps auto-refreshing it in the background —
+                                    # a POST to /auth/v1/token every few minutes, for every
+                                    # resident who logs in, for a session nothing else here ever
+                                    # reads again. Signing out immediately stops that.
+                                    supabase.auth.sign_out()
+                                except Exception:
+                                    pass
+
                                 existing = get_existing_claim(target_sub, target_villa, verified_email)
                                 now_ts = get_utc_plus_4().isoformat()
                                 
@@ -4587,7 +4600,7 @@ if not st.session_state.authenticated:
             if login_admin_pwd == st.secrets.get("ADMIN_PASSWORD", "admin123"):
                 st.success("Admin Access Granted")
                 rst_email = st.text_input("Resident Email Address to Restore", placeholder="resident@example.com", key="login_rst_email").strip().lower()
-                if st.button("🔓 Clear Restrictions & Restore Clean Access", type="primary", key="login_rst_btn", use_container_width=True):
+                if st.button("🔓 Clear Restrictions & Restore Clean Access", type="primary", key="login_rst_btn", width='stretch'):
                     if not rst_email or "@" not in rst_email:
                         st.error("Please enter a valid email address.")
                     else:
@@ -4765,7 +4778,7 @@ def render_coach_admin_panel(key_prefix="cam"):
             new_c_email = st.text_input("New Coach Email", key=f"{key_prefix}_new_coach_email_input").strip().lower()
         with col_c2:
             new_c_name = st.text_input("Coach Name", key=f"{key_prefix}_new_coach_name_input").strip()
-        if st.button("Create Coach Profile", type="primary", use_container_width=True):
+        if st.button("Create Coach Profile", type="primary", width='stretch'):
             if new_c_email and new_c_name:
                 run_query(supabase.table("coach_accounts").insert({"email": new_c_email, "coach_name": new_c_name, "is_active": True}))
                 st.success(f"Coach {new_c_name} created successfully. They can log in from the normal login screen using this email.")
@@ -4799,7 +4812,7 @@ def render_coach_admin_panel(key_prefix="cam"):
                 if c_villas:
                     villa_radio_labels = [f"{v['sub_community']} - Villa {v['villa']}" for v in c_villas]
                     villa_to_delete_label = st.radio("Existing villas (select one to remove)", options=villa_radio_labels, key=f"{key_prefix}_villa_radio_{selected_coach_email}")
-                    if st.button("🗑️ Delete Selected Villa", key=f"{key_prefix}_delete_villa_btn_{selected_coach_email}", use_container_width=True):
+                    if st.button("🗑️ Delete Selected Villa", key=f"{key_prefix}_delete_villa_btn_{selected_coach_email}", width='stretch'):
                         villa_to_delete = c_villas[villa_radio_labels.index(villa_to_delete_label)]
                         if villa_to_delete.get("id") is not None:
                             run_query(supabase.table("coach_villas").delete().eq("id", villa_to_delete["id"]))
@@ -4825,7 +4838,7 @@ def render_coach_admin_panel(key_prefix="cam"):
                     map_villa_limit = SUB_COMMUNITY_VILLA_LIMITS.get(assign_sub, 500)
                     assign_villa = st.selectbox("Villa Number", options=[str(n) for n in range(1, map_villa_limit + 1)], key=f"{key_prefix}_map_villa_input_{selected_coach_email}")
 
-                if st.button("➕ Add Villa to Coach", type="primary", use_container_width=True, key=f"{key_prefix}_add_villa_btn_{selected_coach_email}"):
+                if st.button("➕ Add Villa to Coach", type="primary", width='stretch', key=f"{key_prefix}_add_villa_btn_{selected_coach_email}"):
                     if len(c_villas) >= MAX_VILLAS_PER_COACH:
                         st.error(f"🚫 This coach already has {len(c_villas)} villas assigned — the maximum is {MAX_VILLAS_PER_COACH}. Remove one above before adding another.")
                     else:
@@ -4857,7 +4870,7 @@ def render_coach_admin_panel(key_prefix="cam"):
 
                     cc1, cc2, cc3 = st.columns(3)
                     with cc1:
-                        if st.button("🔑 Reset PIN", key=f"{key_prefix}_reset_pin_{c_email}", use_container_width=True):
+                        if st.button("🔑 Reset PIN", key=f"{key_prefix}_reset_pin_{c_email}", width='stretch'):
                             run_query(supabase.table("coach_accounts").update({"pin": None}).eq("email", c_email))
                             add_log("Admin Reset", f"Admin reset PIN for coach {c_email}")
                             st.success(f"PIN cleared for {c.get('coach_name', 'this coach')}. They'll set a new one on next login.")
@@ -4865,13 +4878,13 @@ def render_coach_admin_panel(key_prefix="cam"):
                             st.rerun()
                     with cc2:
                         toggle_label = "⏸️ Deactivate" if c.get("is_active", True) else "▶️ Reactivate"
-                        if st.button(toggle_label, key=f"{key_prefix}_toggle_active_{c_email}", use_container_width=True):
+                        if st.button(toggle_label, key=f"{key_prefix}_toggle_active_{c_email}", width='stretch'):
                             run_query(supabase.table("coach_accounts").update({"is_active": not c.get("is_active", True)}).eq("email", c_email))
                             st.success(f"{c.get('coach_name', 'Coach')} {'deactivated' if c.get('is_active', True) else 'reactivated'}.")
                             time.sleep(1)
                             st.rerun()
                     with cc3:
-                        if st.button("🗑️ Delete Coach", key=f"{key_prefix}_delete_coach_{c_email}", use_container_width=True):
+                        if st.button("🗑️ Delete Coach", key=f"{key_prefix}_delete_coach_{c_email}", width='stretch'):
                             run_query(supabase.table("coach_villas").delete().eq("coach_email", c_email))
                             run_query(supabase.table("coach_accounts").delete().eq("email", c_email))
                             add_log("Admin Reset", f"Admin deleted coach {c_email} and their villa mappings")
@@ -4890,7 +4903,7 @@ def render_coach_admin_panel(key_prefix="cam"):
                                 "Coach Name", value=c.get("coach_name", ""), key=f"{key_prefix}_edit_name_{c_email}"
                             ).strip()
 
-                        if st.button("💾 Save Changes", key=f"{key_prefix}_save_edit_{c_email}", type="primary", use_container_width=True):
+                        if st.button("💾 Save Changes", key=f"{key_prefix}_save_edit_{c_email}", type="primary", width='stretch'):
                             if not edited_email or "@" not in edited_email:
                                 st.error("Please enter a valid email address (must contain '@').")
                             elif not edited_name:
@@ -5049,7 +5062,7 @@ def _render_activity_log_table(is_admin):
         st.subheader("Community Activity Log")
     with ref_col2:
         st.write("")
-        if st.button("🔄 Refresh Logs", key="refresh_logs_btn", use_container_width=True):
+        if st.button("🔄 Refresh Logs", key="refresh_logs_btn", width='stretch'):
             get_logs_last_14_days.clear()
             st.rerun()
     st.caption("Timezone: UTC+4")
@@ -5105,7 +5118,7 @@ Coach accounts exist for tennis coaches who train residents across **several vil
         col_adm1, col_adm2 = st.columns([3, 1])
         with col_adm1: st.success("Admin Access Granted")
         with col_adm2:
-            if st.button("🔒 Exit Admin Mode", type="secondary", use_container_width=True):
+            if st.button("🔒 Exit Admin Mode", type="secondary", width='stretch'):
                 st.session_state.pop("log_admin_pass", None)
                 st.rerun()
 
@@ -5173,7 +5186,7 @@ Coach accounts exist for tennis coaches who train residents across **several vil
                 "**devkrea@gmail.com** (or `ADMIN_NOTIFY_EMAIL` in secrets) when a *new* conflict appears. "
                 "Use the button below to scan now and force a notification."
             )
-            if st.button("🔍 Scan for double bookings now", key="admin_scan_double_bookings", use_container_width=True):
+            if st.button("🔍 Scan for double bookings now", key="admin_scan_double_bookings", width='stretch'):
                 with st.spinner("Scanning bookings table…"):
                     dups, newly = check_and_flag_double_bookings(force_notify=True)
                 if not dups:
@@ -5275,7 +5288,7 @@ Coach accounts exist for tennis coaches who train residents across **several vil
                     reset_email_input = st.text_input("Enter Resident Email Address", placeholder="resident@example.com", key="admin_rst_email").strip().lower()
                 with col_rst2:
                     st.write(""); st.write("")
-                    lookup_pressed = st.button("Search Account", type="primary", use_container_width=True)
+                    lookup_pressed = st.button("Search Account", type="primary", width='stretch')
 
                 if reset_email_input:
                     email_claims = get_all_villas_for_email(reset_email_input)
@@ -5286,7 +5299,7 @@ Coach accounts exist for tennis coaches who train residents across **several vil
                         st.write("")
                         col_e1, col_e2 = st.columns(2)
                         with col_e1:
-                            if st.button(f"🔓 Reset Cooldown & Restore Clean Access", type="primary", use_container_width=True, key="email_rst_btn_1"):
+                            if st.button(f"🔓 Reset Cooldown & Restore Clean Access", type="primary", width='stretch', key="email_rst_btn_1"):
                                 now_ts = get_utc_plus_4().isoformat()
                                 for c in email_claims:
                                     run_query(supabase.table("villa_claims").update({"verified_at": now_ts, "status": "approved"}).eq("id", c["id"]))
@@ -5295,7 +5308,7 @@ Coach accounts exist for tennis coaches who train residents across **several vil
                                 time.sleep(1.5)
                                 st.rerun()
                         with col_e2:
-                            if st.button(f"🔄 Reset Ownership (Wrong Villa Mistake)", type="secondary", use_container_width=True, key="email_rst_btn_2"):
+                            if st.button(f"🔄 Reset Ownership (Wrong Villa Mistake)", type="secondary", width='stretch', key="email_rst_btn_2"):
                                 for c in email_claims:
                                     run_query(supabase.table("villa_claims").delete().eq("id", c["id"]))
                                 add_log("Admin Reset", f"System reset villa claims for {reset_email_input}")
@@ -5499,7 +5512,7 @@ Coach accounts exist for tennis coaches who train residents across **several vil
                             st.info(f"🏡 **{v_label}** | *Verified At:* `{c.get('verified_at', 'N/A')}`")
 
                         st.write("")
-                        if st.button("🚫 Apply Sniping Lockout to Email & Associated Villas", type="primary", use_container_width=True, key="apply_admin_lockout_btn"):
+                        if st.button("🚫 Apply Sniping Lockout to Email & Associated Villas", type="primary", width='stretch', key="apply_admin_lockout_btn"):
                             villas_str = ", ".join(villa_descriptions)
                             villa_pairs = [(c['sub_community'], c['villa']) for c in associated_claims]
                             ban_tag = build_ban_tag(lockout_email_input, villa_pairs)
@@ -5532,7 +5545,7 @@ Coach accounts exist for tennis coaches who train residents across **several vil
                 warn_emails = [e.strip().lower() for e in warn_emails_raw.splitlines() if e.strip() and "@" in e]
                 warn_villas = [v.strip() for v in warn_villas_raw.splitlines() if v.strip()]
 
-                if st.button("📨 Send Sniping Warning", type="primary", use_container_width=True, key="admin_send_sniping_warning_btn"):
+                if st.button("📨 Send Sniping Warning", type="primary", width='stretch', key="admin_send_sniping_warning_btn"):
                     if not warn_emails:
                         st.error("Please enter at least one valid email address.")
                     else:
@@ -5595,7 +5608,7 @@ Coach accounts exist for tennis coaches who train residents across **several vil
                             st.write("")
                             col_r1, col_r2 = st.columns(2)
                             with col_r1:
-                                if st.button(f"🔓 Clear Restrictions & Wipe Clean", type="primary", use_container_width=True, key=f"clear_rest_{idx}"):
+                                if st.button(f"🔓 Clear Restrictions & Wipe Clean", type="primary", width='stretch', key=f"clear_rest_{idx}"):
                                     now_ts = get_utc_plus_4().isoformat()
                                     if target["claims"]:
                                         for c in target["claims"]:
@@ -5605,7 +5618,7 @@ Coach accounts exist for tennis coaches who train residents across **several vil
                                     time.sleep(1.5)
                                     st.rerun()
                             with col_r2:
-                                if st.button(f"🔄 Reset Ownership (Wrong Villa Mistake)", type="secondary", use_container_width=True, key=f"wrong_villa_rst_{idx}"):
+                                if st.button(f"🔄 Reset Ownership (Wrong Villa Mistake)", type="secondary", width='stretch', key=f"wrong_villa_rst_{idx}"):
                                     if target["claims"]:
                                         for c in target["claims"]:
                                             run_query(supabase.table("villa_claims").delete().eq("id", c["id"]))
@@ -5759,7 +5772,7 @@ Coach accounts exist for tennis coaches who train residents across **several vil
                         "If a booking still exists for this date, cancel it separately first if you "
                         "actually want the slot to free up."
                     )
-                    if st.button(f"🔓 Re-open {_ledger_pick} for auto-booking", type="primary", use_container_width=True, key="admin_reopen_ledger_btn"):
+                    if st.button(f"🔓 Re-open {_ledger_pick} for auto-booking", type="primary", width='stretch', key="admin_reopen_ledger_btn"):
                         from database_cleanup import clear_auto_book_ledger_date
                         if clear_auto_book_ledger_date(supabase, _ledger_pick):
                             st.success(f"Cleared — {_ledger_pick} will be reconsidered by the auto-book feature on its next run.")
@@ -5811,7 +5824,7 @@ Coach accounts exist for tennis coaches who train residents across **several vil
                     if _mcurrent_count + _mhours_needed > _mlimit_for_date:
                         st.error(f"Villa {_pick_villa} would exceed its {_mlimit_for_date}-active-booking limit for that date — pick a different villa, date, or delete a booking first.")
                     else:
-                        if st.button("📌 Create Manual Booking", type="primary", use_container_width=True, key="admin_special_manual_book_btn"):
+                        if st.button("📌 Create Manual Booking", type="primary", width='stretch', key="admin_special_manual_book_btn"):
                             _mhours_to_book = [_mstart_h, _mstart_h + 1] if _mslots_2h else [_mstart_h]
                             _minserted_hours, _mall_ok = [], True
                             for _h in _mhours_to_book:
@@ -5926,7 +5939,7 @@ Coach accounts exist for tennis coaches who train residents across **several vil
                     )
 
                     _trn_ready = bool(_trn_courts) and bool(_trn_pool) and _trn_end > _trn_start
-                    if st.button("📌 Create Tournament Request", type="primary", use_container_width=True, key="trn_create_btn", disabled=not _trn_ready):
+                    if st.button("📌 Create Tournament Request", type="primary", width='stretch', key="trn_create_btn", disabled=not _trn_ready):
                         if create_tournament_request(_trn_date_str, _trn_courts, _trn_pool, _trn_start, _trn_end):
                             st.success(f"Tournament request saved for {_trn_date_str}.")
                             if _trn_date_str in {d.strftime('%Y-%m-%d') for d in get_next_14_days()}:
@@ -5959,7 +5972,7 @@ Coach accounts exist for tennis coaches who train residents across **several vil
                     pending_count = pending_res.count if pending_res and pending_res.count is not None else 0
                     if pending_count > 0:
                         st.warning(f"{pending_count} booking(s) are still tagged to a coach.")
-                        if st.button(f"↩️ Transfer {pending_count} coach booking(s) to villa ownership", type="primary", use_container_width=True):
+                        if st.button(f"↩️ Transfer {pending_count} coach booking(s) to villa ownership", type="primary", width='stretch'):
                             run_query(supabase.table("bookings").update({"coach_email": None}).not_.is_("coach_email", "null"))
                             invalidate_booking_caches()
                             add_log("Admin Reset", f"Admin migrated {pending_count} coach booking(s) to plain villa ownership (coach facility disabled)")
@@ -5982,7 +5995,7 @@ Coach accounts exist for tennis coaches who train residents across **several vil
                 )
                 old_logs_count = old_logs_res.count if old_logs_res and old_logs_res.count is not None else 0
                 st.caption(f"{old_logs_count} log entr{'y is' if old_logs_count == 1 else 'ies are'} currently older than 3 months.")
-                if old_logs_count > 0 and st.button(f"🗑️ Purge {old_logs_count} log entr{'y' if old_logs_count == 1 else 'ies'} now", use_container_width=True):
+                if old_logs_count > 0 and st.button(f"🗑️ Purge {old_logs_count} log entr{'y' if old_logs_count == 1 else 'ies'} now", width='stretch'):
                     purge_old_logs(days=90)
                     st.success("Old log entries purged.")
                     time.sleep(1)
@@ -6135,7 +6148,7 @@ Coach accounts exist for tennis coaches who train residents across **several vil
 
             col_info, col_refresh = st.columns([4, 1])
             with col_refresh:
-                if st.button("🔄 Refresh list", key="broadcast_refresh_emails", use_container_width=True):
+                if st.button("🔄 Refresh list", key="broadcast_refresh_emails", width='stretch'):
                     with st.spinner("Refreshing…"):
                         try:
                             st.session_state.broadcast_active_emails = get_emails_with_active_bookings()
@@ -6224,7 +6237,7 @@ Coach accounts exist for tennis coaches who train residents across **several vil
                 submitted = st.form_submit_button(
                     "📨 Review & Send",
                     type="primary",
-                    use_container_width=True,
+                    width='stretch',
                 )
 
             # Validation + send only after the form is submitted (not on every keystroke).
@@ -6641,9 +6654,9 @@ def render_availability_tab(is_coach, current_device, resident_ctx=None, coach_c
             else:
                 st.caption("Nothing selected yet.")
         with s2:
-            do_book = st.button("🚀 Book", type="primary", key="q_book_btn", use_container_width=True, disabled=not q_ready)
+            do_book = st.button("🚀 Book", type="primary", key="q_book_btn", width='stretch', disabled=not q_ready)
         with s3:
-            if st.button("Clear", key="q_clear_btn", use_container_width=True, disabled=not (q_court or q_time)):
+            if st.button("Clear", key="q_clear_btn", width='stretch', disabled=not (q_court or q_time)):
                 ss["avail_bar_reset"] = True
                 st.rerun()
 
@@ -6744,7 +6757,7 @@ def render_availability_tab(is_coach, current_device, resident_ctx=None, coach_c
                     )
                     bnu_c1, bnu_c2 = st.columns(2)
                     with bnu_c1:
-                        if st.button("✅ Yes, Confirm Report", key=f"{_bnu_key}_yes", type="primary", use_container_width=True):
+                        if st.button("✅ Yes, Confirm Report", key=f"{_bnu_key}_yes", type="primary", width='stretch'):
                             # Re-verify the slot is still actually booked before acting on it —
                             # it may have been cancelled in the moments since the page loaded.
                             recheck = run_query(
@@ -6768,7 +6781,7 @@ def render_availability_tab(is_coach, current_device, resident_ctx=None, coach_c
                             time.sleep(1.5)
                             st.rerun()
                     with bnu_c2:
-                        if st.button("Cancel", key=f"{_bnu_key}_no", use_container_width=True):
+                        if st.button("Cancel", key=f"{_bnu_key}_no", width='stretch'):
                             st.session_state.pop(_bnu_key, None)
                             st.rerun()
                 else:
@@ -6900,9 +6913,9 @@ if COACH_FEATURE_ENABLED and st.session_state.get('is_coach'):
                 df_export = pd.DataFrame(my_coach_b)
                 df_export['Time'] = df_export['start_hour'].apply(lambda x: f"{x:02d}:00")
                 csv_data = convert_df_to_csv(df_export[['id', 'date', 'Time', 'court', 'sub_community', 'villa']])
-                st.download_button(label="📥 Export to CSV", data=csv_data, file_name=f"coach_{coach_name}_bookings.csv", mime="text/csv", use_container_width=True)
+                st.download_button(label="📥 Export to CSV", data=csv_data, file_name=f"coach_{coach_name}_bookings.csv", mime="text/csv", width='stretch')
             with b_col2:
-                if st.button("📧 Email Me All My Bookings", use_container_width=True, key="coach_email_summary_btn"):
+                if st.button("📧 Email Me All My Bookings", width='stretch', key="coach_email_summary_btn"):
                     with st.spinner("Sending summary email..."):
                         sent_ok = send_all_bookings_summary(None, None, merged_coach_bookings, coach_email, coach_label=coach_name)
                         if sent_ok:
@@ -7082,7 +7095,7 @@ else:
         ])
 
         if merged_bookings:
-            if st.button("📧 Email Me All My Bookings", type="primary", use_container_width=True, key="email_all_bookings_btn"):
+            if st.button("📧 Email Me All My Bookings", type="primary", width='stretch', key="email_all_bookings_btn"):
                 with st.spinner("Sending summary email..."):
                     success_sent = send_all_bookings_summary(villa, sub_community, merged_bookings, verified_user_email)
                     if success_sent:
@@ -7186,10 +7199,10 @@ else:
                                 file_name=f"{clean_ref_filename}.ics",
                                 mime="text/calendar",
                                 key=f"ics_download_{i}",
-                                use_container_width=True
+                                width='stretch'
                             )
                         with row_c3:
-                            if st.button("❌ Cancel", key=f"cancel_{i}", use_container_width=True):
+                            if st.button("❌ Cancel", key=f"cancel_{i}", width='stretch'):
                                 for bid in b['ids']: delete_booking(bid, b['v'], b['sc'], fingerprint=current_device)
                                 send_booking_notification_once("deleted", b['v'], b['sc'], b['court'], b['date'], b['start_hours'], verified_user_email)
                                 st.success(f"Successfully cancelled booking {id_display}")
