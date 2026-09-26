@@ -3679,7 +3679,7 @@ def show_email_consolidation_dialog(sub_community, villa, claims, current_email)
                     f"<p>For <b>{sub_community} - Villa {villa}</b>, <b>{html.escape(choice)}</b> was "
                     f"chosen to remain the registered email, so this email (<b>{html.escape(other)}</b>) "
                     "no longer has access.</p>"
-                    "<p>If you believe this is a mistake, please reach out via Court Maintenance in the app.</p>"
+                    "<p>If you believe this is a mistake, please reach out to Dev.</p>"
                 )
             )
         except Exception:
