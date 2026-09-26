@@ -3535,54 +3535,6 @@ def show_migration_dialog():
         st.session_state.seen_migration_notice = True
         st.rerun(scope="app")
 
-@st.dialog("📢 Community Notice")
-def show_community_poster_dialog(poster_version="2026-09-25"):
-    """Show the current community poster to every logged-in user.
-
-    Dismiss closes it for the current Streamlit session. "Don't show again"
-    writes a versioned flag to browser localStorage so the same poster is not
-    shown again on that browser. Bump poster_version whenever a new poster is
-    published.
-    """
-    poster_url = "https://raw.githubusercontent.com/mahadevbk/courtbooking/main/resources/Poster.jpeg"
-    st.image(poster_url, width='stretch')
-
-    col1, col2 = st.columns(2)
-    with col1:
-        if st.button("Dismiss", width='stretch', key="community_poster_dismiss"):
-            st.session_state["community_poster_dismissed"] = True
-            st.rerun(scope="app")
-    with col2:
-        if st.button("Don't show again", type="primary", width='stretch', key="community_poster_never"):
-            st_javascript(
-                f"localStorage.setItem('mira_community_poster_seen', {json.dumps(poster_version)});",
-                key=f"js_community_poster_seen_{poster_version}"
-            )
-            st.session_state["community_poster_dismissed"] = True
-            st.rerun(scope="app")
-
-
-def maybe_show_community_poster():
-    """Show the poster once per browser unless the user chose 'Don't show again'."""
-    if st.session_state.get("community_poster_dismissed", False):
-        return
-
-    # Version this key so publishing a new poster can make it visible again to everyone.
-    poster_version = "2026-09-25"
-    stored = st_javascript(
-        "localStorage.getItem('mira_community_poster_seen') || '';",
-        key="js_community_poster_seen_read"
-    )
-
-    # st_javascript can return None on its first browser round-trip. In that case,
-    # show the poster optimistically; the user's choice is persisted immediately.
-    if isinstance(stored, str) and stored == poster_version:
-        st.session_state["community_poster_dismissed"] = True
-        return
-
-    show_community_poster_dialog(poster_version)
-
-
 @st.dialog("⚠️ Villa Sniping Detected")
 def show_sniping_warning_dialog(other_villas):
     villas_text = ", ".join(other_villas)
@@ -7241,13 +7193,3 @@ with col2: st.markdown("""
     """, unsafe_allow_html=True)
 
 render_deferred_helpers()   # invisible; last on purpose so it takes no space between the title and the tabs
-
-# ==========================================
-# --- COMMUNITY POSTER ---
-# Shown to every authenticated user, regardless of resident/coach view.
-# IMPORTANT: keep this AFTER render_deferred_helpers(). On a browser refresh, the app may need
-# one JS round-trip to restore login/localStorage state. Putting the poster before those helpers
-# could cause the run to end before the dialog is opened.
-# ==========================================
-if st.session_state.get("authenticated", False):
-    maybe_show_community_poster()
