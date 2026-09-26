@@ -1698,7 +1698,7 @@ def render_supporter_gate_screen():
             "🚦 **We're experiencing very high traffic right now.**\n\n"
             "The sheer number of people trying to use the app at the same time is pushing against "
             "our hosting limits. To keep the app running for everyone, access is temporarily "
-            "limited during this peak period.\n\n"
+            "limited during this peak period. Priority of Access to supporters who have helped pay for DB hosting costs.\n\n"
             "**Please try logging in again after some time.** Thank you for your patience!"
         )
         with st.expander("Admin"):
