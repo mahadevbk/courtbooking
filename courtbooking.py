@@ -1602,23 +1602,37 @@ def remove_from_greylist(email):
 # ==============================================================================
 # --- SUPPORTER-ONLY ACCESS MODE (admin-only emergency toggle) ---
 # ==============================================================================
-# A circuit breaker for genuinely high-traffic moments: when ON, only emails on the supporter
-# list can get past login (or stay logged in — this is re-checked on every rerun, not just at
-# login, so flipping it ON also cuts off anyone already using the app on their very next
-# interaction; that immediacy is the point of an emergency control). Everyone else sees a plain
-# "we're experiencing high traffic" message — never anything that reveals a supporter list or an
-# admin toggle exists. See render_supporter_gate_screen() for the block screen and its built-in
-# admin password override (so a forgotten own-email whitelist can never cause a true lockout).
-# Needs two tables:
+# A circuit breaker for genuinely high-traffic moments. When ON:
+#   - Supporter emails (and an admin's password-unlocked bypass) get completely normal,
+#     unrestricted access — nothing below applies to them.
+#   - Any other already-registered identity (resident or coach) may log in and use the app, but
+#     only gets ONE booking or cancellation before being logged out and unable to get back in for
+#     3 hours (see get/start/is_on_supporter_cooldown below). The gate is re-checked on every
+#     rerun and at every login attempt, so this is enforced consistently everywhere.
+#   - A brand-new villa (no approved resident email on file yet) cannot register at all while the
+#     mode is ON — it never reaches the OTP screen, and never even causes an OTP email to be sent.
+# In every one of these blocked cases the person sees the exact same plain "we're experiencing
+# high traffic" screen — never anything that reveals a supporter list, an admin toggle, a
+# single-action limit, or a registration freeze. See render_supporter_gate_screen() for that
+# screen and its built-in admin password override (so a forgotten own-email whitelist can never
+# cause a true lockout). Blocked attempts are also never written to the activity log, so nothing
+# about this shows up there either — matching the fact that being blocked never writes a log
+# entry today.
+# Needs three tables:
 #   app_settings (key text primary key, value text, updated_at timestamptz default now())
 #   supporters   (id bigint generated always as identity primary key, email text not null unique,
 #                 note text, added_at timestamptz default now())
-# Both helpers below fail OPEN — mode reads as OFF and the supporter list reads as empty — if
-# either table doesn't exist yet or a read fails, so a missing/broken setup can never accidentally
-# lock everyone out of the app. APP_SETTINGS_TABLE itself is defined earlier, alongside
-# get_window_today(), which is the other feature sharing this same settings table.
+# app_settings also stores one row per throttled identity's cooldown expiry (see
+# _supporter_cooldown_key below) — no separate table needed for that.
+# All helpers below fail OPEN — mode reads as OFF, the supporter list reads as empty, and a
+# cooldown reads as "not on cooldown" — if a table doesn't exist yet or a read fails, so a
+# missing/broken setup can never accidentally lock everyone out of the app. APP_SETTINGS_TABLE
+# itself is defined earlier, alongside get_window_today(), which is the other feature sharing
+# this same settings table.
 SUPPORTERS_TABLE = "supporters"
 SUPPORTER_MODE_KEY = "supporter_only_mode"
+SUPPORTER_COOLDOWN_HOURS = 3
+SUPPORTER_COOLDOWN_KEY_PREFIX = "supporter_cooldown::"
 
 @st.cache_data(ttl=20, show_spinner=False)
 def is_supporter_mode_enabled():
@@ -1685,6 +1699,66 @@ def remove_supporter(email):
         return True
     except Exception:
         return False
+
+def _supporter_cooldown_key(email):
+    return f"{SUPPORTER_COOLDOWN_KEY_PREFIX}{(email or '').strip().lower()}"
+
+def start_supporter_cooldown(email):
+    """Called right after a non-supporter identity's single allowed action (a booking or a
+    cancellation) while Supporter-Only Access Mode is ON. Records that this identity is locked
+    out of the app until SUPPORTER_COOLDOWN_HOURS from now. Delete-then-insert, matching every
+    other single-row-by-key write against this same settings table (see set_supporter_mode_enabled
+    above). Silently no-ops on failure — a write hiccup should never turn into a permanent block,
+    only into the mode behaving, for that one action, as if it were off."""
+    email_clean = (email or "").strip().lower()
+    if not email_clean:
+        return
+    try:
+        until_iso = (datetime.now(timezone.utc) + timedelta(hours=SUPPORTER_COOLDOWN_HOURS)).isoformat()
+        key = _supporter_cooldown_key(email_clean)
+        supabase.table(APP_SETTINGS_TABLE).delete().eq("key", key).execute()
+        supabase.table(APP_SETTINGS_TABLE).insert({"key": key, "value": until_iso}).execute()
+    except Exception:
+        pass
+
+def is_on_supporter_cooldown(email):
+    """Whether this identity is still within its post-action cooldown window. Fails OPEN (False)
+    on any read error or malformed/missing value, same convention as is_supporter_mode_enabled().
+    Opportunistically clears its own row once the cooldown has expired, so app_settings doesn't
+    accumulate stale rows — that cleanup failing silently changes nothing about the answer
+    returned here."""
+    email_clean = (email or "").strip().lower()
+    if not email_clean:
+        return False
+    key = _supporter_cooldown_key(email_clean)
+    try:
+        res = supabase.table(APP_SETTINGS_TABLE).select("value").eq("key", key).limit(1).execute()
+        if not res or not res.data:
+            return False
+        until_dt = datetime.fromisoformat(res.data[0]["value"])
+    except Exception:
+        return False
+    if datetime.now(timezone.utc) < until_dt:
+        return True
+    try:
+        supabase.table(APP_SETTINGS_TABLE).delete().eq("key", key).execute()
+    except Exception:
+        pass
+    return False
+
+def apply_supporter_action_throttle(identity_email):
+    """Called right after a regular (non-supporter) identity's OWN booking or cancellation
+    succeeds. If Supporter-Only Access Mode is currently ON, that action was this identity's one
+    allowed interaction: start their cooldown and log them out through the completely ordinary
+    logout flow (same message, same behavior as any other logout — nothing about this looks any
+    different). No-ops with zero side effects when the mode is off or the identity is a
+    supporter, so normal operation is entirely unaffected."""
+    if not is_supporter_mode_enabled():
+        return
+    if is_supporter_email(identity_email):
+        return
+    start_supporter_cooldown(identity_email)
+    logout_action()  # clears session state and reruns — nothing after this call executes
 
 def render_supporter_gate_screen():
     """The screen shown INSTEAD OF the app to anyone blocked by Supporter-Only Access Mode. Says
@@ -3872,6 +3946,21 @@ def _attempt_resident_login(otp_sub, otp_villa, otp_email_input):
         )
 
     existing_claim = _find_claim_for_email(villa_claims, email_clean)
+
+    if (
+        is_supporter_mode_enabled()
+        and not st.session_state.get("supporter_gate_bypass")
+        and not is_supporter_email(otp_email_input)
+    ):
+        # Supporter-Only Access Mode is ON and this isn't a supporter or the admin override.
+        # A brand-new villa (no approved email on file at all) can't register while the mode is
+        # on, and a returning identity still inside its post-action cooldown can't get back in
+        # yet either — both get the exact same high-traffic screen as everyone else blocked by
+        # this mode, with no OTP ever sent and no log entry written either way.
+        villa_already_registered = any(c.get("status") == "approved" for c in (villa_claims or []))
+        if not villa_already_registered or is_on_supporter_cooldown(email_clean):
+            render_supporter_gate_screen()
+            return
 
     if ban_check[0]:
         ban_expiry, ban_reason = ban_check
@@ -6636,6 +6725,7 @@ def render_availability_tab(is_coach, current_device, resident_ctx=None, coach_c
                     ss["avail_bar_reset"] = True
                     st.balloons()
                     st.success("Booked successfully using allocations from: " + ", ".join([f"Villa {r['villa']}" for r in result]))
+                    apply_supporter_action_throttle(coach_ctx["coach_email"])
                     time.sleep(2)
                     st.rerun()
                 else:
@@ -6662,6 +6752,7 @@ def render_availability_tab(is_coach, current_device, resident_ctx=None, coach_c
                         st.success(f"Booked {q_slots} slot(s) for {q_court} starting at {q_h:02d}:00")
                         if verified_user_email and "@" in verified_user_email:
                             st.info(f"📧 A confirmation email has been sent to **{verified_user_email}** from **miracourtbooking@gmail.com**. If you don't see it, please check your spam/junk folder.")
+                        apply_supporter_action_throttle(verified_user_email)
                         time.sleep(2)
                         st.rerun()
                     else:
@@ -6791,8 +6882,10 @@ def render_availability_tab(is_coach, current_device, resident_ctx=None, coach_c
 # Sits right before BOTH the coach and resident views, after every possible login path (cached
 # auto-login, fresh OTP, the admin resident-bypass tool) has already converged on
 # st.session_state.verified_email / coach_email — so this one check covers all of them. Re-run on
-# every script rerun (not just at login), so turning this ON also cuts off anyone already using
-# the app on their very next interaction, which is the point of an emergency traffic control.
+# every script rerun (not just at login), so turning this ON also catches anyone already using the
+# app the moment their single allowed action puts them on cooldown. A non-supporter identity that
+# is NOT on cooldown is let through here — the one-action limit is enforced at the point of the
+# action itself (see apply_supporter_action_throttle), not by blocking access outright.
 _supporter_gate_identity = (
     st.session_state.coach_email if (COACH_FEATURE_ENABLED and st.session_state.get('is_coach'))
     else st.session_state.get("verified_email")
@@ -6801,6 +6894,7 @@ if (
     is_supporter_mode_enabled()
     and not st.session_state.get("supporter_gate_bypass")
     and not is_supporter_email(_supporter_gate_identity)
+    and is_on_supporter_cooldown(_supporter_gate_identity)
 ):
     render_supporter_gate_screen()
     st.stop()
@@ -6899,6 +6993,7 @@ if COACH_FEATURE_ENABLED and st.session_state.get('is_coach'):
                         for h in b['start_hours']:
                             notify_owner_of_coach_booking(coach_name, b['v'], b['sc'], b['court'], b['date'], h, action="cancelled")
                         st.success("Cancelled. Quota returned to owner.")
+                        apply_supporter_action_throttle(coach_email)
                         time.sleep(1)
                         st.rerun()
 
@@ -7161,6 +7256,7 @@ else:
                                 st.success(f"Successfully cancelled booking {id_display}")
                                 if verified_user_email and "@" in verified_user_email:
                                     st.info(f"📧 A confirmation email has been sent to **{verified_user_email}** from **miracourtbooking@gmail.com**. If you don't see it, please check your spam/junk folder.")
+                                apply_supporter_action_throttle(verified_user_email)
                                 time.sleep(1.5); st.rerun()
                     st.markdown('<div style="margin-bottom: 25px;"></div>', unsafe_allow_html=True)
             
