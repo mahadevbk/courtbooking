@@ -466,11 +466,12 @@ render_donor_ticker(DONOR_NAMES)
 # --- ANNOUNCEMENTS (announcements.csv) ---
 # ==========================================
 # To post an announcement, add a row to announcements.csv (same folder as this script) with a
-# Date and the Announcement text. It appears in the News tab (📢), newest first — no code
-# change needed. The date can be written like "1 Sep 2026", "1. Sep. 2026", "01 September 2026",
-# "2026-09-01" or "01/09/2026" (day first). A row whose date can't be read is still shown, after
-# the dated ones, so a typo never makes an announcement disappear. If the file is missing or
-# unreadable the tab simply says there are no announcements; it never breaks the app.
+# Date and the Announcement text. It appears in the News tab (📢), newest first — newest meaning
+# simply the last row in the CSV file, so add new announcements at the BOTTOM of the file. No
+# code change needed. The date can be written like "1 Sep 2026", "1. Sep. 2026",
+# "01 September 2026", "2026-09-01" or "01/09/2026" (day first) — it's shown as a label only and
+# no longer affects ordering. If the file is missing or unreadable the tab simply says there are
+# no announcements; it never breaks the app.
 _ANNOUNCEMENT_DATE_FORMATS = ("%d %b %Y", "%d %B %Y", "%Y-%m-%d", "%d/%m/%Y", "%d-%m-%Y", "%b %d %Y", "%B %d %Y")
 
 def _parse_announcement_date(raw):
@@ -519,10 +520,9 @@ def _read_announcements(csv_path, file_mtime):
             "label": d.strftime("%-d %b %Y") if d else raw_date,
             "text": text,
         })
-    # Newest first; same-day entries: the one lower in the file is treated as newer; undated last.
-    dated = sorted((i for i in items if i["iso"]), key=lambda i: (i["iso"], i["order"]), reverse=True)
-    undated = sorted((i for i in items if not i["iso"]), key=lambda i: i["order"], reverse=True)
-    return dated + undated
+    # Newest first = simply the reverse of the CSV's own row order (last row in the file is
+    # treated as the most recent announcement), regardless of what's in the Date column.
+    return list(reversed(items))
 
 def load_announcements():
     csv_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "announcements.csv")
@@ -1478,12 +1478,39 @@ def mask_emails_in_text(text):
     email_pattern = r'[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+'
     return re.sub(email_pattern, lambda m: mask_email(m.group(0)), text)
 
+# ==============================================================================
+# --- ONE EMAIL PER VILLA (abuse & false-claiming prevention) ---
+# ==============================================================================
+# Historically a villa could have up to 2 verified resident emails on file (partners/housemates
+# sharing a residence). To reduce abuse and false claiming, only ONE verified email is now
+# allowed per villa going forward. This constant is the single source of truth for that cap —
+# every check or message about "how many emails can a villa have" should read it instead of a
+# hardcoded number.
+#
+# Existing villas that already have 2 approved emails from before this change are migrated
+# lazily rather than all at once: the first time anyone signed in for that villa interacts with
+# the app, show_email_consolidation_dialog() forces a one-time choice of which email stays
+# before the rest of the app is usable again (see the resident-dashboard entry point, where
+# get_approved_email_claims_for_villa() is checked against this constant).
+MAX_EMAILS_PER_VILLA = 1
+
 def get_villa_claims_count(sub_community, villa):
     res = run_query(supabase.table("villa_claims").select("id", count="exact")
                     .eq("sub_community", sub_community)
                     .eq("villa", villa)
                     .eq("status", "approved"))
     return res.count if res and res.count is not None else 0
+
+def get_approved_email_claims_for_villa(sub_community, villa):
+    """Full villa_claims rows (not just a count) for this villa's currently APPROVED claims —
+    used by the 1-email-per-villa migration check, which needs each row's id (to delete the
+    discarded claim) and email, not just a count."""
+    res = run_query(supabase.table("villa_claims").select("*")
+                    .eq("sub_community", sub_community)
+                    .eq("villa", villa)
+                    .eq("status", "approved")
+                    .order("created_at"))
+    return res.data if res and res.data else []
 
 def get_existing_claim(sub_community, villa, email):
     res = run_query(supabase.table("villa_claims").select("*")
@@ -1721,7 +1748,7 @@ def _cooldown_from_claims(claims, requesting_email):
     registered_emails = {c.get("email", "").strip().lower() for c in approved_claims if c.get("email")}
     if req_email_clean in registered_emails:
         return False, None
-    if len(registered_emails) < 2:
+    if len(registered_emails) < MAX_EMAILS_PER_VILLA:
         return False, None
     now = get_utc_plus_4()
     for c in approved_claims:
@@ -3490,7 +3517,7 @@ def show_migration_dialog():
     **What this means for you:**
     * **Fair access for real residents:** Keeps slots open for those who actually live here.
     * **One-time only:** Just enter your email and a 6-digit code once — your device will remember you automatically after that!
-    * **Family friendly:** Up to 2 emails can be linked to your villa (e.g. partners or housemates).
+    * **One email per villa:** To prevent abuse and false claiming, only a single verified email may be registered to each villa.
     ---
     Please enter your resident email below to receive your 6-digit verification code.
     💬 *Please reach out to Dev in case you have any queries.*
@@ -3572,6 +3599,103 @@ def show_sniping_lockout_dialog(hours_remaining):
     )
     if st.button("Close / Logout", use_container_width=True):
         logout_action()
+
+@st.dialog("⚠️ Action Required: 1 Email Per Villa")
+def show_email_consolidation_dialog(sub_community, villa, claims, current_email):
+    """One-time forced migration for legacy villas that still have more than
+    MAX_EMAILS_PER_VILLA approved emails on file (from before the 1-email-per-villa policy).
+
+    `claims` is that villa's current list of APPROVED villa_claims rows (from
+    get_approved_email_claims_for_villa()). The caller follows this with st.stop(), so nothing
+    else in the app renders until the signed-in user picks which email stays — the other is
+    deleted from villa_claims immediately, notified by email, and can no longer log in to this
+    villa. There is deliberately no "skip" / "remind me later" option: this exists specifically
+    to stop ongoing abuse, so letting it be dismissed would defeat the point.
+    """
+    # De-duplicate by email in case a villa somehow ended up with more than one approved row for
+    # the same address — only distinct emails are shown/offered as choices.
+    by_email = {}
+    for c in claims:
+        e = (c.get("email") or "").strip().lower()
+        if e and e not in by_email:
+            by_email[e] = c
+    emails = list(by_email.keys())
+
+    if len(emails) <= MAX_EMAILS_PER_VILLA:
+        # Already resolved (e.g. a co-resident finished this same dialog a moment ago on another
+        # device/tab) — nothing left to do, just let the normal rerun move on.
+        st.success("This villa is already down to one registered email. Continuing…")
+        time.sleep(1)
+        st.rerun(scope="app")
+        return
+
+    st.markdown(f"""
+    To prevent abuse and false claiming, **{sub_community} - Villa {villa}** may now have only
+    **{MAX_EMAILS_PER_VILLA} verified resident email** on file — previously up to 2 were allowed.
+
+    This villa currently has **{len(emails)}** registered emails. Please choose the **one email
+    that should remain** with this villa. The other will be **permanently removed** and will no
+    longer be able to log in here.
+    """)
+
+    current_clean = (current_email or "").strip().lower()
+    labels = [e + (" (you)" if e == current_clean else "") for e in emails]
+    default_idx = emails.index(current_clean) if current_clean in emails else 0
+    picked_label = st.radio(
+        "Which email should remain with this villa?",
+        options=labels,
+        index=default_idx,
+        key=f"consolidate_choice_{sub_community}_{villa}"
+    )
+    choice = emails[labels.index(picked_label)]
+    other = next(e for e in emails if e != choice)
+
+    st.warning(
+        f"📧 **{choice}** will remain registered to this villa.  \n"
+        f"🗑️ **{other}** will be permanently removed and lose access."
+    )
+    confirmed = st.checkbox(
+        f"I confirm — keep {choice}, permanently remove {other}. This cannot be undone.",
+        key=f"consolidate_confirm_{sub_community}_{villa}"
+    )
+
+    if st.button("✅ Confirm & Continue", type="primary", use_container_width=True, disabled=not confirmed):
+        other_ids = [c["id"] for c in claims if (c.get("email") or "").strip().lower() == other]
+        for cid in other_ids:
+            run_query(supabase.table("villa_claims").delete().eq("id", cid))
+        add_log(
+            "Villa Claim Removed",
+            f"1-email-per-villa migration: {sub_community} Villa {villa} reduced from {len(emails)} to "
+            f"{MAX_EMAILS_PER_VILLA} email. Kept {choice}, removed {other}."
+        )
+        try:
+            send_gmail_smtp(
+                other,
+                f"Access update for {sub_community} Villa {villa}",
+                (
+                    "<p>Hi,</p>"
+                    "<p>To prevent abuse and false claiming, Mira Court Booking now allows only one "
+                    "registered email per villa.</p>"
+                    f"<p>For <b>{sub_community} - Villa {villa}</b>, <b>{html.escape(choice)}</b> was "
+                    f"chosen to remain the registered email, so this email (<b>{html.escape(other)}</b>) "
+                    "no longer has access.</p>"
+                    "<p>If you believe this is a mistake, please reach out via Court Maintenance in the app.</p>"
+                )
+            )
+        except Exception:
+            pass
+
+        if choice == current_clean:
+            st.success(f"Done — {choice} remains registered to this villa. Continuing…")
+            time.sleep(1.2)
+            st.rerun(scope="app")
+        else:
+            st.success(
+                f"Done — {choice} remains registered to this villa. "
+                f"You'll be logged out now since {current_email} no longer has access here."
+            )
+            time.sleep(1.8)
+            logout_action()
 
 # --- ZERO-LATENCY TOKEN AUTH ---
 AUTH_SALT = "mira_court_booking_salt_2026"
@@ -3837,14 +3961,16 @@ def _attempt_resident_login(otp_sub, otp_villa, otp_email_input):
 
     if not existing_claim and is_on_cooldown:
         st.error(
-            f"🚫 Security Lockout: This villa ({otp_sub} - Villa {otp_villa}) already has 2 registered emails, "
-            f"with an active 72-hour ownership change cooldown ({hours_left} hours remaining). "
+            f"🚫 Security Lockout: This villa ({otp_sub} - Villa {otp_villa}) already has "
+            f"{MAX_EMAILS_PER_VILLA} registered email(s), with an active 72-hour ownership change "
+            f"cooldown ({hours_left} hours remaining). "
             "Please contact Dev in Court Maintenance for urgent reassignment."
         )
         add_log("Access Denied", f"Villa {otp_sub} Villa {otp_villa} 72h cooldown triggered by {otp_email_input} ({hours_left}h left)", fingerprint=current_uuid)
-    elif not existing_claim and current_claims_count >= 2:
+    elif not existing_claim and current_claims_count >= MAX_EMAILS_PER_VILLA:
         st.error(
-            f"🚫 This villa ({otp_sub} - Villa {otp_villa}) already has 2 verified resident emails attached. "
+            f"🚫 This villa ({otp_sub} - Villa {otp_villa}) already has {MAX_EMAILS_PER_VILLA} verified "
+            "resident email(s) attached. Only one verified email is allowed per villa. "
             "If you recently moved in or need to update your registered email, please reach out via the contact channels in Court Maintenance."
         )
     elif not existing_claim and email_villas_count >= max_villas_allowed:
@@ -4174,7 +4300,7 @@ if not st.session_state.authenticated:
     default_villa = st.session_state.get("prefill_villa", "")
 
     st.subheader("🛡️ Resident Email Verification")
-    st.caption("Secure login for your residence. Max 2 resident emails per villa.")
+    st.caption("Secure login for your residence. 1 verified resident email per villa.")
     
     if st.session_state.auth_step == "input_email":
         col_v1, col_v2 = st.columns(2)
@@ -5084,8 +5210,8 @@ Coach accounts exist for tennis coaches who train residents across **several vil
                             curr_c = get_villa_claims_count(man_sub, man_villa)
                             email_v_count = get_email_claimed_villas_count(man_email)
                             max_v_allowed = get_max_villas_for_email(man_email)
-                            if curr_c >= 2:
-                                st.error(f"Cannot add: {man_sub} Villa {man_villa} already has 2 verified claims.")
+                            if curr_c >= MAX_EMAILS_PER_VILLA:
+                                st.error(f"Cannot add: {man_sub} Villa {man_villa} already has {MAX_EMAILS_PER_VILLA} verified claim(s) (1 email per villa).")
                             elif email_v_count >= max_v_allowed:
                                 greylist_note = " — this email is greylisted" if is_email_greylisted(man_email) else ""
                                 st.error(f"Cannot add: {man_email} already holds claims for {max_v_allowed} villa(s) (maximum cap reached{greylist_note}).")
@@ -5113,7 +5239,7 @@ Coach accounts exist for tennis coaches who train residents across **several vil
                         c_sub, c_villa = claim_inspect_villa.split(" - ")
                         claims = get_claims_for_villa(c_sub, c_villa)
                         if claims:
-                            st.write(f"Active Verified Emails for **{claim_inspect_villa}** ({len(claims)} / 2):")
+                            st.write(f"Active Verified Emails for **{claim_inspect_villa}** ({len(claims)} / {MAX_EMAILS_PER_VILLA} allowed):")
                             for claim in claims:
                                 c_box1, c_box2 = st.columns([3, 1])
                                 with c_box1:
@@ -6260,6 +6386,8 @@ def render_availability_tab(is_coach, current_device, resident_ctx=None, coach_c
     coaches share everything except how the Book button books (single villa vs. pool of villas),
     so only that part is branched via is_coach. This tab is the whole check-and-book flow."""
     st.subheader("Court Availability & Booking")
+    if has_recent_announcement():
+        st.info("🔴 **New in 📢 News** — check the News tab for the latest community update.")
     _current_identity_email = (coach_ctx or {}).get("coach_email") if is_coach else (resident_ctx or {}).get("verified_user_email")
     date_options = [f"{d.strftime('%Y-%m-%d')} ({d.strftime('%A')})" for d in get_next_14_days(is_supporter=is_supporter_email(_current_identity_email))]
     selected_date_full = st.selectbox("Select Date:", date_options, key="tab1_date_select")
@@ -6818,6 +6946,33 @@ else:
     # ----------------------------------------
     sub_community, villa = st.session_state.sub_community, st.session_state.villa
     verified_user_email = st.session_state.get("verified_email", "Verified")
+
+    # --- ONE-EMAIL-PER-VILLA MIGRATION CHECK ---
+    # Runs on every load of the resident dashboard (not just at login) so it also catches
+    # already-authenticated sessions restored from localStorage. Villas from before the
+    # 1-email-per-villa policy may still have 2 approved emails on file; the first time anyone
+    # from such a villa interacts with the app, force a one-time consolidation down to
+    # MAX_EMAILS_PER_VILLA before letting them use anything else. Also guards against a stale
+    # session for an email that was just removed from this villa (e.g. via that same dialog on
+    # a co-resident's device).
+    _villa_claims_now = get_approved_email_claims_for_villa(sub_community, villa)
+    _villa_emails_now = {(c.get("email") or "").strip().lower() for c in _villa_claims_now}
+    if len(_villa_emails_now) > MAX_EMAILS_PER_VILLA:
+        show_email_consolidation_dialog(sub_community, villa, _villa_claims_now, verified_user_email)
+        render_deferred_helpers()
+        st.stop()
+    elif _villa_emails_now and (verified_user_email or "").strip().lower() not in _villa_emails_now:
+        st.warning(
+            "🚫 Your access to this villa has changed — your email is no longer the registered "
+            "contact for this residence (likely due to the new 1-email-per-villa policy). "
+            "Please log in again with the currently registered email, or contact Dev via Court "
+            "Maintenance if this looks wrong."
+        )
+        if st.button("🚪 Logout", key="consolidation_stale_logout"):
+            logout_action()
+        render_deferred_helpers()
+        st.stop()
+
     if is_donor_villa(sub_community, villa):
         render_donor_legend_banner()
 
