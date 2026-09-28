@@ -6,7 +6,7 @@ st.set_page_config(
     layout="centered",
 )
 
-WHATSAPP_GROUP_URL = "https://chat.whatsapp.com/CbIV9EV53PLBz2HvqamA7V"
+WHATSAPP_GROUP_URL = "https://chat.whatsapp.com/CJ9flIw4gJrE8MTF1WzlhS"
 
 # Same font treatment as the original app: Audiowide for headings and buttons, default body text.
 st.markdown(
