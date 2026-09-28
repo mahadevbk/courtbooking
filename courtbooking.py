@@ -26,6 +26,8 @@ st.subheader("🎾 Book that Court ...")
 
 st.markdown(
     """
+
+
 Dear Mira Resident,
 
 The Mira Court Booking app is no longer able to serve the community. The sheer volume of users / abusers has been overwhelming (2,740 users as of the last count).
