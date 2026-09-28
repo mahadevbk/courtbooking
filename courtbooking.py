@@ -30,9 +30,13 @@ Dear Mira Resident,
 
 The Mira Court Booking app is no longer be able to serve the community. The sheer volume of users / abusers has been overwhelming (2,740 users as of the last count).
 
-The Mira Court Booking WhatsApp group (the link to join is in all the emails sent by the app) has some like-minded individuals who are keen to organise the tennis court booking and use, going forwards.
 
 To the 40+ residents who contributed to help meet the hosting costs, thank you for your support.
+
+
+The Mira Court Booking WhatsApp group has some like-minded individuals who are keen to organise the tennis court booking and use, going forwards.
+
+
 
 Cheers
 """
