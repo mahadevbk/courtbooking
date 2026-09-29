@@ -2376,28 +2376,60 @@ def _past_checker():
 # --- CORE BOOKING & DELETION FUNCTIONS (UPDATED FOR COACH POOL) ---
 
 # ------------------------------------------------------------------------------------------------
-# APP RETIREMENT: this app is being replaced by a new one. While BOOKINGS_DISABLED is True NO new
-# booking can be created by anyone (residents, coaches, tournament auto-booking, admin manual
-# booking). Existing bookings still show and can still be cancelled. Set NEW_APP_URL to show a
-# "Go to the new app" button in the notice. Flip BOOKINGS_DISABLED to False to re-open booking.
+# APP RETIREMENT: this app is being replaced by a new one. Bookings are only allowed for slot dates
+# up to and including BOOKINGS_LAST_DATE; nothing after that date can be booked by anyone
+# (residents, coaches, tournament auto-booking, admin manual booking). Existing bookings still show
+# and can still be cancelled. BOOKINGS_DISABLED is a master switch that closes ALL booking at once
+# (set it to True to stop everything immediately). Set NEW_APP_URL to show a "Go to the new app"
+# button in the notice.
 # ------------------------------------------------------------------------------------------------
-BOOKINGS_DISABLED = True
+BOOKINGS_DISABLED = False
+BOOKINGS_LAST_DATE = "2026-10-13"      # last slot DATE that can still be booked (inclusive), YYYY-MM-DD
 NEW_APP_URL = ""    # e.g. "https://your-new-app.example.com"
-BOOKINGS_CLOSED_MESSAGE = ("New bookings are no longer taken in this app — we've moved to a new app. "
-                           "Your existing bookings are still shown here and remain valid.")
 
-def render_bookings_closed_notice():
-    st.warning(
-        "🚫 **New bookings are closed in this app.**\n\n"
-        "We're moving to a new app, and this one is being retired. **Your existing bookings are still "
-        "shown below and remain valid** — you can still view or cancel them here. "
-        "Please make any new bookings in the new app."
-    )
+def _bookings_last_date_label():
+    try:
+        return datetime.strptime(BOOKINGS_LAST_DATE, "%Y-%m-%d").strftime("%d %b %Y").lstrip("0")
+    except Exception:
+        return BOOKINGS_LAST_DATE
+
+def is_booking_date_open(date_str):
+    """True if a NEW booking may still be made for this slot date (YYYY-MM-DD)."""
+    if BOOKINGS_DISABLED:
+        return False
+    return str(date_str)[:10] <= BOOKINGS_LAST_DATE
+
+def bookings_closed_message(date_str=None):
+    if BOOKINGS_DISABLED:
+        return ("New bookings are no longer taken in this app — we've moved to a new app. "
+                "Your existing bookings are still shown here and remain valid.")
+    return (f"This app only takes bookings up to {_bookings_last_date_label()}. Please book later dates "
+            "in the new app. Your existing bookings remain valid.")
+
+def render_bookings_closed_notice(date_str=None):
+    if BOOKINGS_DISABLED:
+        st.warning(
+            "🚫 **New bookings are closed in this app.**\n\n"
+            "We're moving to a new app, and this one is being retired. **Your existing bookings are still "
+            "shown below and remain valid** — you can still view or cancel them here. "
+            "Please make any new bookings in the new app."
+        )
+    else:
+        st.warning(
+            f"🚫 **Bookings in this app close after {_bookings_last_date_label()}.**\n\n"
+            "We're moving to a new app, so this date can't be booked here. Please book it in the new app. "
+            "**Your existing bookings remain valid** and are still shown here."
+        )
     if NEW_APP_URL:
         st.link_button("➡️ Go to the new app", NEW_APP_URL, width='stretch')
 
+def render_bookings_closing_banner():
+    """Shown above the booking bar on dates that CAN still be booked, so people know what's coming."""
+    st.info(f"ℹ️ **This app is being retired.** Bookings here are open for dates up to "
+            f"**{_bookings_last_date_label()}** only. Later dates must be booked in the new app.")
+
 def book_slot(villa, sub_community, court, date_str, start_hour, fingerprint=None, coach_email=None):
-    if BOOKINGS_DISABLED:
+    if not is_booking_date_open(date_str):
         return False
     try:
         payload = {
@@ -2471,8 +2503,8 @@ def validate_booking_attempt(sub_community, villa, court, date_str, hours_to_boo
     Denied" line for a limit breach (never for an unavailable-slot rejection), matching the
     original inline Plan & Book behavior; pass log_denials=False for callers (e.g. one villa in a
     coach's pool) that only want a yes/no answer without writing a log line."""
-    if BOOKINGS_DISABLED:
-        return False, BOOKINGS_CLOSED_MESSAGE
+    if not is_booking_date_open(date_str):
+        return False, bookings_closed_message(date_str)
     valid_hours = get_start_hours_for_date(date_str)
     q_slots = len(hours_to_book)
     checked_hours = [h for h in hours_to_book if h in valid_hours]
@@ -2623,8 +2655,8 @@ def notify_slot_watchers(court, date_str, freeing_households=None):
     (only one caller can win the claim), so nobody is ever emailed twice for the same alert. Because it
     looks at the court's state as a whole, one call handles a 2-hour cancellation in one go and each
     person gets a single email (for their longest matching alert)."""
-    if BOOKINGS_DISABLED:
-        return []       # app retired: don't send "slot is free" alerts nobody can act on
+    if not is_booking_date_open(date_str):
+        return []       # app retired: don't send "slot is free" alerts for dates nobody can book
     sent = []
     freeing_households = {(sub, str(v)) for sub, v in (freeing_households or set())}
     try:
@@ -2846,6 +2878,8 @@ def render_slot_watch_section(selected_date, watch_email, sub_community, villa):
 
         watching = {(w["date"], int(w["start_hour"]), int(w["hours"])) for w in mine}
         windows = get_watchable_windows(w_n, selected_date, exclude=watching, is_supporter=is_supporter_email(email))
+        if windows is not None:
+            windows = [(d, h) for d, h in windows if is_booking_date_open(d)]     # nothing after the cut-off can be booked
         if windows is None:
             st.caption("Couldn't load availability just now — please try again in a moment.")
         elif not windows:
@@ -2924,8 +2958,8 @@ def get_coach_dashboard_stats(coach_email):
 
 def process_coach_booking(coach_email, coach_name, court, date_str, start_hours, fingerprint=None):
     """Attempts to iterate through a coach's villa pool and assign slots intelligently."""
-    if BOOKINGS_DISABLED:
-        return False, BOOKINGS_CLOSED_MESSAGE
+    if not is_booking_date_open(date_str):
+        return False, bookings_closed_message(date_str)
     assigned_villas, _, _ = get_coach_dashboard_stats(coach_email)
     booked_slots = []
     
@@ -3606,6 +3640,8 @@ def _run_scheduled_tournament_processing():
         window = {d.strftime('%Y-%m-%d') for d in get_next_14_days()}
         for req in pending:
             if req.get("status") == "pending" and req.get("target_date") in window:
+                if not is_booking_date_open(req.get("target_date")):
+                    continue        # after the cut-off date: leave it pending, never auto-book it
                 process_tournament_request(req)
     except Exception as e:
         print(f"scheduled tournament processing error: {e}")
@@ -6169,8 +6205,8 @@ Coach accounts exist for tennis coaches who train residents across **several vil
                     if _mcurrent_count + _mhours_needed > _mlimit_for_date:
                         st.error(f"Villa {_pick_villa} would exceed its {_mlimit_for_date}-active-booking limit for that date — pick a different villa, date, or delete a booking first.")
                     else:
-                        if BOOKINGS_DISABLED:
-                            st.warning("Bookings are disabled app-wide (BOOKINGS_DISABLED) — manual booking is switched off too.")
+                        if not is_booking_date_open(_mdate_choice):
+                            st.warning(bookings_closed_message(_mdate_choice))
                         elif st.button("📌 Create Manual Booking", type="primary", width='stretch', key="admin_special_manual_book_btn"):
                             _mhours_to_book = [_mstart_h, _mstart_h + 1] if _mslots_2h else [_mstart_h]
                             _minserted_hours, _mall_ok = [], True
@@ -6807,7 +6843,7 @@ def render_availability_tab(is_coach, current_device, resident_ctx=None, coach_c
     directly under it, sharing a single selection) and the court/villa lookup. Residents and
     coaches share everything except how the Book button books (single villa vs. pool of villas),
     so only that part is branched via is_coach. This tab is the whole check-and-book flow."""
-    st.subheader("Court Availability")
+    st.subheader("Court Availability & Booking")
     if has_recent_announcement():
         st.info("🔴 **New in 📢 News** — check the News tab for the latest community update.")
     _current_identity_email = (coach_ctx or {}).get("coach_email") if is_coach else (resident_ctx or {}).get("verified_user_email")
@@ -6845,7 +6881,7 @@ def render_availability_tab(is_coach, current_device, resident_ctx=None, coach_c
                 full_comm, villa_num = bookings_with_details[key].rsplit(" - ", 1)
                 abbr = abbreviate_community(full_comm)
                 row.append(f"{abbr}-{villa_num}")
-            else: row.append("—" if BOOKINGS_DISABLED else "Available")     # retired app: open slots are not offered
+            else: row.append("Available" if is_booking_date_open(selected_date) else "—")     # retired app: no open slots offered after the cut-off
         data[label] = row
     df_avail = pd.DataFrame(data, index=courts)
 
@@ -6985,7 +7021,7 @@ def render_availability_tab(is_coach, current_device, resident_ctx=None, coach_c
                 ss[_bk("q_2_hours_check")] = False
             else:
                 ss["avail_bar_notice"] = (
-                    ("New bookings are closed in this app." if BOOKINGS_DISABLED else "That time has passed.") if _p_cell == "—" else "That slot is already booked — tap a green one."
+                    ("New bookings are closed for this date in this app." if not is_booking_date_open(selected_date) else "That time has passed.") if _p_cell == "—" else "That slot is already booked — tap a green one."
                 )
             st.rerun()
     elif grid_event is not None:
@@ -7016,9 +7052,10 @@ def render_availability_tab(is_coach, current_device, resident_ctx=None, coach_c
     if _notice:
         st.caption(f"⚠️ {_notice}")
 
-    if BOOKINGS_DISABLED:
-        render_bookings_closed_notice()
+    if not is_booking_date_open(selected_date):
+        render_bookings_closed_notice(selected_date)
     else:
+        render_bookings_closing_banner()
         with st.container(border=True):
             b1, b2, b3 = st.columns([3, 2, 2])
             with b1:
@@ -7285,7 +7322,7 @@ if COACH_FEATURE_ENABLED and st.session_state.get('is_coach'):
         "total_allowed": total_allowed, "total_active": total_active, "n_villas": len(assigned_villas),
     }
 
-    c_tab_avail, c_tab_mine, c_tab_resources, c_tab_maint, c_tab_log, c_tab_news = st.tabs(["📅 Availability", "📋 My Bookings", "🔗 Resources", "🛠️ Maint.", "📜 Log", announcements_tab_label()])
+    c_tab_avail, c_tab_mine, c_tab_resources, c_tab_maint, c_tab_log, c_tab_news = st.tabs(["📅 Plan & Book", "📋 My Bookings", "🔗 Resources", "🛠️ Maint.", "📜 Log", announcements_tab_label()])
 
     with c_tab_avail:
         render_whatsapp_banner()
@@ -7453,7 +7490,7 @@ else:
         )
         show_sniping_warning_dialog(hopping_villas)
 
-    tab_avail, tab_mine, tab_resources, tab_maint, tab_log, tab_news = st.tabs(["📅 Availability", "📋 My Bookings", "🔗 Resources", "🛠️ Maint.", "📜 Log", announcements_tab_label()])
+    tab_avail, tab_mine, tab_resources, tab_maint, tab_log, tab_news = st.tabs(["📅 Plan & Book", "📋 My Bookings", "🔗 Resources", "🛠️ Maint.", "📜 Log", announcements_tab_label()])
 
     with tab_avail:
         render_whatsapp_banner()
