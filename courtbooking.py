@@ -2425,7 +2425,7 @@ def render_bookings_closed_notice(date_str=None):
 
 def render_bookings_closing_banner():
     """Shown above the booking bar on dates that CAN still be booked, so people know what's coming."""
-    st.info(f"ℹ️ **This app is being retired.** Bookings here are open for dates up to "
+    st.info(f"ℹ️ **This app is being retired and the new app is at https://miratennis.up.railway.app/.** Bookings here are open for dates up to "
             f"**{_bookings_last_date_label()}** only. Later dates must be booked in the new app.")
 
 def book_slot(villa, sub_community, court, date_str, start_hour, fingerprint=None, coach_email=None):
