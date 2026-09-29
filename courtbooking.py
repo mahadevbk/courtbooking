@@ -16,6 +16,17 @@ st.success(
     "You'll find them there, so there's nothing you need to re-book."
 )
 
-st.link_button("➡️ Go to the new app", NEW_APP_URL, type="primary", width="stretch")
+# Custom button with explicit colours so it stays legible whatever theme the app is running under.
+st.markdown(
+    f"""
+    <a href="{NEW_APP_URL}" target="_blank" rel="noopener noreferrer"
+       style="display:block; text-align:center; padding:14px 18px; margin:8px 0;
+              background:#0B5D3B; color:#FFFFFF !important; font-weight:700; font-size:18px;
+              text-decoration:none !important; border-radius:10px; border:2px solid #083F28;">
+        ➡️ Go to the new app
+    </a>
+    """,
+    unsafe_allow_html=True,
+)
 
 st.caption(f"New app: {NEW_APP_URL}")
