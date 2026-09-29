@@ -2410,7 +2410,7 @@ def render_bookings_closed_notice(date_str=None):
     if BOOKINGS_DISABLED:
         st.warning(
             "🚫 **New bookings are closed in this app.**\n\n"
-            "We're moving to a new app, and this one is being retired. **Your existing bookings are still "
+            "We're moving to a new app https://miratennis.up.railway.app/ , and this one is being retired. **Your existing bookings are still "
             "shown below and remain valid** — you can still view or cancel them here. "
             "Please make any new bookings in the new app."
         )
