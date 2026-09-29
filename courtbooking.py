@@ -1786,6 +1786,143 @@ def render_supporter_gate_screen():
                 else:
                     st.error("Incorrect password.")
 
+# ==============================================================================
+# --- ADMIN-AUTHORISED REGISTRATION ONLY ---
+# ==============================================================================
+# Nobody can register a new villa on their own. A brand-new account (anyone who does NOT already
+# hold an APPROVED villa_claims row for the villa + email they log in with) can only be created
+# after the admin has authorised it: the admin enters the sub-community, villa and email in the
+# Residents & Access tab, which stores a row in the `registration_approvals` table.
+#
+# Approval only lets that exact sub-community + villa + email PROCEED to the normal OTP + PIN
+# flow — the OTP still proves they own the email, and every existing rule (1 email per villa,
+# 3 villas per email, greylist, bans, device cap) still applies on top. Once the account has been
+# created the approval is marked 'used'. Existing residents are never affected.
+#
+# This is always enforced — there is no on/off switch. If the table is missing or unreachable,
+# nobody new is approved (fail closed); existing residents can still log in.
+#
+# Needs this table (SQL is shown in the admin panel until it exists):
+#   registration_approvals (id, created_at, sub_community, villa, email, note, status, used_at)
+REG_APPROVALS_TABLE = "registration_approvals"
+
+def _norm_reg_sub(s):
+    return " ".join(str(s or "").lower().split())
+
+def _norm_reg_villa(v):
+    digits = re.sub(r"\D", "", str(v or ""))
+    return digits.lstrip("0")
+
+def get_manual_approvals():
+    """Active admin approvals, newest first — or None if the table doesn't exist yet."""
+    try:
+        res = (supabase.table(REG_APPROVALS_TABLE).select("*").eq("status", "active")
+               .order("created_at", desc=True).execute())
+        return res.data or []
+    except Exception:
+        return None
+
+def _manual_approval_rows_for(email):
+    try:
+        res = (supabase.table(REG_APPROVALS_TABLE).select("*")
+               .eq("email", (email or "").strip().lower()).eq("status", "active").execute())
+        return res.data or []
+    except Exception:
+        return []
+
+def add_manual_approval(sub_community, villa, email, note=""):
+    try:
+        supabase.table(REG_APPROVALS_TABLE).insert({
+            "sub_community": sub_community, "villa": str(villa), "email": (email or "").strip().lower(),
+            "note": (note or "").strip() or None, "status": "active",
+        }).execute()
+        return True
+    except Exception:
+        return False
+
+def revoke_manual_approval(approval_id):
+    try:
+        supabase.table(REG_APPROVALS_TABLE).update({"status": "revoked"}).eq("id", approval_id).eq("status", "active").execute()
+        return True
+    except Exception:
+        return False
+
+def consume_registration_approval(sub_community, villa, email):
+    """Marks the matching admin approval as used once the claim exists."""
+    try:
+        for r in _manual_approval_rows_for(email):
+            if _norm_reg_sub(r.get("sub_community")) == _norm_reg_sub(sub_community) and _norm_reg_villa(r.get("villa")) == _norm_reg_villa(villa):
+                supabase.table(REG_APPROVALS_TABLE).update({"status": "used", "used_at": get_utc_plus_4().isoformat()}).eq("id", r["id"]).execute()
+    except Exception:
+        pass
+
+def is_registration_approved(sub_community, villa, email):
+    """True only if the admin has authorised this exact sub-community + villa + email."""
+    key = (_norm_reg_sub(sub_community), _norm_reg_villa(villa), (email or "").strip().lower())
+    for r in _manual_approval_rows_for(email):
+        if (_norm_reg_sub(r.get("sub_community")), _norm_reg_villa(r.get("villa")), (r.get("email") or "").strip().lower()) == key:
+            return True
+    return False
+
+def registration_gate_applies(existing_claim):
+    """True when this login attempt needs admin authorisation: the person does not already hold an
+    APPROVED claim for this exact villa + email (i.e. they are a brand-new registrant)."""
+    return not (existing_claim and existing_claim.get("status") == "approved")
+
+def villa_has_no_approved_claim_live(sub_community, villa):
+    """True ONLY if a fresh, uncached query succeeds and finds no approved claim for this villa.
+    Any failure returns False ('don't turn anyone away') — the cached claims list used by the
+    dashboard returns [] on a failed read and keeps it for 60s, which must never be able to lock
+    out a villa's real residents."""
+    try:
+        res = run_query(supabase.table("villa_claims").select("id").eq("sub_community", sub_community)
+                        .eq("villa", villa).eq("status", "approved").limit(1))
+    except Exception:
+        return False
+    if res is None:
+        return False
+    return not res.data
+
+def registration_activation_blocked_message(sub_community, villa, email):
+    """Final server-side re-check at the moment a claim is about to be created (OTP step). Returns
+    an error string if this NEW registration must not proceed, else None. Returns None straight
+    away when the person is already an approved resident of this villa."""
+    try:
+        res = run_query(supabase.table("villa_claims").select("*").eq("sub_community", sub_community).eq("villa", villa))
+    except Exception:
+        res = None
+    if res is None:
+        # Can't verify the villa's claims right now. Only an already-approved resident may skip the
+        # admin check, and we can't tell — so fail closed rather than risk creating an unapproved account.
+        return "We couldn't verify your registration just now. Please try again in a moment."
+    claims = res.data or []
+    existing = _find_claim_for_email(claims, email)
+    if existing and existing.get("status") == "approved":
+        return None
+    if any(c.get("status") == "approved" for c in claims):
+        return ("This villa already has a verified resident email attached, so this registration "
+                "can't be completed. Please contact Dev via Court Maintenance.")
+    if not is_registration_approved(sub_community, villa, email):
+        return ("This registration hasn't been authorised by the admin team, so it can't be completed. "
+                "Please join the WhatsApp group from the login screen to get verified.")
+    return None
+
+# WhatsApp group that new registrants are sent to. An admin team there verifies applicants and then
+# authorises them in the admin panel. Change this one link to point at a different group.
+REGISTRATION_WHATSAPP_URL = "https://chat.whatsapp.com/CJ9flIw4gJrE8MTF1WzlhS"
+
+def render_registration_gate_screen():
+    """What an unapproved new registrant sees INSTEAD of an OTP being sent."""
+    st.info(
+        "🏡 **New registrations are verified and authorised by an admin team.**\n\n"
+        "This villa and email haven't been authorised yet, so no login code was sent. To register:\n\n"
+        "1. Join our WhatsApp group using the button below.\n"
+        "2. Tell the admin team your **sub-community, villa number and the email address** you want to use.\n"
+        "3. Once the team has verified you and authorised your account, come back, enter the same villa "
+        "and email, and you'll receive your login code."
+    )
+    st.link_button(f"💬 Join the WhatsApp group to get verified", REGISTRATION_WHATSAPP_URL, width='stretch')
+
 def get_all_villas_for_email(email):
     res = run_query(supabase.table("villa_claims").select("*")
                     .eq("email", email.strip().lower())
@@ -4040,6 +4177,11 @@ def _attempt_resident_login(otp_sub, otp_villa, otp_email_input):
             "Please contact Dev via Court Maintenance if you require an exception."
         )
         add_log("Access Denied", f"Device UUID {current_uuid} blocked from requesting access for 4th villa ({otp_sub} Villa {otp_villa})", fingerprint=current_uuid)
+    elif registration_gate_applies(existing_claim) and not is_registration_approved(otp_sub, otp_villa, otp_email_input):
+        # ADMIN-AUTHORISED REGISTRATION ONLY: no OTP is sent and no claim is created. Existing residents
+        # (an approved claim for this villa + email) never reach this branch — see
+        # registration_gate_applies(). Deliberately not written to the public activity log.
+        render_registration_gate_screen()
     else:
         st.session_state.auth_email = otp_email_input
         st.session_state.auth_sub = otp_sub
@@ -4539,6 +4681,12 @@ if not st.session_state.authenticated:
                     st.error("Please enter a 6-digit verification code.")
                 elif not new_pin_input or len(new_pin_input) != 4 or not new_pin_input.isdigit():
                     st.error("Please set a valid 4-digit PIN for future use (numbers only).")
+                elif (_reg_block := registration_activation_blocked_message(
+                        st.session_state.auth_sub, st.session_state.auth_villa, st.session_state.auth_email)):
+                    # Admin authorisation re-checked server-side at the moment a claim would be created, so
+                    # it holds even if an authorisation was revoked (or a villa filled up) since the login
+                    # step. Returns None only for an existing resident of this villa.
+                    st.error(_reg_block)
                 else:
                     with st.spinner("Verifying code..."):
                         try:
@@ -4589,6 +4737,11 @@ if not st.session_state.authenticated:
                                         "status": "approved",
                                         "pin": new_pin_input
                                     }).eq("id", existing["id"]))
+
+                                consume_registration_approval(target_sub, target_villa, verified_email)
+                                # The dashboard's claims lookup is cached for 60s; without this a
+                                # brand-new resident could be bounced right after registering.
+                                get_approved_email_claims_for_villa.clear()
 
                                 fallback_choice = f"{target_sub}-{target_villa}"
                                 claim_bundle = f"{target_sub}::{target_villa}"
@@ -5012,6 +5165,119 @@ def render_coach_admin_panel(key_prefix="cam"):
                                     except Exception as e:
                                         st.error(f"Failed to update email — no changes were left partially applied beyond what's shown here. Details: {e}")
 
+def send_registration_approved_email(email, sub_community, villa):
+    """Tells a resident the admin has authorised their new account."""
+    try:
+        html_content = f"""
+        <!DOCTYPE html>
+        <html>
+        <head><meta charset="utf-8"></head>
+        <body style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; background-color: #f4f7f6; margin: 0; padding: 0; color: #222;">
+          <div style="max-width: 600px; margin: 30px auto; background: #ffffff; border-radius: 12px; overflow: hidden; border: 1px solid #e1e8ed;">
+            <div style="background: linear-gradient(135deg, #0d5384, #052134); padding: 26px; text-align: center; color: #ffffff;">
+              <h1 style="margin: 0; font-size: 21px;">✅ Registration Authorised</h1>
+            </div>
+            <div style="padding: 28px; line-height: 1.6;">
+              <p>Hello Resident,</p>
+              <p>The admin has authorised you to register <b>{html.escape(str(sub_community))} - Villa {html.escape(str(villa))}</b>.</p>
+              <p>To finish, open the app, enter the same villa and this email address (<b>{html.escape(email)}</b>), and you'll receive your 6-digit login code.</p>
+              <p style="text-align:center; margin: 26px 0;"><a href="{APP_PUBLIC_URL}" style="display:inline-block; background-color:#0d5384; color:#ffffff; text-decoration:none; font-weight:700; padding:12px 26px; border-radius:8px;">Open Mira Court Booking</a></p>
+            </div>
+            <div style="background: #f8fafc; padding: 16px; text-align: center; font-size: 12px; color: #718096; border-top: 1px solid #e2e8f0;">
+              Mira Court Booking App • Community Fair-Use Solution
+            </div>
+          </div>
+        </body>
+        </html>
+        """
+        return bool(send_gmail_smtp(email, "✅ Your Mira Court Booking registration was authorised", html_content))
+    except Exception as e:
+        print(f"Error sending registration approved email: {e}")
+        return False
+
+def render_registration_gate_admin():
+    """Admin panel: authorise a new account (sub-community + villa + email). Without an active
+    authorisation here, nobody can register a new villa."""
+    st.caption(
+        "New villas can't register themselves. Enter the sub-community, villa and email of the resident "
+        "you are authorising. That exact combination can then request a login code and create the account "
+        "(they still verify their email with the OTP and set a PIN). Each authorisation is single-use. "
+        "This is separate from 'Manually Authorize a Claim' below, which creates the access directly, "
+        "with no OTP."
+    )
+    manual = get_manual_approvals()
+    if manual is None:
+        st.warning("Authorisations need a `registration_approvals` table that doesn't exist yet. Until it is created, no new account can be registered. Create it in Supabase and this section switches on automatically:")
+        st.code(
+            "create table registration_approvals (\n"
+            "  id bigint generated always as identity primary key,\n"
+            "  created_at timestamptz default now(),\n"
+            "  sub_community text not null,\n"
+            "  villa text not null,\n"
+            "  email text not null,\n"
+            "  note text,\n"
+            "  status text default 'active',\n"
+            "  used_at timestamptz\n"
+            ");",
+            language="sql",
+        )
+        return
+
+    with st.form("reggate_manual_form"):
+        m_sub = st.selectbox("Sub-Community", options=sub_community_list, key="reggate_m_sub")
+        m_villa = st.text_input("Villa Number", key="reggate_m_villa").strip()
+        m_email = st.text_input("Resident Email Address", key="reggate_m_email").strip().lower()
+        m_note = st.text_input("Note (admin-only, optional)", key="reggate_m_note")
+        m_notify = st.checkbox("Email the resident that they're authorised", value=True, key="reggate_m_notify")
+        m_submit = st.form_submit_button("✅ Authorise New Account", type="primary")
+    if m_submit:
+        max_v = SUB_COMMUNITY_VILLA_LIMITS.get(m_sub, 9999)
+        m_villa_digits = "".join(filter(str.isdigit, m_villa))
+        if not m_villa_digits or not m_email or "@" not in m_email:
+            st.error("Please provide a valid villa number and email address.")
+        elif not (1 <= int(m_villa_digits) <= max_v):
+            st.error(f"Invalid villa number for {m_sub}. Must be between 1 and {max_v}.")
+        elif is_disposable_email(m_email):
+            st.error("Disposable/temporary email domains are not allowed.")
+        elif get_villa_claims_count(m_sub, m_villa_digits) >= MAX_EMAILS_PER_VILLA:
+            st.error(f"{m_sub} Villa {m_villa_digits} already has a registered resident email. Release that claim first (Inspect & Release Villa Claims below) if this is a change of resident.")
+        elif get_email_claimed_villas_count(m_email) >= get_max_villas_for_email(m_email):
+            st.error(f"{m_email} already holds the maximum number of villas allowed, so a new one can't be registered.")
+        else:
+            clash = [r for r in manual if _norm_reg_sub(r.get("sub_community")) == _norm_reg_sub(m_sub)
+                     and _norm_reg_villa(r.get("villa")) == _norm_reg_villa(m_villa_digits)]
+            if clash:
+                st.error(f"There's already an active authorisation for {m_sub} Villa {m_villa_digits} ({clash[0]['email']}). Revoke it first to authorise a different email.")
+            elif add_manual_approval(m_sub, m_villa_digits, m_email, m_note):
+                add_log("Admin Edit", f"Admin authorised new account for {m_email} at {m_sub} Villa {m_villa_digits}" + (f" ({m_note})" if m_note else ""))
+                sent_msg = ""
+                if m_notify:
+                    sent_msg = " Approval email sent." if send_registration_approved_email(m_email, m_sub, m_villa_digits) else " (The approval email could not be sent.)"
+                st.success(f"{m_email} authorised for {m_sub} Villa {m_villa_digits}.{sent_msg}")
+                time.sleep(1.2)
+                st.rerun()
+            else:
+                st.error("Could not save the authorisation — please try again.")
+
+    if manual:
+        st.caption(f"{len(manual)} active authorisation(s) — waiting for the resident to complete registration")
+        for r in manual:
+            try:
+                when = datetime.fromisoformat(r["created_at"].replace("Z", "+00:00")).strftime("%b %d")
+            except Exception:
+                when = ""
+            note = f" — *{r['note']}*" if r.get("note") else ""
+            c1, c2 = st.columns([6, 1])
+            with c1:
+                st.caption(f"🏡 **{r['sub_community']} - Villa {r['villa']}** · {r['email']} · authorised {when}{note}")
+            with c2:
+                if st.button("🗑️", key=f"reggate_revoke_{r['id']}", help="Revoke this authorisation"):
+                    if revoke_manual_approval(r["id"]):
+                        add_log("Admin Edit", f"Admin revoked authorisation of {r['email']} for {r['sub_community']} Villa {r['villa']}")
+                    st.rerun()
+    else:
+        st.caption("No active authorisations.")
+
 def _villa_line_parts(line):
     """'Mira 4 - Villa 84' / 'Mira 4 Villa 84' / 'Mira 4 - 84' -> ('Mira 4', '84'); None if it isn't that shape."""
     m = re.match(r"^\s*(.+?)\s*[-–—]?\s*(?:villa\s*)?(\d+)\s*$", line or "", flags=re.I)
@@ -5258,6 +5524,8 @@ Coach accounts exist for tennis coaches who train residents across **several vil
             )
 
         with admin_tabs[1]:
+            with st.expander("🛡️ Authorise a New Account (Admin Approval Required)", expanded=True):
+                render_registration_gate_admin()
             with st.expander("✅ Manually Authorize a Claim (Without OTP)", expanded=True):
                 st.markdown("### Manually Authorize Resident Claim (Without OTP)")
                 with st.form("manual_claim_form"):
@@ -5291,6 +5559,7 @@ Coach accounts exist for tennis coaches who train residents across **several vil
                                     "status": "approved",
                                     "verified_at": now_ts
                                 }))
+                                get_approved_email_claims_for_villa.clear()
                                 add_log("Villa Claim", f"System authorized {man_sub} Villa {man_villa} for {man_email}")
                                 st.success(f"Claim created for {man_sub} Villa {man_villa}!")
                                 time.sleep(1.5)
@@ -5413,6 +5682,7 @@ Coach accounts exist for tennis coaches who train residents across **several vil
                                 "status": "approved"
                             }).eq("id", existing["id"]))
 
+                        get_approved_email_claims_for_villa.clear()
                         fallback_choice = f"{bypass_sub}-{bypass_villa}"
                         claim_bundle = f"{bypass_sub}::{bypass_villa}"
                         st_javascript(f"""
@@ -7092,6 +7362,19 @@ else:
             "Maintenance if this looks wrong."
         )
         if st.button("🚪 Logout", key="consolidation_stale_logout"):
+            logout_action()
+        render_deferred_helpers()
+        st.stop()
+    elif not _villa_emails_now and villa_has_no_approved_claim_live(sub_community, villa):
+        # A villa with no approved claim at all is simply not registered, so a
+        # session claiming it (stale, or restored from browser storage / a link) must not get in.
+        # Villas that HAVE a registered resident are untouched by this branch. The live re-query
+        # above means a stale/failed cached lookup can never bounce a real resident.
+        st.warning(
+            "🔒 This residence isn't registered yet. New registrations are by admin approval only "
+            "— please log out and join the WhatsApp group from the login screen to get verified."
+        )
+        if st.button("🚪 Logout", key="unregistered_villa_logout"):
             logout_action()
         render_deferred_helpers()
         st.stop()
