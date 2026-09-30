@@ -9,38 +9,38 @@ st.markdown(
     f"""
     <style>
       #MainMenu, header[data-testid="stHeader"], footer, [data-testid="stToolbar"] {{ display: none !important; }}
-      .block-container {{ padding-top: 14vh !important; max-width: 560px !important; }}
+      .block-container {{ padding-top: 12vh !important; max-width: 560px !important; }}
 
-      .mv-wrap   {{ font-family: inherit; text-align: center; }}
+      .mv-wrap    {{ font-family: inherit; text-align: center; }}
       .mv-eyebrow {{ font-size: 12px; letter-spacing: .28em; text-transform: uppercase; opacity: .6; margin-bottom: 26px; }}
-      .mv-title  {{ font-size: 44px; line-height: 1.1; font-weight: 600; letter-spacing: -.01em; margin: 0 0 18px 0; }}
-      .mv-lead   {{ font-size: 17px; line-height: 1.65; opacity: .78; margin: 0 auto 34px auto; max-width: 440px; }}
+      .mv-title   {{ font-size: 44px; line-height: 1.1; font-weight: 600; letter-spacing: -.01em; margin: 0 0 16px 0; }}
+      .mv-lead    {{ font-size: 17px; line-height: 1.6; opacity: .78; margin: 0 auto 30px auto; max-width: 420px; }}
 
-      .mv-note   {{ display: flex; align-items: flex-start; gap: 14px; text-align: left; padding: 18px 20px;
-                    border: 1px solid rgba(128,128,128,.35); border-radius: 14px; margin: 0 0 34px 0; }}
-      .mv-note svg {{ flex: 0 0 auto; margin-top: 2px; }}
-      .mv-note-t {{ font-size: 15px; line-height: 1.55; opacity: .85; }}
-      .mv-note-t b {{ font-weight: 600; opacity: 1; }}
+      .mv-steps   {{ text-align: left; padding: 8px 22px; border: 1px solid rgba(128,128,128,.35); border-radius: 14px; margin: 0 0 26px 0; }}
+      .mv-step    {{ display: flex; align-items: flex-start; gap: 16px; padding: 14px 0; font-size: 15px; line-height: 1.5; }}
+      .mv-step + .mv-step {{ border-top: 1px solid rgba(128,128,128,.25); }}
+      .mv-num     {{ flex: 0 0 auto; width: 26px; height: 26px; border-radius: 50%; border: 1px solid rgba(128,128,128,.6);
+                     display: flex; align-items: center; justify-content: center; font-size: 13px; font-weight: 600; margin-top: 1px; }}
+      .mv-step b  {{ font-weight: 600; }}
 
-      a.mv-btn   {{ display: inline-flex; align-items: center; justify-content: center; gap: 10px; width: 100%;
-                    box-sizing: border-box; padding: 16px 24px; border-radius: 12px; background: #1C2B24;
-                    color: #FFFFFF !important; font-family: inherit; font-size: 16px; font-weight: 600;
-                    letter-spacing: .02em; text-decoration: none !important; transition: background .2s, transform .2s; }}
+      a.mv-btn    {{ display: inline-flex; align-items: center; justify-content: center; gap: 10px; width: 100%;
+                     box-sizing: border-box; padding: 16px 24px; border-radius: 12px; background: #1C2B24;
+                     color: #FFFFFF !important; font-family: inherit; font-size: 16px; font-weight: 600;
+                     letter-spacing: .02em; text-decoration: none !important; transition: background .2s, transform .2s; }}
       a.mv-btn:hover {{ background: #2C4237; transform: translateY(-1px); }}
 
-      .mv-url    {{ margin-top: 18px; font-size: 13px; opacity: .55; letter-spacing: .02em; }}
+      .mv-url     {{ margin-top: 18px; font-size: 13px; opacity: .55; letter-spacing: .02em; }}
     </style>
 
     <div class="mv-wrap">
       <div class="mv-eyebrow">Mira Court Booking</div>
       <h1 class="mv-title">We&rsquo;ve moved.</h1>
-      <p class="mv-lead">Court bookings are now made in our new app. This one has been retired and no longer takes bookings or logins.</p>
+      <p class="mv-lead">This app is retired and old logins no longer work. Please use the new app for all bookings.</p>
 
-      <div class="mv-note">
-        <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#2E7D5B" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-          <circle cx="12" cy="12" r="10"></circle><path d="M8 12.5l2.7 2.7L16 9.5"></path>
-        </svg>
-        <div class="mv-note-t"><b>Your existing bookings have been migrated.</b><br>You&rsquo;ll find them waiting in the new app &mdash; there&rsquo;s nothing to re-book.</div>
+      <div class="mv-steps">
+        <div class="mv-step"><span class="mv-num">1</span><span>Verify your villa with a <b>current DEWA bill</b>.</span></div>
+        <div class="mv-step"><span class="mv-num">2</span><span>Create a <b>new password</b>.</span></div>
+        <div class="mv-step"><span class="mv-num">3</span><span>Your existing bookings have been migrated and will <b>appear automatically</b>.</span></div>
       </div>
 
       <a class="mv-btn" href="{NEW_APP_URL}" target="_blank" rel="noopener noreferrer">
